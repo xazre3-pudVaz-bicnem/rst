@@ -36,36 +36,85 @@
 
     --radius: 0.25rem;
   }
+
+  .dark {
+    --background: 222 47% 10%;
+    --foreground: 210 20% 92%;
+
+    --card: 222 40% 13%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 222 40% 13%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 217 80% 60%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 217 25% 22%;
+    --secondary-foreground: 210 20% 92%;
+
+    --muted: 217 25% 20%;
+    --muted-foreground: 215 16% 62%;
+
+    --accent: 217 25% 24%;
+    --accent-foreground: 210 20% 92%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 217 25% 24%;
+    --input: 217 25% 26%;
+    --ring: 217 80% 60%;
+  }
 }
 
 @layer base {
   * {
     @apply border-border;
   }
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    /* ネイティブのカレンダー/時刻ピッカーや選択UIをダークに */
+    color-scheme: dark;
+  }
   html {
-    font-size: 11px;
+    font-size: 12.5px;
   }
   body {
     @apply bg-background text-foreground;
     font-family: 'Noto Sans JP', sans-serif;
     -webkit-font-smoothing: antialiased;
   }
+  /* スムーズスクロール（モーション低減設定は尊重） */
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
 }
 
 /* Compact scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: hsl(214 16% 80%);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(214 16% 70%);
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: hsl(217 18% 32%);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: hsl(217 18% 42%);
 }
 
 input[type='datetime-local'],

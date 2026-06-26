@@ -24,6 +24,9 @@ import {
 import { AppointmentApi, CaseApi } from '@/lib/api'
 import { SALES_REPS } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
+import { useToast } from '@/components/ui/toast'
+import { useConfirm } from '@/components/ui/confirm'
+import { jpError } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
@@ -32,6 +35,8 @@ const NONE = '__none__'
 
 export default function Appointments() {
   const navigate = useNavigate()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [cases, setCases] = useState<Case[]>([])
   const [currentDate, setCurrentDate] = useState(moment().format('YYYY-MM-DD'))
@@ -92,11 +97,11 @@ export default function Appointments() {
 
   async function handleSave() {
     if (!form.case_id) {
-      alert('案件を選択してください')
+      toast.error('案件を選択してください')
       return
     }
     if (!form.appo_at) {
-      alert('日時を入力してください')
+      toast.error('日時を入力してください')
       return
     }
     const c = cases.find((x) => x.id === form.case_id)
@@ -115,22 +120,24 @@ export default function Appointments() {
       } else {
         await AppointmentApi.create(payload)
       }
+      toast.success('訪問予定を保存しました')
       setShowModal(false)
       load()
     } catch (e) {
-      alert('保存に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('保存に失敗しました: ' + jpError(e))
     }
   }
 
   async function handleDelete() {
     if (!editing) return
-    if (!confirm('このアポを削除しますか？')) return
+    if (!(await confirm({ title: 'このアポを削除しますか？', confirmLabel: '削除する', danger: true }))) return
     try {
       await AppointmentApi.remove(editing.id)
+      toast.success('削除しました')
       setShowModal(false)
       load()
     } catch (e) {
-      alert('削除に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('削除に失敗しました: ' + jpError(e))
     }
   }
 

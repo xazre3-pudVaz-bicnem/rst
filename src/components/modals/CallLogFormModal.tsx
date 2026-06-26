@@ -18,7 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { AppointmentApi, CallLogApi, CaseApi, RecallApi } from '@/lib/api'
+import { AppointmentApi, CallLogApi, CaseApi, RecallApi, TemplateApi } from '@/lib/api'
+import type { Template } from '@/lib/types'
 import {
   AGES,
   CONTACT_RESULTS,
@@ -26,8 +27,12 @@ import {
   NO_CONTACT_RESULTS,
   RECEIVER_ATTRS,
   SALES_REPS,
+  STATUSES,
 } from '@/lib/constants'
 import { generateSummary } from '@/lib/summary'
+import { useAuth } from '@/context/AuthContext'
+import { useToast } from '@/components/ui/toast'
+import { jpError } from '@/lib/utils'
 import type { Case, CallLog } from '@/lib/types'
 
 interface Props {
@@ -65,7 +70,16 @@ export default function CallLogFormModal({
   const [appoRep, setAppoRep] = useState('')
   const [recallAt, setRecallAt] = useState('')
   const [memo, setMemo] = useState('')
+  const [logRep, setLogRep] = useState('')
+  const [newStatus, setNewStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [templates, setTemplates] = useState<Template[]>([])
+  const { user } = useAuth()
+  const toast = useToast()
+
+  useEffect(() => {
+    if (open) TemplateApi.list().then(setTemplates).catch(() => setTemplates([]))
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -81,6 +95,8 @@ export default function CallLogFormModal({
       setAppoAt('')
       setAppoRep(selectedCase?.sales_rep ?? '')
       setRecallAt('')
+      setLogRep(editingLog.sales_rep ?? selectedCase?.sales_rep ?? '')
+      setNewStatus(selectedCase?.status ?? '')
     } else {
       setContactType('接触')
       setCallAt(nowLocal())
@@ -93,6 +109,8 @@ export default function CallLogFormModal({
       setAppoRep(selectedCase?.sales_rep ?? '')
       setRecallAt('')
       setMemo('')
+      setLogRep(selectedCase?.sales_rep ?? '')
+      setNewStatus(selectedCase?.status ?? '')
     }
   }, [open, editingLog, selectedCase])
 
@@ -115,11 +133,12 @@ export default function CallLogFormModal({
   async function handleRelease() {
     if (!selectedCase) return
     try {
-      await CaseApi.update(selectedCase.id, { sales_rep: null, status: '新規' })
+      await CaseApi.update(selectedCase.id, { sales_rep: null, status: '未架電' })
+      toast.success('案件を開放しました')
       onSaved()
       onClose()
     } catch (e) {
-      alert('開放に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('開放に失敗しました: ' + jpError(e))
     }
   }
 
@@ -127,6 +146,9 @@ export default function CallLogFormModal({
     if (!selectedCase) return
     setBusy(true)
     try {
+      // アポ時はステータスを「アポ獲得」に寄せる
+      const effectiveStatus = showAppo && appoAt ? 'アポ獲得' : newStatus
+      const statusChanged = effectiveStatus && effectiveStatus !== selectedCase.status
       const logPayload: Partial<CallLog> = {
         case_id: selectedCase.id,
         case_name: selectedCase.name,
@@ -135,6 +157,11 @@ export default function CallLogFormModal({
         result: result || null,
         memo: memo || null,
         summary: summary || null,
+        sales_rep: logRep || selectedCase.sales_rep || null,
+        prev_status: statusChanged ? selectedCase.status : null,
+        next_status: statusChanged ? effectiveStatus : null,
+        next_recall_at: recallAt ? moment(recallAt).toISOString() : null,
+        created_by_id: user?.id ?? null,
       }
       if (editingLog) {
         await CallLogApi.update(editingLog.id, logPayload)
@@ -142,7 +169,7 @@ export default function CallLogFormModal({
         await CallLogApi.create(logPayload)
       }
 
-      // アポ日時があれば Appointment 作成 + Case.status='アポ'
+      // アポ日時があれば Appointment 作成
       if (showAppo && appoAt) {
         await AppointmentApi.create({
           case_id: selectedCase.id,
@@ -152,9 +179,17 @@ export default function CallLogFormModal({
           appo_at: moment(appoAt).toISOString(),
           memo: null,
         })
+      }
+
+      // ステータス / 担当の更新
+      if (statusChanged || logRep) {
         await CaseApi.update(selectedCase.id, {
-          status: 'アポ',
-          sales_rep: appoRep || selectedCase.sales_rep || null,
+          ...(statusChanged ? { status: effectiveStatus } : {}),
+          ...(showAppo && appoAt
+            ? { sales_rep: appoRep || logRep || selectedCase.sales_rep || null }
+            : logRep
+              ? { sales_rep: logRep }
+              : {}),
         })
       }
 
@@ -164,13 +199,15 @@ export default function CallLogFormModal({
           case_id: selectedCase.id,
           case_name: selectedCase.name,
           target_at: moment(recallAt).toISOString(),
+          created_by_id: user?.id ?? null,
         })
       }
 
+      toast.success('コール履歴を保存しました')
       onSaved()
       onClose()
     } catch (e) {
-      alert('保存に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
       setBusy(false)
     }
@@ -304,7 +341,7 @@ export default function CallLogFormModal({
           </div>
 
           {showAppo && (
-            <div className="grid grid-cols-2 gap-2 rounded-md bg-green-50 p-2">
+            <div className="grid grid-cols-2 gap-2 rounded-md bg-green-50 p-2 dark:bg-green-500/10">
               <div className="space-y-1">
                 <Label>アポ日時</Label>
                 <Input
@@ -333,6 +370,37 @@ export default function CallLogFormModal({
             </div>
           )}
 
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label>変更後ステータス</Label>
+              <Select value={newStatus || NONE} onValueChange={(v) => setNewStatus(v === NONE ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="変更なし" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>変更なし</SelectItem>
+                  {STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>担当者（記録者）</Label>
+              <Select value={logRep || NONE} onValueChange={(v) => setLogRep(v === NONE ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="選択" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>（なし）</SelectItem>
+                  {SALES_REPS.map((r) => (
+                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
           <div className="space-y-1">
             <Label>再コール予定（任意）</Label>
             <Input
@@ -345,6 +413,24 @@ export default function CallLogFormModal({
 
           <div className="space-y-1">
             <Label>メモ</Label>
+            {templates.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {templates
+                  .filter((t) => !newStatus || !t.status || t.status === newStatus)
+                  .slice(0, 8)
+                  .map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setMemo((m) => (m ? m + '\n' : '') + t.body)}
+                      className="rounded-full border border-input bg-card px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent"
+                      title={t.body}
+                    >
+                      + {t.title}
+                    </button>
+                  ))}
+              </div>
+            )}
             <Textarea value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} />
           </div>
 

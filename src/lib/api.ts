@@ -1,5 +1,15 @@
 import { supabase } from './supabaseClient'
-import type { Appointment, Case, CallLog, CallSession, Recall } from './types'
+import type {
+  Appointment,
+  AuditLog,
+  Case,
+  CallLog,
+  CallSession,
+  ImportBatch,
+  Profile,
+  Recall,
+  Template,
+} from './types'
 
 /**
  * Base44 の entities.* を Supabase に置換したデータアクセス層。
@@ -20,6 +30,56 @@ export const CaseApi = {
       .limit(limit)
     return unwrap(data, error)
   },
+  /** 店舗名・住所・電話で部分一致検索（コマンドパレット用・サーバー側 ilike） */
+  async search(term: string, limit = 20): Promise<Case[]> {
+    const t = term.trim()
+    if (!t) return []
+    const digits = t.replace(/[^0-9]/g, '')
+    const ors = [`name.ilike.%${t}%`, `address.ilike.%${t}%`]
+    if (digits) {
+      ors.push(`phone1.ilike.%${digits}%`, `phone2.ilike.%${digits}%`, `phone3.ilike.%${digits}%`)
+    }
+    const { data, error } = await supabase
+      .from('cases')
+      .select('*')
+      .or(ors.join(','))
+      .limit(limit)
+    if (error) {
+      console.warn('[Case] search', error.message)
+      return []
+    }
+    return data as Case[]
+  },
+  /** 件数のみ取得（head リクエスト） */
+  async count(): Promise<number> {
+    const { count, error } = await supabase
+      .from('cases')
+      .select('*', { count: 'exact', head: true })
+    if (error) throw new Error(error.message)
+    return count ?? 0
+  },
+  /**
+   * 全件をサーバーサイドページングで取得する。
+   * Supabase の 1リクエスト上限（既定1000行）を超える場合も range で順次取得。
+   * maxPages で暴走を防止（既定 30 ページ = 最大 30,000 件）。
+   */
+  async listAll(pageSize = 1000, maxPages = 30): Promise<Case[]> {
+    const all: Case[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      const { data, error } = await supabase
+        .from('cases')
+        .select('*')
+        .order('created_date', { ascending: false })
+        .range(from, to)
+      if (error) throw new Error(error.message)
+      const rows = data ?? []
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
+  },
   async create(payload: Partial<Case>): Promise<Case> {
     const { data, error } = await supabase.from('cases').insert(payload).select().single()
     return unwrap(data, error)
@@ -32,6 +92,68 @@ export const CaseApi = {
     const { error } = await supabase.from('cases').delete().eq('id', id)
     if (error) throw new Error(error.message)
   },
+  async bulkUpdate(ids: string[], payload: Partial<Case>): Promise<void> {
+    if (ids.length === 0) return
+    const { error } = await supabase.from('cases').update(payload).in('id', ids)
+    if (error) throw new Error(error.message)
+  },
+  async bulkRemove(ids: string[]): Promise<void> {
+    if (ids.length === 0) return
+    const { error } = await supabase.from('cases').delete().in('id', ids)
+    if (error) throw new Error(error.message)
+  },
+}
+
+/** 監査ログ（テーブルが無くても失敗させない） */
+export const AuditApi = {
+  async list(limit = 200): Promise<AuditLog[]> {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .order('created_date', { ascending: false })
+      .limit(limit)
+    if (error) {
+      console.warn('[Audit] list skipped:', error.message)
+      return []
+    }
+    return data as AuditLog[]
+  },
+  async log(payload: Partial<AuditLog>): Promise<void> {
+    try {
+      const { error } = await supabase.from('audit_logs').insert(payload)
+      if (error) console.warn('[Audit] log skipped:', error.message)
+    } catch (e) {
+      console.warn('[Audit] log error:', e)
+    }
+  },
+}
+
+/** プロフィール / ユーザー管理 */
+export const ProfileApi = {
+  async list(limit = 200): Promise<Profile[]> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_date', { ascending: true })
+      .limit(limit)
+    if (error) {
+      console.warn('[Profile] list skipped:', error.message)
+      return []
+    }
+    return data as Profile[]
+  },
+  async me(id: string): Promise<Profile | null> {
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).maybeSingle()
+    if (error) {
+      console.warn('[Profile] me skipped:', error.message)
+      return null
+    }
+    return (data as Profile) ?? null
+  },
+  async update(id: string, payload: Partial<Profile>): Promise<void> {
+    const { error } = await supabase.from('profiles').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
 }
 
 export const CallLogApi = {
@@ -42,6 +164,22 @@ export const CallLogApi = {
       .order('call_at', { ascending: false })
       .limit(limit)
     return unwrap(data, error)
+  },
+  async listAll(pageSize = 1000, maxPages = 30): Promise<CallLog[]> {
+    const all: CallLog[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize
+      const { data, error } = await supabase
+        .from('call_logs')
+        .select('*')
+        .order('call_at', { ascending: false })
+        .range(from, from + pageSize - 1)
+      if (error) throw new Error(error.message)
+      const rows = data ?? []
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
   },
   async create(payload: Partial<CallLog>): Promise<CallLog> {
     const { data, error } = await supabase.from('call_logs').insert(payload).select().single()
@@ -66,6 +204,22 @@ export const AppointmentApi = {
       .limit(limit)
     return unwrap(data, error)
   },
+  async listAll(pageSize = 1000, maxPages = 30): Promise<Appointment[]> {
+    const all: Appointment[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('*')
+        .order('appo_at')
+        .range(from, from + pageSize - 1)
+      if (error) throw new Error(error.message)
+      const rows = data ?? []
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
+  },
   async create(payload: Partial<Appointment>): Promise<Appointment> {
     const { data, error } = await supabase.from('appointments').insert(payload).select().single()
     return unwrap(data, error)
@@ -89,6 +243,22 @@ export const RecallApi = {
       .limit(limit)
     return unwrap(data, error)
   },
+  async listAll(pageSize = 1000, maxPages = 30): Promise<Recall[]> {
+    const all: Recall[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize
+      const { data, error } = await supabase
+        .from('recalls')
+        .select('*')
+        .order('target_at')
+        .range(from, from + pageSize - 1)
+      if (error) throw new Error(error.message)
+      const rows = data ?? []
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
+  },
   async create(payload: Partial<Recall>): Promise<Recall> {
     const { data, error } = await supabase.from('recalls').insert(payload).select().single()
     return unwrap(data, error)
@@ -101,6 +271,122 @@ export const RecallApi = {
     const { error } = await supabase.from('recalls').delete().eq('id', id)
     if (error) throw new Error(error.message)
   },
+}
+
+export const ImportBatchApi = {
+  async list(limit = 50): Promise<ImportBatch[]> {
+    const { data, error } = await supabase
+      .from('import_batches')
+      .select('*')
+      .order('created_date', { ascending: false })
+      .limit(limit)
+    return unwrap(data, error)
+  },
+  async create(payload: Partial<ImportBatch>): Promise<ImportBatch | null> {
+    // import_batches テーブルが無くても取込自体は失敗させない
+    const { data, error } = await supabase
+      .from('import_batches')
+      .insert(payload)
+      .select()
+      .single()
+    if (error) {
+      console.warn('[ImportBatch] create skipped:', error.message)
+      return null
+    }
+    return data as ImportBatch
+  },
+}
+
+export const TemplateApi = {
+  async list(limit = 300): Promise<Template[]> {
+    const { data, error } = await supabase
+      .from('templates')
+      .select('*')
+      .order('sort_order', { ascending: true })
+      .order('created_date', { ascending: true })
+      .limit(limit)
+    if (error) {
+      console.warn('[Template] list skipped:', error.message)
+      return []
+    }
+    return data as Template[]
+  },
+  async create(payload: Partial<Template>): Promise<Template | null> {
+    const { data, error } = await supabase.from('templates').insert(payload).select().single()
+    if (error) {
+      console.warn('[Template] create skipped:', error.message)
+      return null
+    }
+    return data as Template
+  },
+  async update(id: string, payload: Partial<Template>): Promise<void> {
+    const { error } = await supabase.from('templates').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('templates').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  /** templates が空のときに既定の定型文を投入する */
+  async seedDefaults(
+    defaults: { category: string; title: string; body: string; status?: string }[],
+  ): Promise<number> {
+    const existing = await this.list(1)
+    if (existing.length > 0) return 0
+    let n = 0
+    for (let i = 0; i < defaults.length; i++) {
+      const d = defaults[i]
+      const created = await this.create({ ...d, sort_order: i })
+      if (created) n++
+    }
+    return n
+  },
+}
+
+/**
+ * 案件ステータスを変更し、call_logs に変更履歴を残す。
+ * 変更前/変更後ステータス・担当者・日時を保存する。
+ */
+export async function changeCaseStatus(
+  c: Case,
+  nextStatus: string,
+  opts: {
+    sales_rep?: string | null
+    memo?: string | null
+    userId?: string | null
+    actorName?: string | null
+  } = {},
+): Promise<void> {
+  const prev = c.status
+  if (prev === nextStatus && opts.sales_rep === undefined) return
+  await CaseApi.update(c.id, {
+    status: nextStatus,
+    ...(opts.sales_rep !== undefined ? { sales_rep: opts.sales_rep } : {}),
+  })
+  if (prev !== nextStatus) {
+    await CallLogApi.create({
+      case_id: c.id,
+      case_name: c.name,
+      call_at: new Date().toISOString(),
+      contact_type: '非接触',
+      result: `ステータス変更: ${prev} → ${nextStatus}`,
+      memo: opts.memo ?? null,
+      summary: `ステータス: ${prev} → ${nextStatus}`,
+      prev_status: prev,
+      next_status: nextStatus,
+      sales_rep: opts.sales_rep ?? c.sales_rep ?? null,
+      created_by_id: opts.userId ?? null,
+    })
+    AuditApi.log({
+      action: 'status_change',
+      entity: 'case',
+      entity_id: c.id,
+      entity_name: c.name,
+      detail: `${prev} → ${nextStatus}`,
+      actor_id: opts.userId ?? null,
+      actor_name: opts.actorName ?? null,
+    })
+  }
 }
 
 export const CallSessionApi = {

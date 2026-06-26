@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { CaseApi } from '@/lib/api'
+import { DEFAULT_STATUS } from '@/lib/constants'
 import {
   GOOGLE_QUERIES,
   INSTAGRAM_HASHTAGS,
@@ -87,7 +88,7 @@ export default function AutoSearchRunner({ settings, existingCases, onAdded }: P
               instagram: s.instagram || null,
               source_urls: s.source_urls || null,
               memo: s.memo || null,
-              status: '新規',
+              status: DEFAULT_STATUS,
             })
             existingNames.add(name)
             added++

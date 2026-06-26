@@ -12,10 +12,10 @@ export default {
         sans: ['"Noto Sans JP"', 'sans-serif'],
       },
       fontSize: {
-        '2xs': '10px',
-        xs: '11px',
-        sm: '12px',
-        base: '13px',
+        '2xs': '11px',
+        xs: '12px',
+        sm: '13px',
+        base: '15px',
       },
       colors: {
         border: 'hsl(var(--border))',

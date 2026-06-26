@@ -17,9 +17,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { CaseApi } from '@/lib/api'
-import { INDUSTRIES, SALES_REPS, STATUSES } from '@/lib/constants'
-import { normalizePhone, phoneDigits } from '@/lib/utils'
+import { CaseApi, AuditApi } from '@/lib/api'
+import { INDUSTRIES, SALES_REPS, STATUSES, DEFAULT_STATUS, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { normalizePhone, phoneDigits, normalizeUrl, jpError, cn } from '@/lib/utils'
+import { useAuth } from '@/context/AuthContext'
+import { useToast } from '@/components/ui/toast'
 import type { Case } from '@/lib/types'
 
 interface Props {
@@ -38,7 +40,7 @@ const EMPTY = {
   phone3: '',
   industry: '',
   representative: '',
-  status: '新規',
+  status: DEFAULT_STATUS,
   sales_rep: '',
   hp1: '',
   hp2: '',
@@ -54,7 +56,12 @@ export default function CaseFormModal({
   existingCases,
   onSaved,
 }: Props) {
+  const { user } = useAuth()
+  const toast = useToast()
   const [form, setForm] = useState({ ...EMPTY })
+  const [priority, setPriority] = useState('')
+  const [tags, setTags] = useState<string[]>([])
+  const [tagInput, setTagInput] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -67,7 +74,7 @@ export default function CaseFormModal({
         phone3: editingCase.phone3 ?? '',
         industry: editingCase.industry ?? '',
         representative: editingCase.representative ?? '',
-        status: editingCase.status ?? '新規',
+        status: editingCase.status ?? DEFAULT_STATUS,
         sales_rep: editingCase.sales_rep ?? '',
         hp1: editingCase.hp1 ?? '',
         hp2: editingCase.hp2 ?? '',
@@ -75,10 +82,24 @@ export default function CaseFormModal({
         source_urls: editingCase.source_urls ?? '',
         memo: editingCase.memo ?? '',
       })
+      setPriority(editingCase.priority ?? '')
+      setTags(editingCase.tags ?? [])
     } else {
       setForm({ ...EMPTY })
+      setPriority('')
+      setTags([])
     }
+    setTagInput('')
   }, [editingCase, open])
+
+  function toggleTag(t: string) {
+    setTags((ts) => (ts.includes(t) ? ts.filter((x) => x !== t) : [...ts, t]))
+  }
+  function addTag() {
+    const t = tagInput.trim()
+    if (t && !tags.includes(t)) setTags((ts) => [...ts, t])
+    setTagInput('')
+  }
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -88,7 +109,7 @@ export default function CaseFormModal({
 
   async function handleSave() {
     if (!form.name.trim() || !form.address.trim() || !form.phone1.trim()) {
-      alert('案件名・住所・電話番号1は必須です')
+      toast.error('店舗名・住所・電話番号1は必須です')
       return
     }
 
@@ -102,7 +123,7 @@ export default function CaseFormModal({
       return exist.some((e) => newDigits.includes(e))
     })
     if (dup) {
-      alert(`電話番号が既存案件「${dup.name}」と重複しています。登録を中止しました。`)
+      toast.error(`電話番号が既存案件「${dup.name}」と重複しています。登録を中止しました。`)
       return
     }
 
@@ -116,23 +137,28 @@ export default function CaseFormModal({
         phone3: normalizePhone(form.phone3) || null,
         industry: form.industry || null,
         representative: form.representative || null,
-        status: form.status || '新規',
+        status: form.status || DEFAULT_STATUS,
         sales_rep: form.sales_rep || null,
-        hp1: form.hp1 || null,
-        hp2: form.hp2 || null,
-        instagram: form.instagram || null,
-        source_urls: form.source_urls || null,
-        memo: form.memo || null,
+        hp1: normalizeUrl(form.hp1) || null,
+        hp2: normalizeUrl(form.hp2) || null,
+        instagram: normalizeUrl(form.instagram) || null,
+        source_urls: form.source_urls.trim() || null,
+        memo: form.memo.trim() || null,
+        priority: priority || null,
+        tags: tags.length ? tags : null,
       }
       if (editingCase) {
         await CaseApi.update(editingCase.id, payload)
+        AuditApi.log({ action: 'update', entity: 'case', entity_id: editingCase.id, entity_name: payload.name, actor_id: user?.id ?? null })
       } else {
-        await CaseApi.create(payload)
+        const created = await CaseApi.create({ ...payload, created_by_id: user?.id ?? null })
+        AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, actor_id: user?.id ?? null })
       }
+      toast.success(editingCase ? '案件を更新しました' : '案件を登録しました')
       onSaved()
       onClose()
     } catch (e) {
-      alert('保存に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
       setBusy(false)
     }
@@ -229,6 +255,56 @@ export default function CaseFormModal({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>優先度</Label>
+            <Select value={priority || undefined} onValueChange={setPriority}>
+              <SelectTrigger>
+                <SelectValue placeholder="未設定" />
+              </SelectTrigger>
+              <SelectContent>
+                {PRIORITIES.map((p) => (
+                  <SelectItem key={p} value={p}>{p}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="col-span-2 space-y-1">
+            <Label>タグ</Label>
+            <div className="flex flex-wrap gap-1">
+              {TAG_PRESETS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleTag(t)}
+                  className={cn(
+                    'rounded-full border px-2 py-0.5 text-2xs',
+                    tags.includes(t) ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground',
+                  )}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <Input
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag() } }}
+                placeholder="自由タグを追加してEnter"
+                className="h-7"
+              />
+              <Button type="button" variant="outline" size="sm" onClick={addTag}>追加</Button>
+            </div>
+            {tags.filter((t) => !TAG_PRESETS.includes(t as never)).length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {tags.filter((t) => !TAG_PRESETS.includes(t as never)).map((t) => (
+                  <button key={t} type="button" onClick={() => toggleTag(t)} className="rounded-full border border-primary bg-primary px-2 py-0.5 text-2xs text-primary-foreground">
+                    {t} ✕
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="space-y-1">
             <Label>HP1</Label>
