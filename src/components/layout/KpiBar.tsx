@@ -50,22 +50,12 @@ export default function KpiBar() {
     const caseById = new Map(cases.map((c) => [c.id, c]))
 
     return SALES_REPS.map((rep) => {
-      // アポ案件のログから集計（CallLog に sales_rep が無いため）
-      const appoCaseIds = new Set(
-        appointments
-          .filter((a) => a.sales_rep === rep)
-          .map((a) => a.case_id),
-      )
-      // 担当者が割り当たっている案件も対象
-      cases.forEach((c) => {
-        if (c.sales_rep === rep) appoCaseIds.add(c.id)
+      // ログの sales_rep、無ければ案件の担当で判定
+      const logs = callLogs.filter((l) => {
+        if (!moment(l.call_at).isBetween(start, end, undefined, '[]')) return false
+        if (l.sales_rep) return l.sales_rep === rep
+        return caseById.get(l.case_id)?.sales_rep === rep
       })
-
-      const logs = callLogs.filter(
-        (l) =>
-          appoCaseIds.has(l.case_id) &&
-          moment(l.call_at).isBetween(start, end, undefined, '[]'),
-      )
       const calls = logs.length
       const contacts = logs.filter((l) => l.contact_type === '接触').length
       const appos = appointments.filter(
@@ -76,8 +66,6 @@ export default function KpiBar() {
 
       return { rep, calls, contacts, appos }
     })
-    // 表示しないと分かりにくいので、caseById は将来拡張用に参照
-    .filter(() => caseById.size >= 0)
   }, [cases, callLogs, appointments, period])
 
   return (

@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -18,6 +19,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { RecallApi } from '@/lib/api'
+import { useAuth } from '@/context/AuthContext'
+import { useToast } from '@/components/ui/toast'
+import { jpError } from '@/lib/utils'
 import type { Case } from '@/lib/types'
 
 interface Props {
@@ -35,24 +39,28 @@ export default function RecallFormModal({
   defaultCaseId,
   onSaved,
 }: Props) {
+  const { user } = useAuth()
+  const toast = useToast()
   const [caseId, setCaseId] = useState('')
   const [targetAt, setTargetAt] = useState('')
+  const [memo, setMemo] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (open) {
       setCaseId(defaultCaseId ?? '')
       setTargetAt(moment().add(1, 'hour').format('YYYY-MM-DDTHH:mm'))
+      setMemo('')
     }
   }, [open, defaultCaseId])
 
   async function handleSave() {
     if (!caseId) {
-      alert('案件を選択してください')
+      toast.error('案件を選択してください')
       return
     }
     if (!targetAt) {
-      alert('日時を入力してください')
+      toast.error('日時を入力してください')
       return
     }
     const c = cases.find((x) => x.id === caseId)
@@ -63,11 +71,14 @@ export default function RecallFormModal({
         case_id: c.id,
         case_name: c.name,
         target_at: moment(targetAt).toISOString(),
+        memo: memo || null,
+        created_by_id: user?.id ?? null,
       })
+      toast.success('再コール予定を登録しました')
       onSaved()
       onClose()
     } catch (e) {
-      alert('保存に失敗しました: ' + (e instanceof Error ? e.message : e))
+      toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
       setBusy(false)
     }
@@ -103,6 +114,10 @@ export default function RecallFormModal({
               value={targetAt}
               onChange={(e) => setTargetAt(e.target.value)}
             />
+          </div>
+          <div className="space-y-1">
+            <Label>メモ（任意）</Label>
+            <Textarea value={memo} onChange={(e) => setMemo(e.target.value)} rows={2} placeholder="例: 夕方に再架電" />
           </div>
         </div>
         <DialogFooter>

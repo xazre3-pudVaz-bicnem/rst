@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/context/AuthContext'
-import { isSupabaseConfigured } from '@/lib/supabaseClient'
+import { isSupabaseConfigured, allowSignup } from '@/lib/supabaseClient'
+import { jpError } from '@/lib/utils'
 
 export default function Login() {
   const { signIn, signUp } = useAuth()
@@ -25,13 +26,15 @@ export default function Login() {
       if (mode === 'signin') {
         await signIn(email, password)
         navigate('/')
+      } else if (!allowSignup) {
+        setError('新規登録は現在停止されています。')
       } else {
         await signUp(email, password)
         setInfo('登録しました。確認メールを確認のうえログインしてください。')
         setMode('signin')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(jpError(err))
     } finally {
       setBusy(false)
     }
@@ -46,7 +49,7 @@ export default function Login() {
         </div>
 
         {!isSupabaseConfigured && (
-          <div className="mb-3 rounded-md bg-amber-50 p-2 text-2xs text-amber-800">
+          <div className="mb-3 rounded-md bg-amber-50 p-2 text-2xs text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
             Supabase が未設定です。.env に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください。
           </div>
         )}
@@ -83,19 +86,25 @@ export default function Login() {
           </Button>
         </form>
 
-        <button
-          type="button"
-          className="mt-3 w-full text-center text-2xs text-muted-foreground hover:text-foreground"
-          onClick={() => {
-            setMode(mode === 'signin' ? 'signup' : 'signin')
-            setError('')
-            setInfo('')
-          }}
-        >
-          {mode === 'signin'
-            ? 'アカウントをお持ちでない方はこちら'
-            : 'ログインに戻る'}
-        </button>
+        {allowSignup ? (
+          <button
+            type="button"
+            className="mt-3 w-full text-center text-2xs text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              setMode(mode === 'signin' ? 'signup' : 'signin')
+              setError('')
+              setInfo('')
+            }}
+          >
+            {mode === 'signin'
+              ? 'アカウントをお持ちでない方はこちら'
+              : 'ログインに戻る'}
+          </button>
+        ) : (
+          <div className="mt-3 text-center text-2xs text-muted-foreground">
+            新規登録は管理者にお問い合わせください
+          </div>
+        )}
       </div>
     </div>
   )
