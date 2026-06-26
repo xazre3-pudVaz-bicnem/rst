@@ -1,0 +1,4 @@
+project_id = "rst-crm"
+
+[functions.llm-search]
+verify_jwt = true
