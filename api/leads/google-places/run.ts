@@ -5,7 +5,7 @@
 // 共通処理は src/lib/googlePlacesRun.ts に置き、静的importで取り込む
 // （Vercel/esbuild が関数にバンドルするため実行時の module 解決が不要）。
 // ============================================================
-import { getAdminClient, runGooglePlaces } from '../../../src/lib/googlePlacesRun'
+import { getAdminClient, runGooglePlaces } from '../../../src/lib/googlePlacesRun.js'
 
 export default async function handler(req: any, res: any) {
   // ---- 接続状態（依存コードを実行せず process.env のみで即応答） ----

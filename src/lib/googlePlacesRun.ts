@@ -5,8 +5,8 @@
 //    秘密情報はコードに持たず、すべて process.env から実行時取得する。
 // ============================================================
 import { createClient } from '@supabase/supabase-js'
-import { classifyLead } from './leadScoring'
-import { DEFAULT_STATUS } from './constants'
+import { classifyLead } from './leadScoring.js'
+import { DEFAULT_STATUS } from './constants.js'
 
 const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const FIELD_MASK = [

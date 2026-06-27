@@ -2,7 +2,7 @@
 // GET /api/cron/auto-leads … 毎朝の自動実行（Vercel Cron）
 // CRON_SECRET で保護。共通処理は src/lib/googlePlacesRun.ts を静的import。
 // ============================================================
-import { getAdminClient, getDefaultSettings, runGooglePlaces } from '../../src/lib/googlePlacesRun'
+import { getAdminClient, getDefaultSettings, runGooglePlaces } from '../../src/lib/googlePlacesRun.js'
 
 export default async function handler(req: any, res: any) {
   const secret = process.env.CRON_SECRET

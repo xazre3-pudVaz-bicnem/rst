@@ -1,8 +1,8 @@
 import {
   CHAIN_NAMES, MALL_KEYWORDS, STATION_KEYWORDS, BRANCH_KEYWORDS, EXCLUDED_NAME_KEYWORDS,
-} from './constants'
-import { phoneDigits, normalizeAddress, normalizeUrl } from './utils'
-import type { Case, LeadCandidate, RawLead, LeadTemperature } from './types'
+} from './constants.js'
+import { phoneDigits, normalizeAddress, normalizeUrl } from './utils.js'
+import type { Case, LeadCandidate, RawLead, LeadTemperature } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
   list.some((k) => k && text.includes(k))
