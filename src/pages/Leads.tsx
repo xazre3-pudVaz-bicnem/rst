@@ -55,7 +55,8 @@ export default function Leads() {
   const [gpReachable, setGpReachable] = useState<boolean | null>(null)
   const [gpDiag, setGpDiag] = useState<{ keyLength?: number; hasSupabaseUrl?: boolean; hasServiceRole?: boolean } | null>(null)
   const [gpRunning, setGpRunning] = useState(false)
-  const [gpResult, setGpResult] = useState<Record<string, number | string> | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [gpResult, setGpResult] = useState<any>(null)
   const [lastRun, setLastRun] = useState<LeadRun | null>(null)
 
   const load = useCallback(async () => {
@@ -95,8 +96,8 @@ export default function Leads() {
 
   useEffect(() => { checkGpStatus() }, [checkGpStatus])
 
-  async function runPlaces() {
-    if (!settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
+  async function runPlaces(testFixed = false) {
+    if (!testFixed && !settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
     if (gpConfigured === false) { toast.error('GOOGLE_MAPS_API_KEYが未設定です'); return }
     setGpRunning(true); setGpResult(null)
     try {
@@ -108,11 +109,16 @@ export default function Leads() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           settings: {
+            testFixed,
             autoImport: settings.autoImport,
             fetchLimit: settings.fetchLimit,
             dailyCap: settings.dailyCap,
             areas: parseList(settings.areas),
             industries: parseList(settings.industries),
+            hotMaxReviews: settings.hotMaxReviews,
+            warmMaxReviews: settings.warmMaxReviews,
+            exclude100: settings.exclude100,
+            unknownHold: settings.unknownHold,
           },
         }),
       })
@@ -329,6 +335,26 @@ export default function Leads() {
                 <Label>1日あたりの投入上限</Label>
                 <Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
               </div>
+              <div className="space-y-1">
+                <Label>HOT判定の最大口コミ数</Label>
+                <Input type="number" min={0} value={settings.hotMaxReviews} onChange={(e) => saveSettings({ ...settings, hotMaxReviews: Math.max(0, Number(e.target.value) || 0) })} className="h-8" />
+              </div>
+              <div className="space-y-1">
+                <Label>WARM判定の最大口コミ数</Label>
+                <Input type="number" min={0} value={settings.warmMaxReviews} onChange={(e) => saveSettings({ ...settings, warmMaxReviews: Math.max(0, Number(e.target.value) || 0) })} className="h-8" />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={settings.exclude100} onChange={(e) => saveSettings({ ...settings, exclude100: e.target.checked })} />
+                口コミ100件以上は自動除外
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={settings.unknownHold} onChange={(e) => saveSettings({ ...settings, unknownHold: e.target.checked })} />
+                口コミ件数不明はHOLD
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground lg:col-span-2">
+                <input type="checkbox" checked readOnly />
+                first_seen_at だけで新規扱いしない（常時ON）
+              </label>
               <div className="space-y-1 lg:col-span-2">
                 <Label>対象エリア（1行に1つ）</Label>
                 <Textarea value={settings.areas} onChange={(e) => saveSettings({ ...settings, areas: e.target.value })} rows={4} />
@@ -359,9 +385,14 @@ export default function Leads() {
                 )}
                 <button className="text-[10px] text-primary underline" onClick={checkGpStatus}>再確認</button>
               </div>
-              <Button size="sm" onClick={runPlaces} disabled={gpRunning || gpConfigured !== true}>
-                <Play className="h-3.5 w-3.5" />{gpRunning ? '取得中…' : 'Google Placesで取得・投入'}
-              </Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => runPlaces(true)} disabled={gpRunning || gpConfigured === false} title="葛飾区×整体×5件で動作確認">
+                  <Play className="h-3.5 w-3.5" />{gpRunning ? '実行中…' : 'テスト実行(葛飾区×整体×5)'}
+                </Button>
+                <Button size="sm" onClick={() => runPlaces(false)} disabled={gpRunning || gpConfigured !== true}>
+                  <Play className="h-3.5 w-3.5" />{gpRunning ? '取得中…' : '取得・投入'}
+                </Button>
+              </div>
             </div>
             {gpReachable === false && (
               <div className="mt-2 rounded-md bg-amber-50 p-2 text-2xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
@@ -381,16 +412,90 @@ export default function Leads() {
                 <span>SERVICE_ROLE {gpDiag?.hasServiceRole ? 'あり' : 'なし'}</span>
               </div>
             )}
-            {gpResult && !gpResult.error && (
-              <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-                <span className="rounded bg-muted px-1.5 py-0.5">クエリ {gpResult.queries ?? 0}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5">取得 {gpResult.fetched ?? 0}</span>
-                <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {gpResult.hold ?? 0}</span>
-                <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">除外 {gpResult.excluded ?? 0}</span>
-                <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {gpResult.imported ?? 0}</span>
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
-                {Number(gpResult.error_count ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">エラー {gpResult.error_count}</span>}
+            {gpResult && !gpResult.ok && gpResult.error && (
+              <div className="mt-2 rounded-md bg-red-50 p-2 text-2xs text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                実行エラー: {String(gpResult.error)}
+              </div>
+            )}
+            {gpResult && gpResult.ok && (
+              <div className="mt-2 space-y-2">
+                {/* 段階別カウント */}
+                <div className="flex flex-wrap gap-1.5 text-[10px]">
+                  <span className="rounded bg-muted px-1.5 py-0.5">クエリ {gpResult.queries ?? 0}</span>
+                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">API取得 {gpResult.fetched ?? 0}</span>
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {gpResult.hold ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {gpResult.excluded ?? 0}</span>
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">DB保存 {gpResult.saved ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内 {gpResult.chainExcluded ?? 0}</span>
+                  {Number(gpResult.error ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">APIエラー {gpResult.error}</span>}
+                  {Number(gpResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {gpResult.saveError}</span>}
+                </div>
+
+                {/* 口コミ件数の内訳 */}
+                <div className="flex flex-wrap gap-1.5 text-[10px]">
+                  <span className="text-muted-foreground">口コミ内訳:</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">0〜5件 {gpResult.review0_5 ?? 0}</span>
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">6〜15件 {gpResult.review6_15 ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">16〜99件 {gpResult.review16_99 ?? 0}</span>
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">100件以上(除外) {gpResult.review100 ?? 0}</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">不明 {gpResult.reviewUnknown ?? 0}</span>
+                </div>
+
+                {Array.isArray(gpResult.debug?.saveErrors) && gpResult.debug.saveErrors.length > 0 && (
+                  <div className="rounded-md bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                    <div className="font-bold">DB書き込みエラー（投入0の原因）:</div>
+                    {gpResult.debug.saveErrors.map((m: string, i: number) => <div key={i} className="truncate" title={m}>・{m}</div>)}
+                    <div className="mt-0.5">→ 多くは <span className="font-mono">migrations/2026-06-27_google_places.sql</span> 未実行（google_place_id / raw_payload 等の列不足）。SQLを実行してください。</div>
+                  </div>
+                )}
+
+                {/* クエリ別の取得状況（0件の切り分け） */}
+                {Array.isArray(gpResult.debug?.queryResults) && gpResult.debug.queryResults.length > 0 && (
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full min-w-[480px] text-[10px]">
+                      <thead className="bg-muted/50 text-muted-foreground">
+                        <tr>
+                          <th className="p-1 text-left">検索クエリ</th>
+                          <th className="p-1 text-center">HTTP</th>
+                          <th className="p-1 text-center">places数</th>
+                          <th className="p-1 text-left">エラー</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gpResult.debug.queryResults.map((q: any, i: number) => (
+                          <tr key={i} className="border-t">
+                            <td className="p-1">{q.query}</td>
+                            <td className={cn('p-1 text-center font-bold', q.status === 200 ? 'text-green-600' : 'text-red-600')}>{q.status}</td>
+                            <td className="p-1 text-center">{q.placesLength}</td>
+                            <td className={cn('max-w-[260px] truncate p-1', q.error ? 'text-red-600' : 'text-muted-foreground')} title={q.error || ''}>{q.error || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* 先頭1件のサンプル（なぜHOTにならないか） */}
+                {gpResult.debug?.sample && (
+                  <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
+                    <div className="font-bold">先頭サンプルの判定</div>
+                    <div className="mt-0.5 grid gap-x-3 gap-y-0.5 md:grid-cols-2">
+                      <div>店名: {gpResult.debug.sample.place?.name || '—'}</div>
+                      <div>住所: {gpResult.debug.sample.place?.address || '—'}</div>
+                      <div>電話: {gpResult.debug.sample.place?.nationalPhoneNumber || gpResult.debug.sample.place?.internationalPhoneNumber || '（なし）'}</div>
+                      <div>primaryType: {gpResult.debug.sample.place?.primaryType || '—'}</div>
+                      <div className="font-bold">口コミ数: {gpResult.debug.sample.place?.userRatingCount ?? '不明'}</div>
+                      <div>新規GBP判定: <b>{String(gpResult.debug.sample.classified?.is_new_gbp)}</b></div>
+                      <div>温度: <b>{gpResult.debug.sample.classified?.lead_temperature}</b></div>
+                      <div>到達スコア: {gpResult.debug.sample.classified?.owner_reachability_score}</div>
+                      <div className="md:col-span-2">HOTにしなかった理由 / 除外理由: {gpResult.debug.sample.classified?.exclusion_reason || '—'}</div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {lastRun && (
@@ -447,6 +552,7 @@ export default function Leads() {
                     <th className="p-2 text-left">電話番号</th>
                     <th className="p-2 text-left">住所</th>
                     <th className="p-2 text-left">検出シグナル</th>
+                    <th className="p-2 text-center">口コミ</th>
                     <th className="p-2 text-center">到達<br />スコア</th>
                     <th className="p-2 text-left">判定</th>
                     <th className="p-2 text-left">投入理由 / AIコメント</th>
@@ -485,6 +591,23 @@ export default function Leads() {
                           {c.is_new_corporation && <span className="rounded-sm bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">新設法人</span>}
                           {!c.is_new_gbp && !c.is_new_instagram && !c.is_new_website && !c.is_new_ad_listing && !c.is_new_corporation && <span className="text-muted-foreground">—</span>}
                         </div>
+                      </td>
+                      <td className="p-2 text-center">
+                        {(() => {
+                          const n = c.user_rating_count
+                          if (n == null) return <span className="text-muted-foreground" title="口コミ件数不明">不明</span>
+                          const cls = n <= 5 ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300'
+                            : n <= 15 ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+                              : n < 100 ? 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200'
+                                : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+                          const label = n <= 5 ? '新規候補' : n <= 15 ? '中' : n < 100 ? '既存寄り' : '人気既存'
+                          return (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="font-bold">{n}</span>
+                              <span className={cn('rounded-sm px-1 text-[8px]', cls)}>{label}</span>
+                            </div>
+                          )
+                        })()}
                       </td>
                       <td className="p-2 text-center">
                         <span className={cn('font-bold', c.owner_reachability_score >= 80 ? 'text-green-600' : c.owner_reachability_score >= 50 ? 'text-amber-600' : 'text-red-600')}>

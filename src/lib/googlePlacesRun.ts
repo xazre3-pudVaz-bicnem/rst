@@ -51,27 +51,38 @@ function asArray(v: unknown, fallback: string[]): string[] {
   return fallback
 }
 
-async function searchText(apiKey: string, query: string, maxResultCount: number): Promise<any[]> {
-  const res = await fetch(PLACES_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': FIELD_MASK,
-    },
-    body: JSON.stringify({
-      textQuery: query,
-      languageCode: 'ja',
-      regionCode: 'JP',
-      maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
-    }),
-  })
-  if (!res.ok) {
+/** Places Text Search。例外を投げず {status, places, error} を返す（診断用） */
+async function searchTextRaw(
+  apiKey: string, query: string, maxResultCount: number,
+): Promise<{ status: number; places: any[]; error: string | null }> {
+  try {
+    const res = await fetch(PLACES_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': FIELD_MASK,
+      },
+      body: JSON.stringify({
+        textQuery: query,
+        languageCode: 'ja',
+        regionCode: 'JP',
+        maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+      }),
+    })
+    const status = res.status
     const text = await res.text().catch(() => '')
-    throw new Error(`Places API ${res.status}: ${text.slice(0, 300)}`)
+    let json: any = {}
+    try { json = text ? JSON.parse(text) : {} } catch { json = {} }
+    if (!res.ok) {
+      const msg = json?.error?.message || text || `HTTP ${status}`
+      return { status, places: [], error: String(msg).slice(0, 500) }
+    }
+    const places = Array.isArray(json.places) ? json.places : []
+    return { status, places, error: null }
+  } catch (e: any) {
+    return { status: 0, places: [], error: String(e?.message || e) }
   }
-  const json: any = await res.json()
-  return Array.isArray(json.places) ? json.places : []
 }
 
 async function fetchCases(admin: any): Promise<any[]> {
@@ -105,6 +116,21 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     industries: asArray(rawSettings?.industries, def.industries),
   }
 
+  // 動作確認用の固定条件（葛飾区 × 整体 × 20件）
+  if (rawSettings?.testFixed) {
+    settings.areas = ['東京都葛飾区']
+    settings.industries = ['整体']
+    settings.fetchLimit = 20
+  }
+
+  // 判定の閾値（口コミ件数など）
+  const opts = {
+    hotMaxReviews: Number(rawSettings?.hotMaxReviews) > 0 ? Number(rawSettings.hotMaxReviews) : 5,
+    warmMaxReviews: Number(rawSettings?.warmMaxReviews) > 0 ? Number(rawSettings.warmMaxReviews) : 15,
+    exclude100: rawSettings?.exclude100 ?? true,
+    unknownHold: rawSettings?.unknownHold ?? true,
+  }
+
   const { data: runRow } = await admin
     .from('auto_lead_runs')
     .insert({ source: 'google_places', status: 'running', created_by_id: userId })
@@ -112,11 +138,25 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     .single()
   const runId: string | null = runRow?.id ?? null
 
+  // 検索クエリ：通常「地域 業種」＋新規店が出やすい語を追加
   const queries: string[] = []
-  for (const a of settings.areas) for (const i of settings.industries) queries.push(`${a} ${i}`)
+  for (const a of settings.areas) for (const i of settings.industries) {
+    queries.push(`${a} 新規オープン ${i}`)
+    queries.push(`${a} オープン ${i}`)
+    queries.push(`${a} ${i}`)
+  }
 
-  const counts = { fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0 }
+  const counts = {
+    fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
+    noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
+    review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
+  }
+  const debug: any = { queries, queryResults: [] as any[], sample: null, settings: { ...settings }, saveErrors: [] as string[] }
   let errorMessage = ''
+  const recordSaveError = (msg: string) => {
+    counts.saveError++
+    if (debug.saveErrors.length < 5) debug.saveErrors.push(String(msg).slice(0, 300))
+  }
 
   try {
     const cases = await fetchCases(admin)
@@ -133,14 +173,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     for (const query of queries) {
       if (counts.fetched >= settings.fetchLimit) break
       const remain = settings.fetchLimit - counts.fetched
-      let places: any[] = []
-      try {
-        places = await searchText(apiKey, query, remain)
-      } catch (e: any) {
+      const r = await searchTextRaw(apiKey, query, remain)
+      debug.queryResults.push({ query, status: r.status, placesLength: r.places.length, error: r.error })
+      if (r.error) {
         counts.error++
-        errorMessage = String(e?.message || e)
-        continue
+        errorMessage = r.error
       }
+      const places = r.places
 
       for (const p of places) {
         if (counts.fetched >= settings.fetchLimit) break
@@ -153,10 +192,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
           existing = data && data[0] ? data[0] : null
         }
-        const firstSeen: string = existing?.first_seen_at || nowIso
-        const ageDays = (Date.now() - new Date(firstSeen).getTime()) / 86400000
-        const isNewGbp = ageDays <= 30
         const reviewCount: number | null = typeof p.userRatingCount === 'number' ? p.userRatingCount : null
+        // 口コミ件数の内訳カウント
+        if (reviewCount === null) counts.reviewUnknown++
+        else if (reviewCount <= opts.hotMaxReviews) counts.review0_5++
+        else if (reviewCount <= opts.warmMaxReviews) counts.review6_15++
+        else if (reviewCount < 100) counts.review16_99++
+        else counts.review100++
 
         const classified: any = classifyLead(
           {
@@ -166,21 +208,20 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             phone_number: phone,
             website_url: p.websiteUri || '',
             place_id: placeId,
-            is_new_gbp: isNewGbp,
+            // 「未登録のplace_id（first-seen）」を新規GBPの前提として渡す。
+            // 口コミ5件以下・営業中・非チェーン等の最終判定は classifyLead 側で行う。
+            is_new_gbp: !existing,
             review_count: reviewCount ?? undefined,
+            business_status: p.businessStatus || undefined,
           },
           cases,
+          opts,
         )
-
-        if (isNewGbp && reviewCount !== null && reviewCount <= 3 && classified.lead_temperature === 'HOT') {
-          classified.ai_comment =
-            `Googleビジネスプロフィールを新規候補として検出しました。電話番号が確認でき、レビュー数が${reviewCount}件と少ないため、Googleマップ掲載直後またはWeb集客を始めた直後の可能性があります。大型チェーンや商業施設内テナントではないと判定したため、MEO初期整備・HP制作提案の優先度が高いです。`
-        }
 
         const payload: any = {
           ...classified,
           source_type: 'AI自動投入',
-          detected_signals: isNewGbp ? ['GBP'] : (classified.detected_signals || []),
+          detected_signals: classified.is_new_gbp ? ['GBP'] : (classified.detected_signals || []),
           google_place_id: placeId || null,
           google_maps_uri: p.googleMapsUri || null,
           rating: typeof p.rating === 'number' ? p.rating : null,
@@ -199,17 +240,55 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
         else counts.hold++
         if (classified.duplicate_of_case_id) counts.duplicate++
+        if (!classified.phone_normalized) counts.noPhone++
+        if (
+          classified.should_exclude_from_call_list &&
+          (classified.is_chain_store || classified.is_in_shopping_mall || classified.is_in_station_building || classified.is_large_company_branch)
+        ) counts.chainExcluded++
+
+        // 先頭1件のサンプル（なぜその判定になったか確認用）
+        if (!debug.sample) {
+          debug.sample = {
+            place: {
+              name: p.displayName?.text || '',
+              address: p.formattedAddress || '',
+              nationalPhoneNumber: p.nationalPhoneNumber || '',
+              internationalPhoneNumber: p.internationalPhoneNumber || '',
+              websiteUri: p.websiteUri || '',
+              primaryType: p.primaryType || '',
+              types: p.types || [],
+              rating: p.rating ?? null,
+              userRatingCount: p.userRatingCount ?? null,
+              businessStatus: p.businessStatus || '',
+            },
+            classified: {
+              lead_temperature: classified.lead_temperature,
+              owner_reachability_score: classified.owner_reachability_score,
+              is_new_gbp: classified.is_new_gbp,
+              user_rating_count: reviewCount,
+              phone_normalized: classified.phone_normalized || '',
+              should_exclude_from_call_list: classified.should_exclude_from_call_list,
+              exclusion_reason: classified.exclusion_reason || '',
+              detected_signals: payload.detected_signals,
+              duplicate_of_case_id: classified.duplicate_of_case_id || null,
+            },
+          }
+        }
 
         let candidateId: string | null = existing?.id || null
         const alreadyImported = !!existing?.imported_to_cases
         if (existing) {
-          await admin.from('lead_candidates').update(payload).eq('id', existing.id)
+          const { error: upErr } = await admin.from('lead_candidates').update(payload).eq('id', existing.id)
+          if (upErr) recordSaveError('lead update: ' + upErr.message)
+          else counts.saved++
         } else {
-          const { data: ins } = await admin
+          const { data: ins, error: insErr } = await admin
             .from('lead_candidates')
             .insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId })
             .select('id')
             .single()
+          if (insErr) recordSaveError('lead insert: ' + insErr.message)
+          else counts.saved++
           candidateId = ins?.id || null
         }
 
@@ -228,7 +307,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             `オーナー到達スコア: ${classified.owner_reachability_score}`,
             `レビュー数: ${reviewCount ?? '不明'} / 評価: ${payload.rating ?? '不明'}`,
           ].join('\n')
-          const { data: created } = await admin
+          const { data: created, error: caseErr } = await admin
             .from('cases')
             .insert({
               name: classified.name,
@@ -244,7 +323,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             })
             .select('id')
             .single()
-          await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+          if (caseErr) recordSaveError('case insert: ' + caseErr.message)
+          if (created?.id) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+          }
           if (created?.id) {
             counts.imported++
             importedCount++
@@ -271,7 +353,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, queries: queries.length, ...counts }
+    debug.errorMessage = errorMessage || null
+    return { ok: true, runId, queries: queries.length, ...counts, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({
