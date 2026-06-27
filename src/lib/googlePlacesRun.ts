@@ -9,7 +9,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
-const FIELD_MASK = [
+const BASE_FIELDS = [
   'places.id',
   'places.displayName',
   'places.formattedAddress',
@@ -22,8 +22,27 @@ const FIELD_MASK = [
   'places.types',
   'places.primaryType',
   'places.googleMapsUri',
-  'places.regularOpeningHours',
-].join(',')
+]
+// openingDate / 未来オープンは対応していないプロジェクトもあるため、
+// 400 が出たら自動で BASE にフォールバックする（下記 searchTextRaw 参照）。
+const EXT_FIELDS = [...BASE_FIELDS, 'places.regularOpeningHours']
+const BASE_FIELD_MASK = BASE_FIELDS.join(',')
+const EXT_FIELD_MASK = [...EXT_FIELDS, 'places.openingDate'].join(',')
+
+// 拡張フィールド(openingDate/未来オープン)が使えるか。400発生で false に倒す。
+let extendedSupported = true
+
+/** google.type.Date / 文字列の openingDate を YYYY-MM-DD に正規化 */
+function parseOpeningDate(v: any): string | null {
+  if (!v) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'object' && v.year) {
+    const m = String(v.month ?? 1).padStart(2, '0')
+    const d = String(v.day ?? 1).padStart(2, '0')
+    return `${v.year}-${m}-${d}`
+  }
+  return null
+}
 
 export function getAdminClient() {
   const url = process.env.SUPABASE_URL
@@ -51,35 +70,48 @@ function asArray(v: unknown, fallback: string[]): string[] {
   return fallback
 }
 
-/** Places Text Search。例外を投げず {status, places, error} を返す（診断用） */
+async function callPlaces(apiKey: string, query: string, maxResultCount: number, extended: boolean) {
+  const body: any = {
+    textQuery: query,
+    languageCode: 'ja',
+    regionCode: 'JP',
+    maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+  }
+  if (extended) body.includeFutureOpeningBusinesses = true
+  const res = await fetch(PLACES_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': extended ? EXT_FIELD_MASK : BASE_FIELD_MASK,
+    },
+    body: JSON.stringify(body),
+  })
+  const status = res.status
+  const text = await res.text().catch(() => '')
+  let json: any = {}
+  try { json = text ? JSON.parse(text) : {} } catch { json = {} }
+  return { status, ok: res.ok, json, text }
+}
+
+/** Places Text Search。例外を投げず {status, places, error} を返す。
+ *  拡張フィールド(openingDate/未来オープン)が400なら自動でBASEへフォールバック。 */
 async function searchTextRaw(
   apiKey: string, query: string, maxResultCount: number,
 ): Promise<{ status: number; places: any[]; error: string | null }> {
   try {
-    const res = await fetch(PLACES_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': FIELD_MASK,
-      },
-      body: JSON.stringify({
-        textQuery: query,
-        languageCode: 'ja',
-        regionCode: 'JP',
-        maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
-      }),
-    })
-    const status = res.status
-    const text = await res.text().catch(() => '')
-    let json: any = {}
-    try { json = text ? JSON.parse(text) : {} } catch { json = {} }
-    if (!res.ok) {
-      const msg = json?.error?.message || text || `HTTP ${status}`
-      return { status, places: [], error: String(msg).slice(0, 500) }
+    let r = await callPlaces(apiKey, query, maxResultCount, extendedSupported)
+    // 拡張フィールドが原因の400 → 一度きりフォールバックして以降BASE
+    if (extendedSupported && r.status === 400) {
+      extendedSupported = false
+      r = await callPlaces(apiKey, query, maxResultCount, false)
     }
-    const places = Array.isArray(json.places) ? json.places : []
-    return { status, places, error: null }
+    if (!r.ok) {
+      const msg = r.json?.error?.message || r.text || `HTTP ${r.status}`
+      return { status: r.status, places: [], error: String(msg).slice(0, 500) }
+    }
+    const places = Array.isArray(r.json.places) ? r.json.places : []
+    return { status: r.status, places, error: null }
   } catch (e: any) {
     return { status: 0, places: [], error: String(e?.message || e) }
   }
@@ -200,19 +232,28 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (reviewCount < 100) counts.review16_99++
         else counts.review100++
 
+        const openingDate = parseOpeningDate(p.openingDate)
+        const firstSeenDays = existing?.first_seen_at
+          ? Math.max(0, Math.floor((Date.now() - Date.parse(existing.first_seen_at)) / 86400000))
+          : 0
+        const fromNewOpen = /(新規オープン|ニューオープン|オープン|開店)/.test(query)
+
         const classified: any = classifyLead(
           {
             name: p.displayName?.text || '',
             address: p.formattedAddress || '',
-            industry: query.split(' ').slice(-1)[0],
+            industry: (query.split(' ').slice(-1)[0]) || undefined,
             phone_number: phone,
             website_url: p.websiteUri || '',
             place_id: placeId,
-            // 「未登録のplace_id（first-seen）」を新規GBPの前提として渡す。
-            // 口コミ5件以下・営業中・非チェーン等の最終判定は classifyLead 側で行う。
+            // 「未登録のplace_id（first-seen）」を新規の前提として渡す。
+            // 最終判定（openingDate/口コミ/新規オープン系クエリ等）は classifyLead 側で行う。
             is_new_gbp: !existing,
             review_count: reviewCount ?? undefined,
             business_status: p.businessStatus || undefined,
+            opening_date: openingDate || undefined,
+            first_seen_days: firstSeenDays,
+            from_new_open_query: fromNewOpen,
           },
           cases,
           opts,
@@ -260,16 +301,20 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
               rating: p.rating ?? null,
               userRatingCount: p.userRatingCount ?? null,
               businessStatus: p.businessStatus || '',
+              openingDate: openingDate || null,
             },
             classified: {
               lead_temperature: classified.lead_temperature,
               owner_reachability_score: classified.owner_reachability_score,
-              is_new_gbp: classified.is_new_gbp,
+              is_new_opening_candidate: classified.is_new_opening_candidate,
+              newness_reason: classified.newness_reason || '',
+              opening_date: classified.opening_date || null,
+              days_since_first_seen: classified.days_since_first_seen,
+              from_new_open_query: fromNewOpen,
               user_rating_count: reviewCount,
               phone_normalized: classified.phone_normalized || '',
               should_exclude_from_call_list: classified.should_exclude_from_call_list,
               exclusion_reason: classified.exclusion_reason || '',
-              detected_signals: payload.detected_signals,
               duplicate_of_case_id: classified.duplicate_of_case_id || null,
             },
           }

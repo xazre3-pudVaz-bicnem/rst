@@ -60,6 +60,7 @@ interface CommentCtx {
   isDup: boolean
   excludedName: boolean
   hasPhone: boolean
+  newnessReason: string
 }
 
 function buildComment(c: CommentCtx): string {
@@ -96,7 +97,7 @@ function buildComment(c: CommentCtx): string {
   // HOT
   const firstSignal = signals[0]
   const proposal = firstSignal ? PROPOSAL_TEXT[firstSignal] : 'MEO初期整備・HP制作'
-  return `Googleビジネスプロフィールを新規候補として検出しました。電話番号が確認でき、口コミ件数が${reviewCount}件以下のため、Googleマップ掲載直後または開業直後の可能性があります。店名・住所から大型チェーンや商業施設内テナントではなく、個人店舗・小規模事業者（到達スコア ${score}）と判断しました。${proposal}の提案優先度が高いです。`
+  return `Googleビジネスプロフィールを新規開業候補として検出しました（${c.newnessReason}）。電話番号が確認でき、Googleマップ掲載直後または開業直後の可能性があります。店名・住所から大型チェーンや商業施設内テナントではなく、個人店舗・小規模事業者（到達スコア ${score}）と判断しました。${proposal}の提案優先度が高いです。`
 }
 
 /**
@@ -141,11 +142,46 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
 
   const operational = raw.business_status ? raw.business_status === 'OPERATIONAL' : true
 
-  // 新規GBP（first_seenだけでは新規にしない。口コミ5件以下＋電話＋営業中＋非チェーン/施設内/支店）
-  const firstSeen = !!raw.is_new_gbp
-  const isNewGbp =
-    firstSeen && hasPhone && fresh && operational && !isChain && !inMall && !inStation && !isBranch
+  const dupId = findDuplicateCaseId(raw, cases)
+  const isDup = !!dupId
+  const shouldExclude = isDup || excludedName || score < 50
 
+  // 除外（新規候補から必ず外す条件）
+  const hardExclude = isDup || excludedName || isChain || inMall || inStation || isBranch || !hasPhone || veryHigh
+
+  // ---- 新規オープン候補の複合判定 ----
+  const hasWebsite = !!normalizeUrl(raw.website_url)
+  const firstSeenDays = typeof raw.first_seen_days === 'number' ? raw.first_seen_days : 0
+  const fromNewOpenQuery = !!raw.from_new_open_query
+
+  // 1) 開店日が現在から前後90日以内
+  const openingWithin90 = (() => {
+    if (!raw.opening_date) return false
+    const t = Date.parse(raw.opening_date)
+    if (Number.isNaN(t)) return false
+    return Math.abs(Date.now() - t) <= 90 * 86400000
+  })()
+  // 2) RST初回発見30日以内 かつ 口コミ <= hotMax(5)
+  const cond2 = firstSeenDays <= 30 && fresh
+  // 3) 新規オープン系クエリで取得 かつ 口コミ <= warmMax(15)
+  const cond3 = fromNewOpenQuery && reviewKnown && (reviewCount as number) <= warmMax
+  // 4) 口コミ <= 3 かつ HPなし かつ 非チェーン/施設内
+  const cond4 = reviewKnown && (reviewCount as number) <= 3 && !hasWebsite && !isChain && !inMall && !inStation && operational
+
+  const isNewCandidate = !hardExclude && (openingWithin90 || cond2 || cond3 || cond4)
+
+  // 新規判定理由
+  const newnessParts: string[] = []
+  if (openingWithin90) newnessParts.push(`開店日±90日以内(${raw.opening_date})`)
+  if (cond2) newnessParts.push(`初回発見${firstSeenDays}日以内＋口コミ${reviewCount}件`)
+  if (cond3) newnessParts.push(`新規オープン系クエリ＋口コミ${reviewCount}件`)
+  if (cond4) newnessParts.push(`口コミ${reviewCount}件・HPなし・個人店`)
+  const newnessReason = isNewCandidate
+    ? newnessParts.join(' / ')
+    : (hardExclude ? '除外条件に該当（新規候補外）' : '新規性の条件を満たさず')
+
+  // 旧フィールド互換：is_new_gbp は新規候補と同値にする
+  const isNewGbp = isNewCandidate
   const signalFlags = {
     is_new_gbp: isNewGbp,
     is_new_instagram: !!raw.is_new_instagram,
@@ -153,22 +189,17 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     is_new_ad_listing: !!raw.is_new_ad_listing,
   }
   const signals = (Object.keys(signalFlags) as (keyof typeof signalFlags)[]).filter((k) => signalFlags[k])
-  const hasSignal = signals.length > 0
 
-  const dupId = findDuplicateCaseId(raw, cases)
-  const isDup = !!dupId
-  const shouldExclude = isDup || excludedName || score < 50
-
-  // 温度判定（口コミ件数を厳格に反映）
+  // 温度判定
   let temperature: LeadTemperature
   if (isDup) temperature = 'EXCLUDED'
   else if (excludedName) temperature = 'EXCLUDED'
   else if (!hasPhone) temperature = 'HOLD'
   else if (score < 50) temperature = 'EXCLUDED'                 // チェーン/施設内/支店が明確
   else if (exclude100 && veryHigh) temperature = 'EXCLUDED'     // 口コミ100件以上＝既存店
-  else if (high) temperature = 'EXCLUDED'                       // 16〜99件も既存寄り → 除外
+  else if (isNewCandidate && score >= 80) temperature = 'HOT'   // 複合判定で新規＋到達可能
+  else if (high) temperature = 'EXCLUDED'                       // 16〜99件で新規でない → 除外
   else if (!reviewKnown && unknownHold) temperature = 'HOLD'    // 口コミ不明 → 保留
-  else if (hasSignal && fresh && score >= 80 && !shouldExclude) temperature = 'HOT'
   else if (mid) temperature = 'HOLD'                            // 6〜15件 → 保留
   else if (raw.is_new_corporation) temperature = 'WARM'
   else temperature = 'HOLD'
@@ -194,6 +225,7 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const comment = buildComment({
     temperature, signals: signals as string[], score, reviewCount, reviewKnown,
     fresh, mid, high, veryHigh, isChain, inMall, inStation, isBranch, isDup, excludedName, hasPhone,
+    newnessReason,
   })
 
   return {
@@ -225,6 +257,12 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     lead_temperature: temperature,
     duplicate_of_case_id: dupId,
     user_rating_count: reviewCount,
+    opening_date: raw.opening_date ?? null,
+    opening_date_source: raw.opening_date ? 'google_places' : null,
+    is_new_opening_candidate: isNewCandidate,
+    newness_reason: newnessReason,
+    days_since_first_seen: firstSeenDays,
+    from_new_open_query: fromNewOpenQuery,
   }
 }
 

@@ -193,6 +193,13 @@ export interface LeadCandidate {
   raw_payload?: unknown
   search_query?: string | null
   source_run_id?: string | null
+  // 新規店舗の複合判定
+  opening_date?: string | null
+  opening_date_source?: string | null
+  is_new_opening_candidate?: boolean | null
+  newness_reason?: string | null
+  days_since_first_seen?: number | null
+  from_new_open_query?: boolean | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -235,6 +242,12 @@ export interface RawLead {
   is_new_corporation?: boolean
   review_count?: number
   business_status?: string
+  /** Google Places の開店日（YYYY-MM-DD 等） */
+  opening_date?: string
+  /** RST初回発見からの経過日数（新規発見は0） */
+  first_seen_days?: number
+  /** 「新規オープン」系クエリで取得されたか */
+  from_new_open_query?: boolean
 }
 
 /** 判定の閾値（口コミ件数など） */
