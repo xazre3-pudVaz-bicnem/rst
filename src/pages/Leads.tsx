@@ -489,9 +489,13 @@ export default function Leads() {
                       <div>電話: {gpResult.debug.sample.place?.nationalPhoneNumber || gpResult.debug.sample.place?.internationalPhoneNumber || '（なし）'}</div>
                       <div>primaryType: {gpResult.debug.sample.place?.primaryType || '—'}</div>
                       <div className="font-bold">口コミ数: {gpResult.debug.sample.place?.userRatingCount ?? '不明'}</div>
-                      <div>新規GBP判定: <b>{String(gpResult.debug.sample.classified?.is_new_gbp)}</b></div>
+                      <div>開店日(openingDate): {gpResult.debug.sample.place?.openingDate || gpResult.debug.sample.classified?.opening_date || '取得不可'}</div>
+                      <div>RST初回発見からの日数: {gpResult.debug.sample.classified?.days_since_first_seen ?? 0}日</div>
+                      <div>新規オープン系クエリ: <b>{String(gpResult.debug.sample.classified?.from_new_open_query)}</b></div>
+                      <div>新規開業候補: <b>{String(gpResult.debug.sample.classified?.is_new_opening_candidate)}</b></div>
                       <div>温度: <b>{gpResult.debug.sample.classified?.lead_temperature}</b></div>
                       <div>到達スコア: {gpResult.debug.sample.classified?.owner_reachability_score}</div>
+                      <div className="md:col-span-2">新規判定理由（HOT理由）: {gpResult.debug.sample.classified?.newness_reason || '—'}</div>
                       <div className="md:col-span-2">HOTにしなかった理由 / 除外理由: {gpResult.debug.sample.classified?.exclusion_reason || '—'}</div>
                     </div>
                   </div>
@@ -591,6 +595,12 @@ export default function Leads() {
                           {c.is_new_corporation && <span className="rounded-sm bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">新設法人</span>}
                           {!c.is_new_gbp && !c.is_new_instagram && !c.is_new_website && !c.is_new_ad_listing && !c.is_new_corporation && <span className="text-muted-foreground">—</span>}
                         </div>
+                        <div className="mt-0.5 flex flex-wrap gap-0.5">
+                          {c.is_new_opening_candidate && <span className="rounded-sm bg-green-100 px-1 text-[9px] text-green-700 dark:bg-green-500/20 dark:text-green-300">新規開業候補</span>}
+                          {c.from_new_open_query && <span className="rounded-sm bg-sky-100 px-1 text-[9px] text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">新規Q</span>}
+                          {c.opening_date && <span className="rounded-sm bg-muted px-1 text-[9px] text-muted-foreground">開店{c.opening_date}</span>}
+                          {c.days_since_first_seen != null && <span className="text-[9px] text-muted-foreground">発見{c.days_since_first_seen}日前</span>}
+                        </div>
                       </td>
                       <td className="p-2 text-center">
                         {(() => {
@@ -626,6 +636,7 @@ export default function Leads() {
                         </div>
                       </td>
                       <td className="max-w-[280px] p-2">
+                        {c.newness_reason && <div className="text-[10px] text-green-700 dark:text-green-300">新規理由: {c.newness_reason}</div>}
                         <div className="font-medium text-foreground">{c.auto_import_reason}</div>
                         <div className="mt-0.5 line-clamp-3 text-[10px] text-muted-foreground" title={c.ai_comment ?? ''}>{c.ai_comment}</div>
                       </td>
