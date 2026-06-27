@@ -146,6 +146,74 @@ export interface AuditLog {
   created_date: string
 }
 
+/** AI投入リスト候補 */
+export type LeadTemperature = 'HOT' | 'WARM' | 'HOLD' | 'EXCLUDED'
+
+export interface LeadCandidate {
+  id: string
+  name: string
+  address?: string | null
+  industry?: string | null
+  phone_number?: string | null
+  phone_normalized?: string | null
+  website_url?: string | null
+  instagram_url?: string | null
+  place_id?: string | null
+  source_type?: string | null
+  first_seen_at: string
+  last_seen_at: string
+  is_new_gbp: boolean
+  is_new_instagram: boolean
+  is_new_website: boolean
+  is_new_ad_listing: boolean
+  is_new_corporation: boolean
+  detected_signals?: string[] | null
+  is_chain_store: boolean
+  is_large_franchise: boolean
+  is_in_shopping_mall: boolean
+  is_in_station_building: boolean
+  is_large_company_branch: boolean
+  owner_reachability_score: number
+  exclusion_reason?: string | null
+  should_exclude_from_call_list: boolean
+  auto_import_reason?: string | null
+  ai_comment?: string | null
+  lead_temperature: LeadTemperature
+  imported_to_cases: boolean
+  imported_at?: string | null
+  duplicate_of_case_id?: string | null
+  organization_id?: string | null
+  created_by_id?: string | null
+  created_date: string
+  updated_date: string
+}
+
+/** スクレイプ等で取得した生候補（判定前） */
+export interface RawLead {
+  name: string
+  address?: string
+  industry?: string
+  phone_number?: string
+  website_url?: string
+  instagram_url?: string
+  place_id?: string
+  source_type?: string
+  is_new_gbp?: boolean
+  is_new_instagram?: boolean
+  is_new_website?: boolean
+  is_new_ad_listing?: boolean
+  is_new_corporation?: boolean
+  review_count?: number
+}
+
+/** AI投入リストの設定（localStorage） */
+export interface LeadImportSettings {
+  autoImport: boolean
+  dailyCap: number
+  areas: string
+  industries: string
+}
+
 /** Auto search settings stored in localStorage */
 export interface AutoSearchSettings {
   enabled: boolean

@@ -6,6 +6,7 @@ import type {
   CallLog,
   CallSession,
   ImportBatch,
+  LeadCandidate,
   Profile,
   Recall,
   Template,
@@ -125,6 +126,38 @@ export const AuditApi = {
     } catch (e) {
       console.warn('[Audit] log error:', e)
     }
+  },
+}
+
+/** AI投入リスト候補（テーブルが無くても失敗させない） */
+export const LeadCandidateApi = {
+  async list(limit = 500): Promise<LeadCandidate[]> {
+    const { data, error } = await supabase
+      .from('lead_candidates')
+      .select('*')
+      .order('created_date', { ascending: false })
+      .limit(limit)
+    if (error) {
+      console.warn('[Lead] list skipped:', error.message)
+      return []
+    }
+    return data as LeadCandidate[]
+  },
+  async create(payload: Partial<LeadCandidate>): Promise<LeadCandidate | null> {
+    const { data, error } = await supabase.from('lead_candidates').insert(payload).select().single()
+    if (error) {
+      console.warn('[Lead] create skipped:', error.message)
+      return null
+    }
+    return data as LeadCandidate
+  },
+  async update(id: string, payload: Partial<LeadCandidate>): Promise<void> {
+    const { error } = await supabase.from('lead_candidates').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('lead_candidates').delete().eq('id', id)
+    if (error) throw new Error(error.message)
   },
 }
 
