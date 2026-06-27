@@ -402,12 +402,22 @@ export default function Leads() {
                   <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {gpResult.hold ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {gpResult.excluded ?? 0}</span>
-                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {gpResult.imported ?? 0}</span>
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">DB保存 {gpResult.saved ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内 {gpResult.chainExcluded ?? 0}</span>
                   {Number(gpResult.error ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">APIエラー {gpResult.error}</span>}
+                  {Number(gpResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {gpResult.saveError}</span>}
                 </div>
+
+                {Array.isArray(gpResult.debug?.saveErrors) && gpResult.debug.saveErrors.length > 0 && (
+                  <div className="rounded-md bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                    <div className="font-bold">DB書き込みエラー（投入0の原因）:</div>
+                    {gpResult.debug.saveErrors.map((m: string, i: number) => <div key={i} className="truncate" title={m}>・{m}</div>)}
+                    <div className="mt-0.5">→ 多くは <span className="font-mono">migrations/2026-06-27_google_places.sql</span> 未実行（google_place_id / raw_payload 等の列不足）。SQLを実行してください。</div>
+                  </div>
+                )}
 
                 {/* クエリ別の取得状況（0件の切り分け） */}
                 {Array.isArray(gpResult.debug?.queryResults) && gpResult.debug.queryResults.length > 0 && (
@@ -427,7 +437,7 @@ export default function Leads() {
                             <td className="p-1">{q.query}</td>
                             <td className={cn('p-1 text-center font-bold', q.status === 200 ? 'text-green-600' : 'text-red-600')}>{q.status}</td>
                             <td className="p-1 text-center">{q.placesLength}</td>
-                            <td className="max-w-[260px] truncate p-1 text-red-600" title={q.error || ''}>{q.error || '—'}</td>
+                            <td className={cn('max-w-[260px] truncate p-1', q.error ? 'text-red-600' : 'text-muted-foreground')} title={q.error || ''}>{q.error || '—'}</td>
                           </tr>
                         ))}
                       </tbody>

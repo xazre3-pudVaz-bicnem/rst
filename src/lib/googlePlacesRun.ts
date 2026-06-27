@@ -135,10 +135,14 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
   const counts = {
     fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
-    noPhone: 0, chainExcluded: 0,
+    noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
   }
-  const debug: any = { queries, queryResults: [] as any[], sample: null, settings: { ...settings } }
+  const debug: any = { queries, queryResults: [] as any[], sample: null, settings: { ...settings }, saveErrors: [] as string[] }
   let errorMessage = ''
+  const recordSaveError = (msg: string) => {
+    counts.saveError++
+    if (debug.saveErrors.length < 5) debug.saveErrors.push(String(msg).slice(0, 300))
+  }
 
   try {
     const cases = await fetchCases(admin)
@@ -257,13 +261,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         let candidateId: string | null = existing?.id || null
         const alreadyImported = !!existing?.imported_to_cases
         if (existing) {
-          await admin.from('lead_candidates').update(payload).eq('id', existing.id)
+          const { error: upErr } = await admin.from('lead_candidates').update(payload).eq('id', existing.id)
+          if (upErr) recordSaveError('lead update: ' + upErr.message)
+          else counts.saved++
         } else {
-          const { data: ins } = await admin
+          const { data: ins, error: insErr } = await admin
             .from('lead_candidates')
             .insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId })
             .select('id')
             .single()
+          if (insErr) recordSaveError('lead insert: ' + insErr.message)
+          else counts.saved++
           candidateId = ins?.id || null
         }
 
@@ -282,7 +290,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             `オーナー到達スコア: ${classified.owner_reachability_score}`,
             `レビュー数: ${reviewCount ?? '不明'} / 評価: ${payload.rating ?? '不明'}`,
           ].join('\n')
-          const { data: created } = await admin
+          const { data: created, error: caseErr } = await admin
             .from('cases')
             .insert({
               name: classified.name,
@@ -298,7 +306,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             })
             .select('id')
             .single()
-          await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+          if (caseErr) recordSaveError('case insert: ' + caseErr.message)
+          if (created?.id) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+          }
           if (created?.id) {
             counts.imported++
             importedCount++
