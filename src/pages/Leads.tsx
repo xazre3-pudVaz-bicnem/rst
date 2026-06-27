@@ -8,6 +8,7 @@ import TopBar from '@/components/layout/TopBar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -15,11 +16,11 @@ import { useAuth } from '@/context/AuthContext'
 import { CaseApi, LeadCandidateApi, ImportBatchApi, AuditApi } from '@/lib/api'
 import { classifyLead, generateMockLeads } from '@/lib/leadScoring'
 import {
-  DEFAULT_STATUS, LEAD_TEMP_COLORS, LS_LEAD_SETTINGS, DEFAULT_LEAD_SETTINGS,
+  DEFAULT_STATUS, LEAD_TEMP_COLORS, LS_LEAD_SETTINGS, DEFAULT_LEAD_SETTINGS, parseList,
 } from '@/lib/constants'
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient'
 import { cn, jpError, copyToClipboard, mapUrl } from '@/lib/utils'
-import type { Case, LeadCandidate, LeadImportSettings, LeadTemperature } from '@/lib/types'
+import type { Case, LeadCandidate, LeadImportSettings, LeadRun, LeadTemperature } from '@/lib/types'
 
 type Filter = 'ALL' | LeadTemperature
 const FILTERS: { key: Filter; label: string }[] = [
@@ -49,6 +50,11 @@ export default function Leads() {
   const [filter, setFilter] = useState<Filter>('ALL')
   const [settings, setSettings] = useState<LeadImportSettings>(loadSettings)
   const [showSettings, setShowSettings] = useState(false)
+  // Google Places
+  const [gpConfigured, setGpConfigured] = useState<boolean | null>(null)
+  const [gpRunning, setGpRunning] = useState(false)
+  const [gpResult, setGpResult] = useState<Record<string, number | string> | null>(null)
+  const [lastRun, setLastRun] = useState<LeadRun | null>(null)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -62,7 +68,58 @@ export default function Leads() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  const loadRuns = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    const { data } = await supabase.from('auto_lead_runs').select('*').order('created_date', { ascending: false }).limit(1)
+    setLastRun(data && data[0] ? (data[0] as LeadRun) : null)
+  }, [])
+
+  useEffect(() => { load(); loadRuns() }, [load, loadRuns])
+
+  // Google Places API 接続状態
+  useEffect(() => {
+    fetch('/api/leads/google-places/run')
+      .then((r) => (r.ok ? r.json() : { configured: false }))
+      .then((j) => setGpConfigured(!!j.configured))
+      .catch(() => setGpConfigured(false))
+  }, [])
+
+  async function runPlaces() {
+    if (!settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
+    if (gpConfigured === false) { toast.error('GOOGLE_MAPS_API_KEYが未設定です'); return }
+    setGpRunning(true); setGpResult(null)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/leads/google-places/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          settings: {
+            autoImport: settings.autoImport,
+            fetchLimit: settings.fetchLimit,
+            dailyCap: settings.dailyCap,
+            areas: parseList(settings.areas),
+            industries: parseList(settings.industries),
+          },
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(json.error || 'Google Places実行に失敗しました')
+        setGpResult({ error: json.error })
+        return
+      }
+      setGpResult(json)
+      toast.success(`Google Places完了: 取得${json.fetched ?? 0} / HOT${json.hot ?? 0} / 投入${json.imported ?? 0}`)
+      load(); loadRuns()
+    } catch (e) {
+      toast.error('実行に失敗しました: ' + jpError(e))
+    } finally {
+      setGpRunning(false)
+    }
+  }
 
   // Realtime
   useEffect(() => {
@@ -244,28 +301,79 @@ export default function Leads() {
 
           {/* 設定パネル */}
           {showSettings && (
-            <div className="grid gap-3 rounded-xl border bg-card p-3 md:grid-cols-4">
+            <div className="grid gap-3 rounded-xl border bg-card p-3 md:grid-cols-2 lg:grid-cols-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={settings.placesEnabled} onChange={(e) => saveSettings({ ...settings, placesEnabled: e.target.checked })} />
+                Google Places実行を有効化
+              </label>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={settings.autoImport} onChange={(e) => saveSettings({ ...settings, autoImport: e.target.checked })} />
                 HOTを自動でcasesへ投入
               </label>
               <div className="space-y-1">
-                <Label>1日の自動投入上限</Label>
+                <Label>1回あたりの取得上限</Label>
+                <Input type="number" min={1} value={settings.fetchLimit} onChange={(e) => saveSettings({ ...settings, fetchLimit: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
+              </div>
+              <div className="space-y-1">
+                <Label>1日あたりの投入上限</Label>
                 <Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
               </div>
-              <div className="space-y-1">
-                <Label>対象エリア</Label>
-                <Input value={settings.areas} onChange={(e) => saveSettings({ ...settings, areas: e.target.value })} className="h-8" />
+              <div className="space-y-1 lg:col-span-2">
+                <Label>対象エリア（1行に1つ）</Label>
+                <Textarea value={settings.areas} onChange={(e) => saveSettings({ ...settings, areas: e.target.value })} rows={4} />
               </div>
-              <div className="space-y-1">
-                <Label>対象業種</Label>
-                <Input value={settings.industries} onChange={(e) => saveSettings({ ...settings, industries: e.target.value })} className="h-8" />
+              <div className="space-y-1 lg:col-span-2">
+                <Label>対象業種（1行に1つ）</Label>
+                <Textarea value={settings.industries} onChange={(e) => saveSettings({ ...settings, industries: e.target.value })} rows={4} />
               </div>
-              <div className="md:col-span-4 text-[10px] text-muted-foreground">
-                ※毎朝6:00の自動実行は、実API接続（Phase2）時にSupabase Edge Function + Cronで構成します。現在は「手動実行（モック）」で動作確認できます。
+              <div className="text-[10px] text-muted-foreground lg:col-span-4">
+                ※検索クエリは「エリア × 業種」で生成されます（例:「東京都葛飾区 美容室」）。毎朝6:00の自動実行は Vercel Cron（/api/cron/auto-leads）で行います。
               </div>
             </div>
           )}
+
+          {/* Google Places API パネル */}
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold">Google Places API 連携（新規GBP）</span>
+                {gpConfigured === null ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
+                ) : gpConfigured ? (
+                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">接続OK（キー設定済み）</span>
+                ) : (
+                  <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">未設定（GOOGLE_MAPS_API_KEY）</span>
+                )}
+              </div>
+              <Button size="sm" onClick={runPlaces} disabled={gpRunning || gpConfigured === false}>
+                <Play className="h-3.5 w-3.5" />{gpRunning ? '取得中…' : 'Google Placesで取得・投入'}
+              </Button>
+            </div>
+            {gpConfigured === false && (
+              <div className="mt-2 rounded-md bg-amber-50 p-2 text-2xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                サーバーに <span className="font-mono">GOOGLE_MAPS_API_KEY</span> が未設定です。Vercelの環境変数に追加して再デプロイしてください（フロントには露出しません）。
+              </div>
+            )}
+            {gpResult && !gpResult.error && (
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5">クエリ {gpResult.queries ?? 0}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">取得 {gpResult.fetched ?? 0}</span>
+                <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {gpResult.hold ?? 0}</span>
+                <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">除外 {gpResult.excluded ?? 0}</span>
+                <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {gpResult.imported ?? 0}</span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
+                {Number(gpResult.error_count ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">エラー {gpResult.error_count}</span>}
+              </div>
+            )}
+            {lastRun && (
+              <div className="mt-2 text-[10px] text-muted-foreground">
+                最終実行: {moment(lastRun.created_date).format('MM/DD HH:mm')} ・ {lastRun.status}
+                ・ 取得{lastRun.fetched_count} / HOT{lastRun.hot_count} / 投入{lastRun.imported_count} / 除外{lastRun.excluded_count} / 重複{lastRun.duplicate_count}
+                {lastRun.error_message ? ` ・ ${lastRun.error_message}` : ''}
+              </div>
+            )}
+          </div>
 
           {/* 集計カード */}
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">

@@ -1,0 +1,292 @@
+// ============================================================
+// Google Places (New) Source Adapter — サーバー専用
+// APIキーはここ（Vercel Function）でのみ使用。フロントには出さない。
+// 既存の判定ロジック(classifyLead)を再利用してHOT/HOLD/EXCLUDEDに分類。
+// ※ このファイルは Vercel Functions 用。フロントのビルド(tsc/vite)対象外。
+// ============================================================
+import { createClient } from '@supabase/supabase-js'
+import { classifyLead } from '../../src/lib/leadScoring'
+import { DEFAULT_STATUS } from '../../src/lib/constants'
+
+const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
+const FIELD_MASK = [
+  'places.id',
+  'places.displayName',
+  'places.formattedAddress',
+  'places.nationalPhoneNumber',
+  'places.internationalPhoneNumber',
+  'places.websiteUri',
+  'places.rating',
+  'places.userRatingCount',
+  'places.businessStatus',
+  'places.types',
+  'places.primaryType',
+  'places.googleMapsUri',
+  'places.regularOpeningHours',
+].join(',')
+
+export function getAdminClient() {
+  const url = process.env.SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) {
+    throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です（Vercel環境変数）')
+  }
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+}
+
+export function getDefaultSettings() {
+  return {
+    autoImport: true,
+    placesEnabled: true,
+    fetchLimit: 60,
+    dailyCap: 30,
+    areas: ['東京都葛飾区', '東京都足立区', '東京都江戸川区', '千葉県市川市', '千葉県船橋市', '埼玉県草加市', '埼玉県越谷市'],
+    industries: ['美容室', '整体', '整骨院', 'リラクゼーション', 'エステ', '飲食店', '居酒屋', 'パーソナルジム', '士業', 'リフォーム', 'ハウスクリーニング'],
+  }
+}
+
+function asArray(v: unknown, fallback: string[]): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean)
+  if (typeof v === 'string') return v.split(/[\n、,・]+/).map((x) => x.trim()).filter(Boolean)
+  return fallback
+}
+
+async function searchText(apiKey: string, query: string, maxResultCount: number): Promise<any[]> {
+  const res = await fetch(PLACES_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': FIELD_MASK,
+    },
+    body: JSON.stringify({
+      textQuery: query,
+      languageCode: 'ja',
+      regionCode: 'JP',
+      maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Places API ${res.status}: ${text.slice(0, 300)}`)
+  }
+  const json: any = await res.json()
+  return Array.isArray(json.places) ? json.places : []
+}
+
+async function fetchCases(admin: any): Promise<any[]> {
+  const all: any[] = []
+  for (let page = 0; page < 10; page++) {
+    const from = page * 1000
+    const { data, error } = await admin
+      .from('cases')
+      .select('id,name,address,phone1,phone2,phone3,hp1,hp2,instagram')
+      .range(from, from + 999)
+    if (error) break
+    const rows = data || []
+    all.push(...rows)
+    if (rows.length < 1000) break
+  }
+  return all
+}
+
+function phoneOf(p: any): string {
+  return p.nationalPhoneNumber || p.internationalPhoneNumber || ''
+}
+
+/** メイン実行 */
+export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: any, userId: string | null) {
+  const def = getDefaultSettings()
+  const settings = {
+    autoImport: rawSettings?.autoImport ?? def.autoImport,
+    fetchLimit: Number(rawSettings?.fetchLimit) > 0 ? Number(rawSettings.fetchLimit) : def.fetchLimit,
+    dailyCap: Number(rawSettings?.dailyCap) > 0 ? Number(rawSettings.dailyCap) : def.dailyCap,
+    areas: asArray(rawSettings?.areas, def.areas),
+    industries: asArray(rawSettings?.industries, def.industries),
+  }
+
+  // 実行ログ開始
+  const { data: runRow } = await admin
+    .from('auto_lead_runs')
+    .insert({ source: 'google_places', status: 'running', created_by_id: userId })
+    .select('id')
+    .single()
+  const runId: string | null = runRow?.id ?? null
+
+  const queries: string[] = []
+  for (const a of settings.areas) for (const i of settings.industries) queries.push(`${a} ${i}`)
+
+  const counts = { fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0 }
+  let errorMessage = ''
+
+  try {
+    const cases = await fetchCases(admin)
+
+    // 本日のcases投入数（日次上限）
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    const { count: importedToday } = await admin
+      .from('lead_candidates')
+      .select('id', { count: 'exact', head: true })
+      .gte('imported_at', startToday.toISOString())
+    let importedCount = importedToday || 0
+
+    const nowIso = new Date().toISOString()
+
+    for (const query of queries) {
+      if (counts.fetched >= settings.fetchLimit) break
+      const remain = settings.fetchLimit - counts.fetched
+      let places: any[] = []
+      try {
+        places = await searchText(apiKey, query, remain)
+      } catch (e: any) {
+        counts.error++
+        errorMessage = String(e?.message || e)
+        continue
+      }
+
+      for (const p of places) {
+        if (counts.fetched >= settings.fetchLimit) break
+        counts.fetched++
+        const placeId = p.id || ''
+        const phone = phoneOf(p)
+
+        // 既存lead_candidate（place_id）を確認 → first_seen 基準で新規判定
+        let existing: any = null
+        if (placeId) {
+          const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
+          existing = data && data[0] ? data[0] : null
+        }
+        const firstSeen = existing?.first_seen_at || nowIso
+        const ageDays = (Date.now() - new Date(firstSeen).getTime()) / 86400000
+        const isNewGbp = ageDays <= 30
+        const reviewCount = typeof p.userRatingCount === 'number' ? p.userRatingCount : null
+
+        const classified: any = classifyLead(
+          {
+            name: p.displayName?.text || '',
+            address: p.formattedAddress || '',
+            industry: query.split(' ').slice(-1)[0] || null,
+            phone_number: phone,
+            website_url: p.websiteUri || '',
+            place_id: placeId,
+            is_new_gbp: isNewGbp,
+            review_count: reviewCount ?? undefined,
+          },
+          cases,
+        )
+
+        // レビュー数のニュアンスをコメントに反映
+        if (isNewGbp && reviewCount !== null && reviewCount <= 3 && classified.lead_temperature === 'HOT') {
+          classified.ai_comment =
+            `Googleビジネスプロフィールを新規候補として検出しました。電話番号が確認でき、レビュー数が${reviewCount}件と少ないため、Googleマップ掲載直後またはWeb集客を始めた直後の可能性があります。大型チェーンや商業施設内テナントではないと判定したため、MEO初期整備・HP制作提案の優先度が高いです。`
+        }
+
+        const payload: any = {
+          ...classified,
+          source_type: 'AI自動投入',
+          detected_signals: isNewGbp ? ['GBP'] : (classified.detected_signals || []),
+          google_place_id: placeId || null,
+          google_maps_uri: p.googleMapsUri || null,
+          rating: typeof p.rating === 'number' ? p.rating : null,
+          user_rating_count: reviewCount,
+          business_status: p.businessStatus || null,
+          place_types: Array.isArray(p.types) ? p.types : null,
+          primary_type: p.primaryType || null,
+          website_url: p.websiteUri || null,
+          search_query: query,
+          source_run_id: runId,
+          raw_payload: p,
+          last_seen_at: nowIso,
+        }
+
+        if (classified.lead_temperature === 'HOT') counts.hot++
+        else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
+        else counts.hold++ // HOLD/WARM
+        if (classified.duplicate_of_case_id) counts.duplicate++
+
+        // 保存（既存はupdate、新規はinsert）
+        let candidateId = existing?.id || null
+        const alreadyImported = !!existing?.imported_to_cases
+        if (existing) {
+          await admin.from('lead_candidates').update(payload).eq('id', existing.id)
+        } else {
+          const { data: ins } = await admin
+            .from('lead_candidates')
+            .insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId })
+            .select('id')
+            .single()
+          candidateId = ins?.id || null
+        }
+
+        // HOT自動投入
+        const canImport =
+          settings.autoImport &&
+          classified.lead_temperature === 'HOT' &&
+          !classified.duplicate_of_case_id &&
+          !alreadyImported &&
+          importedCount < settings.dailyCap
+
+        if (canImport && candidateId) {
+          const memo = [
+            `【AI自動投入 / GBP】`,
+            `投入理由: ${classified.auto_import_reason || ''}`,
+            `AIコメント: ${classified.ai_comment || ''}`,
+            `オーナー到達スコア: ${classified.owner_reachability_score}`,
+            `レビュー数: ${reviewCount ?? '不明'} / 評価: ${payload.rating ?? '不明'}`,
+          ].join('\n')
+          const { data: created } = await admin
+            .from('cases')
+            .insert({
+              name: classified.name,
+              address: classified.address || '',
+              phone1: classified.phone_number || '',
+              industry: classified.industry || null,
+              status: DEFAULT_STATUS,
+              hp1: payload.website_url,
+              instagram: classified.instagram_url || null,
+              source_urls: 'AI自動投入',
+              memo,
+              created_by_id: userId,
+            })
+            .select('id')
+            .single()
+          await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+          if (created?.id) {
+            counts.imported++
+            importedCount++
+            // 監査ログ（任意・失敗無視）
+            await admin.from('audit_logs').insert({
+              action: 'create', entity: 'case', entity_id: created.id, entity_name: classified.name,
+              detail: 'AI自動投入（Google Places）', actor_id: userId,
+            }).then(() => {}, () => {})
+          }
+        }
+      }
+    }
+
+    await admin.from('auto_lead_runs').update({
+      status: counts.error > 0 ? 'success' : 'success',
+      finished_at: new Date().toISOString(),
+      search_queries_count: queries.length,
+      fetched_count: counts.fetched,
+      hot_count: counts.hot,
+      hold_count: counts.hold,
+      excluded_count: counts.excluded,
+      imported_count: counts.imported,
+      duplicate_count: counts.duplicate,
+      error_count: counts.error,
+      error_message: errorMessage || null,
+    }).eq('id', runId)
+
+    return { ok: true, runId, queries: queries.length, ...counts }
+  } catch (e: any) {
+    const msg = String(e?.message || e)
+    await admin.from('auto_lead_runs').update({
+      status: 'error', finished_at: new Date().toISOString(), error_message: msg,
+      search_queries_count: queries.length, fetched_count: counts.fetched,
+      hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded,
+      imported_count: counts.imported, duplicate_count: counts.duplicate, error_count: counts.error + 1,
+    }).eq('id', runId)
+    throw new Error(msg)
+  }
+}
