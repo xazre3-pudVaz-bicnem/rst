@@ -116,11 +116,19 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     industries: asArray(rawSettings?.industries, def.industries),
   }
 
-  // 動作確認用の固定条件（葛飾区 × 整体 × 5件）
+  // 動作確認用の固定条件（葛飾区 × 整体 × 20件）
   if (rawSettings?.testFixed) {
     settings.areas = ['東京都葛飾区']
     settings.industries = ['整体']
-    settings.fetchLimit = 5
+    settings.fetchLimit = 20
+  }
+
+  // 判定の閾値（口コミ件数など）
+  const opts = {
+    hotMaxReviews: Number(rawSettings?.hotMaxReviews) > 0 ? Number(rawSettings.hotMaxReviews) : 5,
+    warmMaxReviews: Number(rawSettings?.warmMaxReviews) > 0 ? Number(rawSettings.warmMaxReviews) : 15,
+    exclude100: rawSettings?.exclude100 ?? true,
+    unknownHold: rawSettings?.unknownHold ?? true,
   }
 
   const { data: runRow } = await admin
@@ -130,12 +138,18 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     .single()
   const runId: string | null = runRow?.id ?? null
 
+  // 検索クエリ：通常「地域 業種」＋新規店が出やすい語を追加
   const queries: string[] = []
-  for (const a of settings.areas) for (const i of settings.industries) queries.push(`${a} ${i}`)
+  for (const a of settings.areas) for (const i of settings.industries) {
+    queries.push(`${a} 新規オープン ${i}`)
+    queries.push(`${a} オープン ${i}`)
+    queries.push(`${a} ${i}`)
+  }
 
   const counts = {
     fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
     noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
+    review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
   }
   const debug: any = { queries, queryResults: [] as any[], sample: null, settings: { ...settings }, saveErrors: [] as string[] }
   let errorMessage = ''
@@ -178,10 +192,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
           existing = data && data[0] ? data[0] : null
         }
-        const firstSeen: string = existing?.first_seen_at || nowIso
-        const ageDays = (Date.now() - new Date(firstSeen).getTime()) / 86400000
-        const isNewGbp = ageDays <= 30
         const reviewCount: number | null = typeof p.userRatingCount === 'number' ? p.userRatingCount : null
+        // 口コミ件数の内訳カウント
+        if (reviewCount === null) counts.reviewUnknown++
+        else if (reviewCount <= opts.hotMaxReviews) counts.review0_5++
+        else if (reviewCount <= opts.warmMaxReviews) counts.review6_15++
+        else if (reviewCount < 100) counts.review16_99++
+        else counts.review100++
 
         const classified: any = classifyLead(
           {
@@ -191,21 +208,20 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             phone_number: phone,
             website_url: p.websiteUri || '',
             place_id: placeId,
-            is_new_gbp: isNewGbp,
+            // 「未登録のplace_id（first-seen）」を新規GBPの前提として渡す。
+            // 口コミ5件以下・営業中・非チェーン等の最終判定は classifyLead 側で行う。
+            is_new_gbp: !existing,
             review_count: reviewCount ?? undefined,
+            business_status: p.businessStatus || undefined,
           },
           cases,
+          opts,
         )
-
-        if (isNewGbp && reviewCount !== null && reviewCount <= 3 && classified.lead_temperature === 'HOT') {
-          classified.ai_comment =
-            `Googleビジネスプロフィールを新規候補として検出しました。電話番号が確認でき、レビュー数が${reviewCount}件と少ないため、Googleマップ掲載直後またはWeb集客を始めた直後の可能性があります。大型チェーンや商業施設内テナントではないと判定したため、MEO初期整備・HP制作提案の優先度が高いです。`
-        }
 
         const payload: any = {
           ...classified,
           source_type: 'AI自動投入',
-          detected_signals: isNewGbp ? ['GBP'] : (classified.detected_signals || []),
+          detected_signals: classified.is_new_gbp ? ['GBP'] : (classified.detected_signals || []),
           google_place_id: placeId || null,
           google_maps_uri: p.googleMapsUri || null,
           rating: typeof p.rating === 'number' ? p.rating : null,
@@ -248,7 +264,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             classified: {
               lead_temperature: classified.lead_temperature,
               owner_reachability_score: classified.owner_reachability_score,
-              is_new_gbp: isNewGbp,
+              is_new_gbp: classified.is_new_gbp,
+              user_rating_count: reviewCount,
               phone_normalized: classified.phone_normalized || '',
               should_exclude_from_call_list: classified.should_exclude_from_call_list,
               exclusion_reason: classified.exclusion_reason || '',

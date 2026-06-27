@@ -252,6 +252,10 @@ export const DEFAULT_LEAD_SETTINGS = {
   placesEnabled: true,
   fetchLimit: 60,
   dailyCap: 30,
+  hotMaxReviews: 5,
+  warmMaxReviews: 15,
+  exclude100: true,
+  unknownHold: true,
   areas: [
     '東京都葛飾区', '東京都足立区', '東京都江戸川区',
     '千葉県市川市', '千葉県船橋市', '埼玉県草加市', '埼玉県越谷市',

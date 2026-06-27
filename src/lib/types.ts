@@ -234,6 +234,15 @@ export interface RawLead {
   is_new_ad_listing?: boolean
   is_new_corporation?: boolean
   review_count?: number
+  business_status?: string
+}
+
+/** 判定の閾値（口コミ件数など） */
+export interface ClassifyOpts {
+  hotMaxReviews?: number   // これ以下ならHOT候補（既定5）
+  warmMaxReviews?: number  // これ以下ならWARM/HOLD（既定15）
+  exclude100?: boolean     // 口コミ100件以上は自動除外（既定true）
+  unknownHold?: boolean    // 口コミ件数不明はHOLD（既定true）
 }
 
 /** AI投入リストの設定（localStorage） */
@@ -244,6 +253,10 @@ export interface LeadImportSettings {
   dailyCap: number          // 1日あたりの投入上限
   areas: string             // 改行/読点区切り
   industries: string        // 改行/読点区切り
+  hotMaxReviews: number     // HOT判定の最大口コミ数（既定5）
+  warmMaxReviews: number    // WARM判定の最大口コミ数（既定15）
+  exclude100: boolean       // 口コミ100件以上は自動除外
+  unknownHold: boolean      // 口コミ件数不明はHOLD
 }
 
 /** Auto search settings stored in localStorage */
