@@ -56,11 +56,32 @@ export function normalizeUrl(input?: string | null): string {
   return `https://${t}`
 }
 
-/** クリップボードへコピー（成功可否を返す） */
+/** クリップボードへコピー（成功可否を返す。非ブラウザ/未対応環境でも安全） */
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text)
-    return true
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+    // フォールバック（clipboard API 非対応の古い環境）
+    if (typeof document !== 'undefined') {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      let ok = false
+      try {
+        ok = document.execCommand('copy')
+      } catch {
+        ok = false
+      }
+      document.body.removeChild(ta)
+      return ok
+    }
+    return false
   } catch {
     return false
   }
@@ -80,8 +101,9 @@ export function toCsv(headers: string[], rows: (string | number | null | undefin
   return '﻿' + head + '\r\n' + body
 }
 
-/** CSV文字列をダウンロード */
+/** CSV文字列をダウンロード（ブラウザ環境でのみ動作） */
 export function downloadCsv(filename: string, csv: string): void {
+  if (typeof document === 'undefined' || typeof URL === 'undefined') return
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
