@@ -51,27 +51,38 @@ function asArray(v: unknown, fallback: string[]): string[] {
   return fallback
 }
 
-async function searchText(apiKey: string, query: string, maxResultCount: number): Promise<any[]> {
-  const res = await fetch(PLACES_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': FIELD_MASK,
-    },
-    body: JSON.stringify({
-      textQuery: query,
-      languageCode: 'ja',
-      regionCode: 'JP',
-      maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
-    }),
-  })
-  if (!res.ok) {
+/** Places Text Search。例外を投げず {status, places, error} を返す（診断用） */
+async function searchTextRaw(
+  apiKey: string, query: string, maxResultCount: number,
+): Promise<{ status: number; places: any[]; error: string | null }> {
+  try {
+    const res = await fetch(PLACES_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': FIELD_MASK,
+      },
+      body: JSON.stringify({
+        textQuery: query,
+        languageCode: 'ja',
+        regionCode: 'JP',
+        maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+      }),
+    })
+    const status = res.status
     const text = await res.text().catch(() => '')
-    throw new Error(`Places API ${res.status}: ${text.slice(0, 300)}`)
+    let json: any = {}
+    try { json = text ? JSON.parse(text) : {} } catch { json = {} }
+    if (!res.ok) {
+      const msg = json?.error?.message || text || `HTTP ${status}`
+      return { status, places: [], error: String(msg).slice(0, 500) }
+    }
+    const places = Array.isArray(json.places) ? json.places : []
+    return { status, places, error: null }
+  } catch (e: any) {
+    return { status: 0, places: [], error: String(e?.message || e) }
   }
-  const json: any = await res.json()
-  return Array.isArray(json.places) ? json.places : []
 }
 
 async function fetchCases(admin: any): Promise<any[]> {
@@ -105,6 +116,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     industries: asArray(rawSettings?.industries, def.industries),
   }
 
+  // 動作確認用の固定条件（葛飾区 × 整体 × 5件）
+  if (rawSettings?.testFixed) {
+    settings.areas = ['東京都葛飾区']
+    settings.industries = ['整体']
+    settings.fetchLimit = 5
+  }
+
   const { data: runRow } = await admin
     .from('auto_lead_runs')
     .insert({ source: 'google_places', status: 'running', created_by_id: userId })
@@ -115,7 +133,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   const queries: string[] = []
   for (const a of settings.areas) for (const i of settings.industries) queries.push(`${a} ${i}`)
 
-  const counts = { fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0 }
+  const counts = {
+    fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
+    noPhone: 0, chainExcluded: 0,
+  }
+  const debug: any = { queries, queryResults: [] as any[], sample: null, settings: { ...settings } }
   let errorMessage = ''
 
   try {
@@ -133,14 +155,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     for (const query of queries) {
       if (counts.fetched >= settings.fetchLimit) break
       const remain = settings.fetchLimit - counts.fetched
-      let places: any[] = []
-      try {
-        places = await searchText(apiKey, query, remain)
-      } catch (e: any) {
+      const r = await searchTextRaw(apiKey, query, remain)
+      debug.queryResults.push({ query, status: r.status, placesLength: r.places.length, error: r.error })
+      if (r.error) {
         counts.error++
-        errorMessage = String(e?.message || e)
-        continue
+        errorMessage = r.error
       }
+      const places = r.places
 
       for (const p of places) {
         if (counts.fetched >= settings.fetchLimit) break
@@ -199,6 +220,39 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
         else counts.hold++
         if (classified.duplicate_of_case_id) counts.duplicate++
+        if (!classified.phone_normalized) counts.noPhone++
+        if (
+          classified.should_exclude_from_call_list &&
+          (classified.is_chain_store || classified.is_in_shopping_mall || classified.is_in_station_building || classified.is_large_company_branch)
+        ) counts.chainExcluded++
+
+        // 先頭1件のサンプル（なぜその判定になったか確認用）
+        if (!debug.sample) {
+          debug.sample = {
+            place: {
+              name: p.displayName?.text || '',
+              address: p.formattedAddress || '',
+              nationalPhoneNumber: p.nationalPhoneNumber || '',
+              internationalPhoneNumber: p.internationalPhoneNumber || '',
+              websiteUri: p.websiteUri || '',
+              primaryType: p.primaryType || '',
+              types: p.types || [],
+              rating: p.rating ?? null,
+              userRatingCount: p.userRatingCount ?? null,
+              businessStatus: p.businessStatus || '',
+            },
+            classified: {
+              lead_temperature: classified.lead_temperature,
+              owner_reachability_score: classified.owner_reachability_score,
+              is_new_gbp: isNewGbp,
+              phone_normalized: classified.phone_normalized || '',
+              should_exclude_from_call_list: classified.should_exclude_from_call_list,
+              exclusion_reason: classified.exclusion_reason || '',
+              detected_signals: payload.detected_signals,
+              duplicate_of_case_id: classified.duplicate_of_case_id || null,
+            },
+          }
+        }
 
         let candidateId: string | null = existing?.id || null
         const alreadyImported = !!existing?.imported_to_cases
@@ -271,7 +325,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, queries: queries.length, ...counts }
+    debug.errorMessage = errorMessage || null
+    return { ok: true, runId, queries: queries.length, ...counts, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({
