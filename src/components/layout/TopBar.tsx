@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, LogOut } from 'lucide-react'
+import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/context/AuthContext'
 import KpiBar from './KpiBar'
@@ -45,6 +45,7 @@ export default function TopBar() {
             <ListChecks className="h-3.5 w-3.5" />
             案件
           </a>
+          {navItem('/leads', 'AI投入', <Sparkles className="h-3.5 w-3.5" />)}
           {navItem('/appointments', '訪問予定', <Calendar className="h-3.5 w-3.5" />)}
           {navItem(
             '/analytics',

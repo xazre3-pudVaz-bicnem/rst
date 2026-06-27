@@ -187,6 +187,73 @@ export const DEFAULT_TEMPLATES: { category: string; title: string; body: string;
   { category: 'memo', title: 'アポ獲得', body: '訪問アポイントを獲得。', status: 'アポ獲得' },
 ]
 
+// ============================================================
+// AI投入リスト（lead_candidates）
+// ============================================================
+export const LEAD_TEMP_COLORS: Record<string, string> = {
+  HOT: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+  WARM: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
+  HOLD: 'bg-slate-100 text-slate-600 dark:bg-slate-700/50 dark:text-slate-300',
+  EXCLUDED: 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700/60 dark:text-zinc-300',
+}
+export const LEAD_TEMP_LABELS: Record<string, string> = {
+  HOT: 'HOT（即投入）', WARM: 'WARM（参考）', HOLD: 'HOLD（保留）', EXCLUDED: 'EXCLUDED（除外）',
+}
+
+/** 新規シグナルのラベル */
+export const SIGNAL_LABELS = {
+  is_new_gbp: '新規GBP',
+  is_new_instagram: '新規Instagram',
+  is_new_website: '新規HP',
+  is_new_ad_listing: '新規広告',
+  is_new_corporation: '新設法人',
+} as const
+
+/** 大手チェーン/フランチャイズ名（部分一致で除外判定。随時追加可） */
+export const CHAIN_NAMES = [
+  'マクドナルド', 'スターバックス', 'スタバ', 'ケンタッキー', 'モスバーガー', 'ロッテリア',
+  'ガスト', 'サイゼリヤ', 'バーミヤン', 'ジョナサン', '吉野家', 'すき家', '松屋', 'なか卯',
+  'ドトール', 'タリーズ', 'コメダ', 'プロント', 'サンマルク', '丸亀製麺', 'はなまるうどん',
+  'ユニクロ', 'ジーユー', 'GU', 'しまむら', '無印良品', 'ニトリ', 'カインズ', 'コーナン',
+  'セブンイレブン', 'ファミリーマート', 'ローソン', 'ミニストップ', 'ヤマダ電機', 'ビックカメラ',
+  'ヨドバシ', 'ケーズデンキ', 'エディオン', 'ブックオフ', 'ハードオフ', 'ゲオ', 'GEO', 'TSUTAYA',
+  'QBハウス', 'TBC', 'たかの友梨', 'ミュゼ', 'ライザップ', 'RIZAP', 'エニタイム', 'カーブス',
+  'ゴールドジム', 'チョコザップ', 'chocoZAP', 'ホリデイスポーツ', 'コナミスポーツ',
+  '明光義塾', '公文', 'KUMON', '東進', '河合塾', '駿台', '個別教室のトライ', 'ビッグエコー',
+  'カラオケ館', 'まねきねこ', 'ほっともっと', 'オリジン弁当', '大戸屋', 'やよい軒',
+  'アパマンショップ', 'エイブル', 'ミニミニ', 'ハウスドゥ', '大東建託', 'ホットペッパー',
+  'ほぐしの達人', 'りらくる', 'カラダファクトリー', '大手', '大黒屋',
+]
+
+/** 大型商業施設・百貨店・駅ビル名（住所/店名の部分一致で除外判定） */
+export const MALL_KEYWORDS = [
+  'イオンモール', 'イオン', 'ららぽーと', 'アリオ', 'ラゾーナ', 'テラスモール', 'グランツリー',
+  'コクーン', 'ダイバーシティ', 'ヴィーナスフォート', 'アウトレット', 'プレミアムアウトレット',
+  'ルミネ', 'アトレ', 'マルイ', '丸井', 'パルコ', 'PARCO', '高島屋', '三越', '伊勢丹', 'そごう',
+  '西武', '東武百貨店', '大丸', '松坂屋', '京王', '小田急百貨店', '東急百貨店', 'ヒカリエ',
+  'コレド', 'グランスタ', 'エキュート', 'グランデュオ', 'ペリエ', 'セレオ', 'アピタ', 'ピアゴ',
+  'ゆめタウン', 'モラージュ', 'ビバモール', 'ステラタウン', 'ショッピングモール', 'ショッピングセンター',
+  'ショッピングタウン', '百貨店', '駅ビル', '○○店内', '館内',
+]
+
+/** 駅ビル系（参考。MALL_KEYWORDS に含まれるが個別フラグ用） */
+export const STATION_KEYWORDS = ['駅ビル', 'エキュート', 'アトレ', 'ルミネ', 'グランスタ', 'セレオ', 'ペリエ', 'グランデュオ', '駅directly', '駅ナカ', '駅構内']
+
+/** 支店・営業所などの大手企業拠点 */
+export const BRANCH_KEYWORDS = ['支店', '営業所', '支社', '出張所', '本部', '事業所']
+
+/** 明らかに営業対象外（業種・施設名） */
+export const EXCLUDED_NAME_KEYWORDS = ['市役所', '区役所', '町役場', '公民館', '消防署', '警察署', '小学校', '中学校', '高等学校', '大学', '病院', '診療所', 'クリニック（総合）', '図書館', '郵便局', '銀行', '信用金庫']
+
+/** AI投入リスト設定（localStorage） */
+export const LS_LEAD_SETTINGS = 'rst_lead_settings'
+export const DEFAULT_LEAD_SETTINGS = {
+  autoImport: true,
+  dailyCap: 30,
+  areas: '東京・神奈川・埼玉・千葉・茨城・栃木・群馬',
+  industries: '飲食・美容・健康・整体・サロン・カフェ・ジム',
+}
+
 /** タウンページ検索の対象開始日 */
 export const TOWNPAGE_CUTOFF = '2026-06-18'
 

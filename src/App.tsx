@@ -16,6 +16,7 @@ const Appointments = lazy(() => import('@/pages/Appointments'))
 const Analytics = lazy(() => import('@/pages/Analytics'))
 const Users = lazy(() => import('@/pages/Users'))
 const AuditLog = lazy(() => import('@/pages/AuditLog'))
+const Leads = lazy(() => import('@/pages/Leads'))
 const MobileCall = lazy(() => import('@/pages/MobileCall'))
 
 function PageFallback() {
@@ -44,6 +45,7 @@ export default function App() {
                 <Route path="/home" element={<ProtectedRoute><Home /></ProtectedRoute>} />
                 <Route path="/appointments" element={<ProtectedRoute><Appointments /></ProtectedRoute>} />
                 <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+                <Route path="/leads" element={<ProtectedRoute><Leads /></ProtectedRoute>} />
                 <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
                 <Route path="/audit" element={<ProtectedRoute><AuditLog /></ProtectedRoute>} />
               </Routes>
