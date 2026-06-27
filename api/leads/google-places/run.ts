@@ -2,20 +2,20 @@
 // POST /api/leads/google-places/run  … 手動実行（要ログイン）
 // GET  /api/leads/google-places/run  … 接続状態（APIキー設定有無）
 //
-// 重要: GET（状態確認）は依存ゼロで動くようにし、重いアダプタ(@supabase/
-// google-places/src参照)は POST のときだけ動的importする。これにより、
-// 万一アダプタのバンドルに失敗しても状態確認は確実に応答する。
+// 共通処理は src/lib/googlePlacesRun.ts に置き、静的importで取り込む
+// （Vercel/esbuild が関数にバンドルするため実行時の module 解決が不要）。
 // ============================================================
+import { getAdminClient, runGooglePlaces } from '../../../src/lib/googlePlacesRun'
 
 export default async function handler(req: any, res: any) {
-  // ---- 接続状態（フロントの「未設定」表示用。依存なしで即応答） ----
+  // ---- 接続状態（依存コードを実行せず process.env のみで即応答） ----
   if (req.method === 'GET') {
     res.setHeader('Cache-Control', 'no-store, max-age=0')
     const key = process.env.GOOGLE_MAPS_API_KEY || ''
     return res.status(200).json({
       ok: true,
       configured: key.length > 0,
-      keyLength: key.length, // 値は返さない（長さのみで設定有無を確認）
+      keyLength: key.length,
       hasSupabaseUrl: !!process.env.SUPABASE_URL,
       hasServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
       node: process.version,
@@ -34,17 +34,9 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です' })
   }
 
-  // 重いアダプタは実行時のみ読み込む（状態確認を巻き込まない）
-  let mod: any
-  try {
-    mod = await import('../../_lib/runGooglePlaces')
-  } catch (e: any) {
-    return res.status(500).json({ error: 'サーバーモジュールの読み込みに失敗しました: ' + String(e?.message || e) })
-  }
-
   let admin: any
   try {
-    admin = mod.getAdminClient()
+    admin = getAdminClient()
   } catch (e: any) {
     return res.status(500).json({ error: String(e?.message || e) })
   }
@@ -59,7 +51,7 @@ export default async function handler(req: any, res: any) {
   const settings = body?.settings || {}
 
   try {
-    const result = await mod.runGooglePlaces(admin, apiKey, settings, userData.user.id)
+    const result = await runGooglePlaces(admin, apiKey, settings, userData.user.id)
     return res.status(200).json(result)
   } catch (e: any) {
     return res.status(500).json({ error: String(e?.message || e) })

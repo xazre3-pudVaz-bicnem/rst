@@ -1,12 +1,12 @@
 // ============================================================
-// Google Places (New) Source Adapter — サーバー専用
-// APIキーはここ（Vercel Function）でのみ使用。フロントには出さない。
-// 既存の判定ロジック(classifyLead)を再利用してHOT/HOLD/EXCLUDEDに分類。
-// ※ このファイルは Vercel Functions 用。フロントのビルド(tsc/vite)対象外。
+// Google Places (New) 実行ロジック（サーバー専用）
+// Vercel Functions(api/*) から静的importして使う。
+// ※ ブラウザからは参照されない（クライアントバンドルには含まれない）。
+//    秘密情報はコードに持たず、すべて process.env から実行時取得する。
 // ============================================================
 import { createClient } from '@supabase/supabase-js'
-import { classifyLead } from '../../src/lib/leadScoring'
-import { DEFAULT_STATUS } from '../../src/lib/constants'
+import { classifyLead } from './leadScoring'
+import { DEFAULT_STATUS } from './constants'
 
 const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const FIELD_MASK = [
@@ -105,7 +105,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     industries: asArray(rawSettings?.industries, def.industries),
   }
 
-  // 実行ログ開始
   const { data: runRow } = await admin
     .from('auto_lead_runs')
     .insert({ source: 'google_places', status: 'running', created_by_id: userId })
@@ -122,13 +121,12 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   try {
     const cases = await fetchCases(admin)
 
-    // 本日のcases投入数（日次上限）
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: importedToday } = await admin
       .from('lead_candidates')
       .select('id', { count: 'exact', head: true })
       .gte('imported_at', startToday.toISOString())
-    let importedCount = importedToday || 0
+    let importedCount: number = importedToday || 0
 
     const nowIso = new Date().toISOString()
 
@@ -147,25 +145,24 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       for (const p of places) {
         if (counts.fetched >= settings.fetchLimit) break
         counts.fetched++
-        const placeId = p.id || ''
+        const placeId: string = p.id || ''
         const phone = phoneOf(p)
 
-        // 既存lead_candidate（place_id）を確認 → first_seen 基準で新規判定
         let existing: any = null
         if (placeId) {
           const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
           existing = data && data[0] ? data[0] : null
         }
-        const firstSeen = existing?.first_seen_at || nowIso
+        const firstSeen: string = existing?.first_seen_at || nowIso
         const ageDays = (Date.now() - new Date(firstSeen).getTime()) / 86400000
         const isNewGbp = ageDays <= 30
-        const reviewCount = typeof p.userRatingCount === 'number' ? p.userRatingCount : null
+        const reviewCount: number | null = typeof p.userRatingCount === 'number' ? p.userRatingCount : null
 
         const classified: any = classifyLead(
           {
             name: p.displayName?.text || '',
             address: p.formattedAddress || '',
-            industry: query.split(' ').slice(-1)[0] || null,
+            industry: query.split(' ').slice(-1)[0],
             phone_number: phone,
             website_url: p.websiteUri || '',
             place_id: placeId,
@@ -175,7 +172,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           cases,
         )
 
-        // レビュー数のニュアンスをコメントに反映
         if (isNewGbp && reviewCount !== null && reviewCount <= 3 && classified.lead_temperature === 'HOT') {
           classified.ai_comment =
             `Googleビジネスプロフィールを新規候補として検出しました。電話番号が確認でき、レビュー数が${reviewCount}件と少ないため、Googleマップ掲載直後またはWeb集客を始めた直後の可能性があります。大型チェーンや商業施設内テナントではないと判定したため、MEO初期整備・HP制作提案の優先度が高いです。`
@@ -201,11 +197,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
         if (classified.lead_temperature === 'HOT') counts.hot++
         else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
-        else counts.hold++ // HOLD/WARM
+        else counts.hold++
         if (classified.duplicate_of_case_id) counts.duplicate++
 
-        // 保存（既存はupdate、新規はinsert）
-        let candidateId = existing?.id || null
+        let candidateId: string | null = existing?.id || null
         const alreadyImported = !!existing?.imported_to_cases
         if (existing) {
           await admin.from('lead_candidates').update(payload).eq('id', existing.id)
@@ -218,7 +213,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           candidateId = ins?.id || null
         }
 
-        // HOT自動投入
         const canImport =
           settings.autoImport &&
           classified.lead_temperature === 'HOT' &&
@@ -254,7 +248,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           if (created?.id) {
             counts.imported++
             importedCount++
-            // 監査ログ（任意・失敗無視）
             await admin.from('audit_logs').insert({
               action: 'create', entity: 'case', entity_id: created.id, entity_name: classified.name,
               detail: 'AI自動投入（Google Places）', actor_id: userId,
@@ -265,7 +258,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     }
 
     await admin.from('auto_lead_runs').update({
-      status: counts.error > 0 ? 'success' : 'success',
+      status: 'success',
       finished_at: new Date().toISOString(),
       search_queries_count: queries.length,
       fetched_count: counts.fetched,
