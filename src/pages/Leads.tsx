@@ -52,6 +52,8 @@ export default function Leads() {
   const [showSettings, setShowSettings] = useState(false)
   // Google Places
   const [gpConfigured, setGpConfigured] = useState<boolean | null>(null)
+  const [gpReachable, setGpReachable] = useState<boolean | null>(null)
+  const [gpDiag, setGpDiag] = useState<{ keyLength?: number; hasSupabaseUrl?: boolean; hasServiceRole?: boolean } | null>(null)
   const [gpRunning, setGpRunning] = useState(false)
   const [gpResult, setGpResult] = useState<Record<string, number | string> | null>(null)
   const [lastRun, setLastRun] = useState<LeadRun | null>(null)
@@ -77,12 +79,21 @@ export default function Leads() {
   useEffect(() => { load(); loadRuns() }, [load, loadRuns])
 
   // Google Places API 接続状態
-  useEffect(() => {
-    fetch('/api/leads/google-places/run')
-      .then((r) => (r.ok ? r.json() : { configured: false }))
-      .then((j) => setGpConfigured(!!j.configured))
-      .catch(() => setGpConfigured(false))
+  const checkGpStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/leads/google-places/run', { cache: 'no-store' })
+      const j = await r.json().catch(() => ({}))
+      setGpReachable(r.ok)
+      setGpConfigured(!!j.configured)
+      setGpDiag(j)
+    } catch {
+      setGpReachable(false)
+      setGpConfigured(false)
+      setGpDiag(null)
+    }
   }, [])
+
+  useEffect(() => { checkGpStatus() }, [checkGpStatus])
 
   async function runPlaces() {
     if (!settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
@@ -337,21 +348,37 @@ export default function Leads() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold">Google Places API 連携（新規GBP）</span>
-                {gpConfigured === null ? (
+                {gpReachable === null ? (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
+                ) : gpReachable === false ? (
+                  <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">API未到達（関数未デプロイ?）</span>
                 ) : gpConfigured ? (
                   <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">接続OK（キー設定済み）</span>
                 ) : (
                   <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">未設定（GOOGLE_MAPS_API_KEY）</span>
                 )}
+                <button className="text-[10px] text-primary underline" onClick={checkGpStatus}>再確認</button>
               </div>
-              <Button size="sm" onClick={runPlaces} disabled={gpRunning || gpConfigured === false}>
+              <Button size="sm" onClick={runPlaces} disabled={gpRunning || gpConfigured !== true}>
                 <Play className="h-3.5 w-3.5" />{gpRunning ? '取得中…' : 'Google Placesで取得・投入'}
               </Button>
             </div>
-            {gpConfigured === false && (
+            {gpReachable === false && (
               <div className="mt-2 rounded-md bg-amber-50 p-2 text-2xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-                サーバーに <span className="font-mono">GOOGLE_MAPS_API_KEY</span> が未設定です。Vercelの環境変数に追加して再デプロイしてください（フロントには露出しません）。
+                <span className="font-mono">/api/leads/google-places/run</span> に到達できません。Vercelに <span className="font-mono">api/</span> の関数がデプロイされているか（最新デプロイ・本番URLか）を確認してください。ローカル(<span className="font-mono">npm run dev</span>)では関数が無いため常にこの表示になります。
+              </div>
+            )}
+            {gpReachable === true && gpConfigured === false && (
+              <div className="mt-2 rounded-md bg-amber-50 p-2 text-2xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                関数は動作していますが、サーバーに <span className="font-mono">GOOGLE_MAPS_API_KEY</span> が見えていません（長さ {gpDiag?.keyLength ?? 0}）。Vercelの Environment Variables で <b>Production</b> に <span className="font-mono">GOOGLE_MAPS_API_KEY</span> を追加し（<span className="font-mono">VITE_</span>は付けない）、<b>本番デプロイをRedeploy</b>してから「再確認」を押してください。表示中のURLが本番ドメインか（プレビューでないか）もご確認ください。
+              </div>
+            )}
+            {gpReachable === true && (
+              <div className="mt-1.5 flex flex-wrap gap-2 text-[9px] text-muted-foreground">
+                <span>診断:</span>
+                <span>GOOGLE_MAPS_API_KEY 長さ {gpDiag?.keyLength ?? 0}</span>
+                <span>SUPABASE_URL {gpDiag?.hasSupabaseUrl ? 'あり' : 'なし'}</span>
+                <span>SERVICE_ROLE {gpDiag?.hasServiceRole ? 'あり' : 'なし'}</span>
               </div>
             )}
             {gpResult && !gpResult.error && (
