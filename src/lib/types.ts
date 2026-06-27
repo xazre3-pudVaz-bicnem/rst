@@ -182,10 +182,40 @@ export interface LeadCandidate {
   imported_to_cases: boolean
   imported_at?: string | null
   duplicate_of_case_id?: string | null
+  // Google Places 由来
+  google_place_id?: string | null
+  google_maps_uri?: string | null
+  rating?: number | null
+  user_rating_count?: number | null
+  business_status?: string | null
+  place_types?: string[] | null
+  primary_type?: string | null
+  raw_payload?: unknown
+  search_query?: string | null
+  source_run_id?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
   updated_date: string
+}
+
+/** 自動取得バッチの実行ログ */
+export interface LeadRun {
+  id: string
+  source: string
+  status: string
+  started_at: string
+  finished_at?: string | null
+  search_queries_count: number
+  fetched_count: number
+  hot_count: number
+  hold_count: number
+  excluded_count: number
+  imported_count: number
+  duplicate_count: number
+  error_count: number
+  error_message?: string | null
+  created_date: string
 }
 
 /** スクレイプ等で取得した生候補（判定前） */
@@ -208,10 +238,12 @@ export interface RawLead {
 
 /** AI投入リストの設定（localStorage） */
 export interface LeadImportSettings {
-  autoImport: boolean
-  dailyCap: number
-  areas: string
-  industries: string
+  autoImport: boolean       // HOTをcasesへ自動投入
+  placesEnabled: boolean    // Google Places実行ON/OFF
+  fetchLimit: number        // 1回あたりの取得上限
+  dailyCap: number          // 1日あたりの投入上限
+  areas: string             // 改行/読点区切り
+  industries: string        // 改行/読点区切り
 }
 
 /** Auto search settings stored in localStorage */

@@ -305,6 +305,52 @@ ABC食堂,03-1234-5678,東京都新宿区西新宿1-1-1,飲食
 
 ---
 
+## 7-4. AI投入リスト × Google Places（新規GBP自動投入）
+
+地域×業種でGoogleビジネスプロフィール候補を取得し、**電話番号あり＋新規GBP＋オーナー到達スコア80以上＋非チェーン/非施設内テナント＋重複なし** の「HOT」だけを案件(cases)へ自動投入します（status=未架電 / source=AI自動投入）。APIキーは**サーバー側(Vercel Functions)のみ**で使用し、フロントには露出しません。
+
+### 必要なSQL（Supabase SQL Editorで実行）
+1. `migrations/2026-06-27_lead_candidates.sql`（未実行なら先に）
+2. `migrations/2026-06-27_google_places.sql`（place項目の追加＋実行ログ `auto_lead_runs`）
+> いずれも冪等・既存テーブル/RLSを壊しません。
+
+### Google Cloud で有効化するAPI
+- **Places API (New)** を有効化
+- APIキーを発行（サーバー用。HTTPリファラ制限は付けず、**APIキー制限で Places API (New) のみ許可**を推奨）
+- 課金を有効化（電話番号フィールドは Enterprise SKU。少量なら無料枠内のことが多い）
+
+### Vercel 環境変数（Settings → Environment Variables）
+| 変数 | 用途 |
+|---|---|
+| `GOOGLE_MAPS_API_KEY` | Google Places API キー（**VITE_ は付けない**） |
+| `SUPABASE_URL` | サーバーからSupabaseへ書込（フロントの VITE_SUPABASE_URL と同じ値） |
+| `SUPABASE_SERVICE_ROLE_KEY` | service role キー（RLSをバイパスして書込） |
+| `CRON_SECRET` | 毎朝の自動実行を保護するランダム文字列 |
+
+設定後に **Redeploy**。`GOOGLE_MAPS_API_KEY` 未設定でもアプリは落ちず、AI投入画面に「未設定」と表示されます。
+
+### 手動実行（まずこれで動作確認）
+1. アプリ上部ナビ「**AI投入**」を開く
+2. 「Google Places API 連携」パネルで状態が **接続OK** を確認
+3. 必要なら「設定」で 対象エリア / 対象業種 / 取得上限 / 投入上限 / 各ON/OFF を調整
+4. **「Google Placesで取得・投入」** を押す → 取得/HOT/HOLD/除外/投入/重複の件数が表示され、HOTがcasesに入ります
+
+### 毎朝6:00の自動実行（Cron）
+- `vercel.json` に `"crons": [{ "path": "/api/cron/auto-leads", "schedule": "0 21 * * *" }]` を設定済み（**UTC 21:00 = JST 6:00**）
+- `/api/cron/auto-leads` は `CRON_SECRET` で保護。Vercel Cron が `Authorization: Bearer <CRON_SECRET>` を自動送信します
+- Cronは Vercel の **Pro プラン以上**で利用可。まずは手動実行で確認してください
+
+### 実データ取得の確認方法
+- 画面の「最終実行」表示、または Supabase の `auto_lead_runs`（実行ログ）/ `lead_candidates`（候補）を確認
+- HOTがcasesに入ったかは案件一覧（メモに「【AI自動投入 / GBP】」が入ります）
+
+### 判定の要点
+- **電話番号なし → HOLD**（除外ではない）／チェーン・施設内・駅ビル・百貨店・支店 → **EXCLUDED**／曖昧 → **HOLD**
+- 新規GBPは「**初回発見から30日以内**」で判定（Placesに作成日が無いためRST側の `first_seen_at` 基準）。レビュー数が少ないほどHOT理由を強めます
+- HOT/HOLD/除外それぞれに `auto_import_reason` と `ai_comment` を保存
+
+---
+
 ## 8. スクリプト
 
 | コマンド | 内容 |
