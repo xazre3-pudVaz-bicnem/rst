@@ -208,6 +208,30 @@ export interface LeadCandidate {
   oldest_review_is_recent?: boolean | null
   review_dates_checked?: boolean | null
   review_newness_reason?: string | null
+  // Instagram 由来
+  lead_source?: string | null
+  instagram_media_id?: string | null
+  instagram_permalink?: string | null
+  instagram_caption?: string | null
+  instagram_timestamp?: string | null
+  instagram_account_url?: string | null
+  source_hashtag?: string | null
+  extracted_shop_name?: string | null
+  extracted_area?: string | null
+  extracted_industry?: string | null
+  extracted_address?: string | null
+  extracted_phone?: string | null
+  extracted_url?: string | null
+  extracted_line_url?: string | null
+  extracted_reservation_url?: string | null
+  matched_google_place_id?: string | null
+  match_confidence?: number | null
+  instagram_newness_reason?: string | null
+  ig_classification?: string | null
+  gbp_unregistered_candidate?: boolean | null
+  ig_phone_reachable_score?: number | null
+  ig_newness_score?: number | null
+  ig_auto_importable?: boolean | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -288,6 +312,15 @@ export interface LeadImportSettings {
   maxPerQuery: number       // 1クエリあたり最大取得件数（既定10）
   rotation: boolean         // 未実行/古いクエリから巡回
   autoFetch: boolean        // 毎朝6:00のCron自動取得ON/OFF（app_configに保存）
+  // Instagram新店取得
+  igEnabled: boolean        // Instagram取得ON/OFF
+  igAutoImport: boolean     // IG単体HOT候補をcasesへ自動投入（初期OFF）
+  igRequirePhone: boolean   // 自動投入は電話番号必須（初期ON）
+  igAllowWithoutPlace: boolean // Places未照合でも自動投入可（初期OFF）
+  igRequireOpenWord: boolean   // 新規オープン文言必須（初期ON）
+  igRequireArea: boolean       // 一都三県エリア情報必須（初期ON）
+  igPeriodDays: number         // 対象投稿期間（既定14日）
+  igMaxHashtagsPerDay: number  // 1日のハッシュタグ検索数（既定5・7日30ユニーク制限内）
 }
 
 /** Auto search settings stored in localStorage */

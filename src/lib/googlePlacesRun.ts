@@ -63,7 +63,7 @@ function asArray(v: unknown): string[] {
   return []
 }
 
-function parseOpeningDate(v: any): string | null {
+export function parseOpeningDate(v: any): string | null {
   if (!v) return null
   if (typeof v === 'string') return v
   if (typeof v === 'object' && v.year) {
@@ -74,7 +74,7 @@ function parseOpeningDate(v: any): string | null {
   return null
 }
 
-function reviewDates(p: any): { latest: string | null; oldest: string | null } {
+export function reviewDates(p: any): { latest: string | null; oldest: string | null } {
   const reviews = Array.isArray(p.reviews) ? p.reviews : []
   let latest: string | null = null
   let oldest: string | null = null
@@ -89,12 +89,12 @@ function reviewDates(p: any): { latest: string | null; oldest: string | null } {
   return { latest, oldest }
 }
 
-function phoneOf(p: any): string {
+export function phoneOf(p: any): string {
   return p.nationalPhoneNumber || p.internationalPhoneNumber || ''
 }
 
 /** 第1段階: 軽い検索。例外を投げず {status, places, error} を返す */
-async function searchLight(apiKey: string, query: string, maxResultCount: number): Promise<{ status: number; places: any[]; error: string | null }> {
+export async function searchLight(apiKey: string, query: string, maxResultCount: number): Promise<{ status: number; places: any[]; error: string | null }> {
   try {
     const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
@@ -112,7 +112,7 @@ async function searchLight(apiKey: string, query: string, maxResultCount: number
 }
 
 /** 第2段階: 詳細取得（電話・レビュー日・開店日）。openingDate/reviewsが400なら自動でBASEに落とす */
-async function placeDetails(apiKey: string, placeId: string): Promise<any | null> {
+export async function placeDetails(apiKey: string, placeId: string): Promise<any | null> {
   async function attempt(ext: boolean) {
     const res = await fetch(DETAILS_ENDPOINT + encodeURIComponent(placeId), {
       method: 'GET',
@@ -132,7 +132,7 @@ async function placeDetails(apiKey: string, placeId: string): Promise<any | null
   }
 }
 
-async function fetchCases(admin: any): Promise<any[]> {
+export async function fetchCases(admin: any): Promise<any[]> {
   const all: any[] = []
   for (let page = 0; page < 10; page++) {
     const from = page * 1000

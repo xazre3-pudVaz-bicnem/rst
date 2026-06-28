@@ -68,6 +68,11 @@ export default function Leads() {
   // 自動取得（Cron）巡回状況
   const [qlog, setQlog] = useState<{ query: string; prefecture: string | null; area: string | null; last_run_at: string; hot_count: number; places_count: number }[]>([])
   const [savingCfg, setSavingCfg] = useState(false)
+  // Instagram
+  const [igConfigured, setIgConfigured] = useState<boolean | null>(null)
+  const [igRunning, setIgRunning] = useState(false)
+  const [igResult, setIgResult] = useState<any>(null)
+  const [sourceTab, setSourceTab] = useState<'places' | 'instagram'>('places')
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -110,6 +115,46 @@ export default function Leads() {
   }, [])
 
   useEffect(() => { checkGpStatus() }, [checkGpStatus])
+
+  // Instagram API 接続状態
+  const checkIgStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/leads/instagram/run', { cache: 'no-store' })
+      const j = await r.json().catch(() => ({}))
+      setIgConfigured(r.ok ? !!j.configured : false)
+    } catch { setIgConfigured(false) }
+  }, [])
+  useEffect(() => { checkIgStatus() }, [checkIgStatus])
+
+  async function runInstagram() {
+    if (!settings.igEnabled) { toast.error('設定でInstagram取得がOFFです'); return }
+    if (igConfigured === false) { toast.error('IG_ACCESS_TOKEN / IG_USER_ID が未設定です'); return }
+    setIgRunning(true); setIgResult(null)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/leads/instagram/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          settings: {
+            igAutoImport: settings.igAutoImport, igRequirePhone: settings.igRequirePhone,
+            igAllowWithoutPlace: settings.igAllowWithoutPlace, igRequireOpenWord: settings.igRequireOpenWord,
+            igRequireArea: settings.igRequireArea, igPeriodDays: settings.igPeriodDays,
+            igMaxHashtagsPerDay: settings.igMaxHashtagsPerDay, dailyCap: settings.dailyCap,
+          },
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { toast.error(json.error || 'Instagram取得に失敗しました'); setIgResult({ error: json.error }); return }
+      setIgResult(json)
+      toast.success(`Instagram完了: 投稿${json.recent ?? 0} / HOT候補${(json.googleHot ?? 0) + (json.igOnlyHot ?? 0)} / 投入${json.imported ?? 0}`)
+      load(); loadRuns()
+    } catch (e) {
+      toast.error('実行に失敗しました: ' + jpError(e))
+    } finally { setIgRunning(false) }
+  }
 
   async function runPlaces(testFixed = false) {
     if (!testFixed && !settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
@@ -192,7 +237,18 @@ export default function Leads() {
         exclude100: settings.exclude100,
         unknownHold: settings.unknownHold,
       })
-      toast.success('自動取得設定を保存しました（毎朝6:00のCronに反映）')
+      await AppConfigApi.set('instagram_auto', {
+        igEnabled: settings.igEnabled,
+        igAutoImport: settings.igAutoImport,
+        igRequirePhone: settings.igRequirePhone,
+        igAllowWithoutPlace: settings.igAllowWithoutPlace,
+        igRequireOpenWord: settings.igRequireOpenWord,
+        igRequireArea: settings.igRequireArea,
+        igPeriodDays: settings.igPeriodDays,
+        igMaxHashtagsPerDay: settings.igMaxHashtagsPerDay,
+        dailyCap: settings.dailyCap,
+      })
+      toast.success('自動取得設定を保存しました（毎朝6:00 Places / 6:30 Instagram のCronに反映）')
     } catch (e) {
       toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
@@ -342,9 +398,13 @@ export default function Leads() {
     }
   }, [candidates])
 
+  const sourceCandidates = useMemo(
+    () => candidates.filter((c) => sourceTab === 'instagram' ? c.lead_source === 'instagram_hashtag' : c.lead_source !== 'instagram_hashtag'),
+    [candidates, sourceTab],
+  )
   const filtered = useMemo(
-    () => (filter === 'ALL' ? candidates : candidates.filter((c) => c.lead_temperature === filter)),
-    [candidates, filter],
+    () => (filter === 'ALL' ? sourceCandidates : sourceCandidates.filter((c) => c.lead_temperature === filter)),
+    [sourceCandidates, filter],
   )
 
   const card = (icon: React.ReactNode, label: string, value: number, color: string) => (
@@ -464,6 +524,48 @@ export default function Leads() {
               </div>
               <div className="text-[10px] text-muted-foreground lg:col-span-4">
                 ※検索クエリは「エリア × 業種」で生成されます（例:「東京都葛飾区 美容室」）。毎朝6:00の自動実行は Vercel Cron（/api/cron/auto-leads）で行います。
+              </div>
+
+              {/* Instagram 設定 */}
+              <div className="mt-1 border-t pt-2 lg:col-span-4">
+                <div className="mb-1 text-xs font-bold text-pink-600 dark:text-pink-300">Instagram新店取得（ハッシュタグ）</div>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igEnabled} onChange={(e) => saveSettings({ ...settings, igEnabled: e.target.checked })} />
+                    Instagram取得を有効化
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igAutoImport} onChange={(e) => saveSettings({ ...settings, igAutoImport: e.target.checked })} />
+                    IG単体HOT候補を自動投入（初期OFF）
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igRequirePhone} onChange={(e) => saveSettings({ ...settings, igRequirePhone: e.target.checked })} />
+                    自動投入は電話番号必須
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igAllowWithoutPlace} onChange={(e) => saveSettings({ ...settings, igAllowWithoutPlace: e.target.checked })} />
+                    Places未照合でも投入可
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igRequireOpenWord} onChange={(e) => saveSettings({ ...settings, igRequireOpenWord: e.target.checked })} />
+                    新規オープン文言必須
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.igRequireArea} onChange={(e) => saveSettings({ ...settings, igRequireArea: e.target.checked })} />
+                    一都三県エリア必須
+                  </label>
+                  <div className="space-y-1">
+                    <Label>対象投稿期間（日）</Label>
+                    <Input type="number" min={1} value={settings.igPeriodDays} onChange={(e) => saveSettings({ ...settings, igPeriodDays: Math.max(1, Number(e.target.value) || 14) })} className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>1日のタグ検索数（7日30まで）</Label>
+                    <Input type="number" min={1} max={30} value={settings.igMaxHashtagsPerDay} onChange={(e) => saveSettings({ ...settings, igMaxHashtagsPerDay: Math.max(1, Math.min(30, Number(e.target.value) || 5)) })} className="h-8" />
+                  </div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  ※Instagramは新規シグナルとして使用。Google Places照合は必須にせず、A:Places一致HOT / B:Instagram単体HOT候補（初期は自動投入せずHOLD扱い）/ C:HOLD に分類します。自動実行は Cron（/api/cron/instagram-leads・毎朝6:30）。
+                </div>
               </div>
             </div>
           )}
@@ -673,6 +775,70 @@ export default function Leads() {
             </div>
           </div>
 
+          {/* Instagram新店取得 パネル */}
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-pink-600 dark:text-pink-300">Instagram新店取得（ハッシュタグ）</span>
+                {igConfigured === null ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
+                ) : igConfigured ? (
+                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">接続OK（IGトークン設定済み）</span>
+                ) : (
+                  <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">未設定（IG_ACCESS_TOKEN / IG_USER_ID）</span>
+                )}
+              </div>
+              <Button size="sm" onClick={runInstagram} disabled={igRunning || !settings.igEnabled}>
+                <Sparkles className="h-3.5 w-3.5" />{igRunning ? '取得中...' : 'Instagram取得・実行'}
+              </Button>
+            </div>
+            <div className="mt-1 text-[10px] text-muted-foreground">
+              新規オープン系ハッシュタグを毎朝6:30に巡回（7日30ユニーク制限内）。Places照合は任意。Instagram単体HOT候補は初期は自動投入せずHOLD扱い（このタブの一覧から手動投入できます）。
+            </div>
+            {igResult && (
+              <div className="mt-2 space-y-1">
+                {igResult.error ? (
+                  <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{igResult.error}</div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-muted px-1.5 py-0.5">タグ {igResult.hashtags ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">投稿 {igResult.posts ?? 0}</span>
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">14日以内 {igResult.recent ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">抽出 {igResult.extracted ?? 0}</span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places一致 {igResult.placeMatched ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {igResult.phoneYes ?? 0}</span>
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">Google照合HOT {igResult.googleHot ?? 0}</span>
+                      <span className="rounded bg-pink-100 px-1.5 py-0.5 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300">IG単体HOT候補 {igResult.igOnlyHot ?? 0}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {igResult.hold ?? 0}</span>
+                      <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {igResult.excluded ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {igResult.imported ?? 0}</span>
+                      {Number(igResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {igResult.saveError}</span>}
+                    </div>
+                    {Array.isArray(igResult.debug?.hashtagResults) && (
+                      <details className="rounded border bg-muted/30 p-2 text-[10px]">
+                        <summary className="cursor-pointer text-primary">ハッシュタグ別取得数（{igResult.debug.hashtagResults.length}）</summary>
+                        <div className="mt-1 max-h-40 overflow-y-auto">
+                          {igResult.debug.hashtagResults.map((h: any, i: number) => (
+                            <div key={i}>#{h.hashtag}: 投稿{h.media}/採用{h.used} ・ Google照合HOT{h.googleHot}/IG単体{h.igOnlyHot}/HOLD{h.hold}/除外{h.excluded}{h.error ? ` ・ ${h.error}` : ''}</div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {igResult.debug?.sample && (
+                      <div className="rounded border bg-muted/30 p-2 text-[10px]">
+                        <div className="font-semibold">サンプル: #{igResult.debug.sample.hashtag}（{fmtDate(igResult.debug.sample.timestamp)}）</div>
+                        <div>店名: {igResult.debug.sample.extracted?.shop_name || '—'} / 業種: {igResult.debug.sample.extracted?.industry || '—'} / エリア: {igResult.debug.sample.extracted?.area || '—'}</div>
+                        <div>電話: {igResult.debug.sample.extracted?.phone || '—'} / 新規文言: {igResult.debug.sample.extracted?.open_word || '—'} / Places: {igResult.debug.sample.matchedPlaceId ? `一致(${igResult.debug.sample.matchConfidence})` : '未照合'}</div>
+                        <div>判定: <b>{igResult.debug.sample.verdict?.classification}</b> ・ {igResult.debug.sample.verdict?.reason}</div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 集計カード */}
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
             {card(<Upload className="h-4 w-4 text-white" />, '本日の自動投入', summary.todayImported, 'bg-primary')}
@@ -685,6 +851,19 @@ export default function Leads() {
             {card(<Store className="h-4 w-4 text-white" />, '新規広告', summary.ad, 'bg-amber-500')}
           </div>
 
+          {/* ソース切替（Google Places / Instagram） */}
+          <div className="flex gap-1">
+            {([['places', 'Google Places'], ['instagram', 'Instagram']] as const).map(([k, lbl]) => (
+              <button
+                key={k}
+                onClick={() => setSourceTab(k)}
+                className={cn('rounded-md border px-3 py-1 text-xs font-medium', sourceTab === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground hover:bg-accent')}
+              >
+                {lbl}（{candidates.filter((c) => k === 'instagram' ? c.lead_source === 'instagram_hashtag' : c.lead_source !== 'instagram_hashtag').length}）
+              </button>
+            ))}
+          </div>
+
           {/* フィルタ */}
           <div className="flex flex-wrap gap-1">
             {FILTERS.map((f) => (
@@ -693,7 +872,7 @@ export default function Leads() {
                 onClick={() => setFilter(f.key)}
                 className={cn('rounded-full border px-3 py-0.5 text-2xs', filter === f.key ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground hover:bg-accent')}
               >
-                {f.label}{f.key !== 'ALL' && ` (${candidates.filter((c) => c.lead_temperature === f.key).length})`}
+                {f.label}{f.key !== 'ALL' && ` (${sourceCandidates.filter((c) => c.lead_temperature === f.key).length})`}
               </button>
             ))}
           </div>
@@ -705,8 +884,77 @@ export default function Leads() {
             <div className="rounded-lg border bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">Supabase が未設定です。</div>
           ) : filtered.length === 0 ? (
             <div className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">
-              候補がありません。「手動実行（モック）」を押すとサンプル候補を判定して取り込みます。
-              <div className="mt-1 text-2xs">※ `lead_candidates` テーブル未作成の場合は migrations/2026-06-27_lead_candidates.sql を実行してください。</div>
+              {sourceTab === 'instagram'
+                ? 'Instagram候補がありません。設定でInstagram取得を有効化し、「Instagram取得・実行」を押してください。'
+                : '候補がありません。「手動実行（モック）」を押すとサンプル候補を判定して取り込みます。'}
+              <div className="mt-1 text-2xs">※ Instagram利用には migrations/2026-06-28_instagram.sql の実行と IG_ACCESS_TOKEN / IG_USER_ID の設定が必要です。</div>
+            </div>
+          ) : sourceTab === 'instagram' ? (
+            <div className="overflow-x-auto rounded-xl border bg-card">
+              <table className="w-full min-w-[1200px] text-2xs">
+                <thead className="bg-muted/50 text-muted-foreground">
+                  <tr>
+                    <th className="p-2 text-left">判定</th>
+                    <th className="p-2 text-left">店名候補 / 業種</th>
+                    <th className="p-2 text-left">エリア</th>
+                    <th className="p-2 text-left">電話</th>
+                    <th className="p-2 text-left">LINE/予約/URL</th>
+                    <th className="p-2 text-left">新規文言 / 投稿日</th>
+                    <th className="p-2 text-center">Places照合</th>
+                    <th className="p-2 text-center">投入可否</th>
+                    <th className="p-2 text-left">理由</th>
+                    <th className="p-2 text-center">リンク</th>
+                    <th className="p-2 text-center">状態</th>
+                    <th className="p-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((c) => {
+                    const klass = c.ig_classification
+                    const badge = klass === 'google_match_hot' ? ['Google照合HOT', 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300']
+                      : klass === 'ig_only_hot' ? ['IG単体HOT候補', 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300']
+                      : klass === 'excluded' ? ['EXCLUDED', 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700']
+                      : ['HOLD', 'bg-slate-100 text-slate-600 dark:bg-slate-700']
+                    return (
+                      <tr key={c.id} className="border-t align-top">
+                        <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', badge[1])}>{badge[0]}</span></td>
+                        <td className="max-w-[160px] p-2">
+                          <div className="font-medium">{c.extracted_shop_name || c.name}</div>
+                          {c.extracted_industry && <div className="text-[9px] text-muted-foreground">{c.extracted_industry}</div>}
+                        </td>
+                        <td className="p-2">{c.extracted_area || '—'}</td>
+                        <td className="p-2">{c.extracted_phone ? <span className="inline-flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-muted-foreground" />{c.extracted_phone}</span> : <span className="text-red-500">なし</span>}</td>
+                        <td className="max-w-[150px] p-2">
+                          <div className="flex flex-col gap-0.5">
+                            {c.extracted_line_url && <span className="text-green-600">LINE</span>}
+                            {c.extracted_reservation_url && <a href={c.extracted_reservation_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">予約URL</a>}
+                            {c.extracted_url && <a href={c.extracted_url} target="_blank" rel="noreferrer" className="truncate text-primary hover:underline">{c.extracted_url}</a>}
+                            {!c.extracted_line_url && !c.extracted_reservation_url && !c.extracted_url && '—'}
+                          </div>
+                        </td>
+                        <td className="p-2">
+                          <div>{c.instagram_caption ? <span className="rounded bg-pink-50 px-1 text-pink-700 dark:bg-pink-500/10 dark:text-pink-300">#{c.source_hashtag}</span> : '—'}</div>
+                          <div className="text-[9px] text-muted-foreground">{fmtDate(c.instagram_timestamp)}</div>
+                        </td>
+                        <td className="p-2 text-center">
+                          {c.matched_google_place_id
+                            ? <span className="text-green-600">一致{c.match_confidence ? `(${c.match_confidence})` : ''}</span>
+                            : <span className="text-amber-600">未照合{c.gbp_unregistered_candidate ? '/GBP未登録?' : ''}</span>}
+                        </td>
+                        <td className="p-2 text-center">{c.ig_auto_importable ? <span className="text-green-600">可</span> : <span className="text-muted-foreground">不可</span>}</td>
+                        <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.instagram_newness_reason ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div></td>
+                        <td className="p-2 text-center">{c.instagram_permalink ? <a href={c.instagram_permalink} target="_blank" rel="noreferrer" className="text-primary hover:underline">投稿</a> : '—'}{c.instagram_account_url && <> / <a href={c.instagram_account_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">アカ</a></>}</td>
+                        <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
+                        <td className="p-2 text-right">
+                          {!c.imported_to_cases && (
+                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border bg-card">
