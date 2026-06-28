@@ -239,6 +239,15 @@ export interface LeadCandidate {
   regional_media_detected_at?: string | null
   extracted_open_date?: string | null
   regional_media_newness_reason?: string | null
+  // Instagram Web検索 由来（search_query は既出のため再宣言しない）
+  source?: string | null
+  search_title?: string | null
+  search_snippet?: string | null
+  line_url?: string | null
+  reservation_url?: string | null
+  official_url?: string | null
+  anthropic_judgement?: unknown
+  newness_type?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -333,6 +342,14 @@ export interface LeadImportSettings {
   regionalMaxSites: number     // 1日の巡回サイト数（既定3）
   regionalMaxArticles: number  // 1サイトの最大記事数（既定5）
   regionalPeriodDays: number   // 記事公開の対象期間（既定30日）
+  // Instagram Web検索
+  iwEnabled: boolean
+  iwAutoImport: boolean        // HOT自動投入（初期OFF）
+  iwRequirePhone: boolean      // 電話番号必須（初期OFF）
+  iwPlacesRequired: boolean    // Google Places照合必須（初期OFF）
+  iwAnthropic: boolean         // Anthropic判定（初期ON）
+  iwMaxQueriesPerDay: number   // 1日最大検索クエリ数（既定30）
+  iwPerQuery: number           // 1クエリ取得件数（既定10）
 }
 
 /** Auto search settings stored in localStorage */

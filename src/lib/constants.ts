@@ -273,6 +273,13 @@ export const DEFAULT_LEAD_SETTINGS = {
   regionalMaxSites: 3,
   regionalMaxArticles: 5,
   regionalPeriodDays: 30,
+  iwEnabled: true,
+  iwAutoImport: false,
+  iwRequirePhone: false,
+  iwPlacesRequired: false,
+  iwAnthropic: true,
+  iwMaxQueriesPerDay: 30,
+  iwPerQuery: 10,
   areas: [
     '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),

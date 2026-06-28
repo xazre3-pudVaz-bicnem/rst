@@ -72,7 +72,11 @@ export default function Leads() {
   const [igConfigured, setIgConfigured] = useState<boolean | null>(null)
   const [igRunning, setIgRunning] = useState(false)
   const [igResult, setIgResult] = useState<any>(null)
-  const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional'>('places')
+  const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw'>('places')
+  const [iwConfigured, setIwConfigured] = useState<boolean | null>(null)
+  const [iwDiag, setIwDiag] = useState<any>(null)
+  const [iwRunning, setIwRunning] = useState(false)
+  const [iwResult, setIwResult] = useState<any>(null)
   const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
@@ -174,6 +178,59 @@ export default function Leads() {
     } catch (e) {
       toast.error('実行に失敗しました: ' + jpError(e))
     } finally { setRmRunning(false) }
+  }
+
+  // Instagram Web検索
+  const checkIwStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/cron/instagram-web-leads', { cache: 'no-store' })
+      const j = await r.json().catch(() => ({}))
+      setIwConfigured(r.ok ? !!j.configured : false); setIwDiag(r.ok ? j : { error: `HTTP ${r.status}` })
+    } catch (e) { setIwConfigured(false); setIwDiag({ error: jpError(e) }) }
+  }, [])
+  useEffect(() => { checkIwStatus() }, [checkIwStatus])
+
+  async function runIw() {
+    if (!settings.iwEnabled) { toast.error('設定でInstagram Web検索がOFFです'); return }
+    if (iwConfigured === false) { toast.error('検索APIキー/Supabaseが未設定です（診断を確認）'); return }
+    setIwRunning(true); setIwResult(null)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/cron/instagram-web-leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          settings: {
+            iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
+            iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
+            areaPreset: settings.areaPreset, industries: parseList(settings.industries), dailyCap: settings.dailyCap,
+          },
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { toast.error(json.error || 'Instagram Web検索に失敗しました'); setIwResult({ error: json.error }); return }
+      setIwResult(json)
+      toast.success(`完了: 取得${json.results ?? 0} / HOT${json.hot ?? 0} / HOLD${json.hold ?? 0}`)
+      load(); loadRuns()
+    } catch (e) { toast.error('実行に失敗しました: ' + jpError(e)) } finally { setIwRunning(false) }
+  }
+
+  async function rejudgeCandidate(c: LeadCandidate) {
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      const res = await fetch('/api/cron/instagram-web-leads', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ rejudge: { id: c.id } }) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok || j.ok === false) throw new Error(j.error || 'failed')
+      toast.success(`再判定: ${j.temperature}`); load()
+    } catch (e) { toast.error('再判定に失敗: ' + jpError(e)) }
+  }
+
+  async function excludeCandidate(c: LeadCandidate) {
+    try { await LeadCandidateApi.update(c.id, { lead_temperature: 'EXCLUDED', should_exclude_from_call_list: true }); toast.success('除外にしました'); load() }
+    catch (e) { toast.error('除外に失敗: ' + jpError(e)) }
   }
 
   // 管理API（ログインJWTで認可・service roleはサーバー側のみ）
@@ -371,7 +428,13 @@ export default function Leads() {
         periodDays: settings.regionalPeriodDays,
         dailyCap: settings.dailyCap,
       })
-      toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram に反映）')
+      await AppConfigApi.set('instagram_web_auto', {
+        iwEnabled: settings.iwEnabled, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
+        iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
+        iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
+        areaPreset: settings.areaPreset, industries: parseList(settings.industries), dailyCap: settings.dailyCap,
+      })
+      toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram Web に反映）')
     } catch (e) {
       toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
@@ -521,10 +584,11 @@ export default function Leads() {
     }
   }, [candidates])
 
-  const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional') => {
+  const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional' | 'iw') => {
     if (tab === 'instagram') return c.lead_source === 'instagram_hashtag'
     if (tab === 'regional') return c.lead_source === 'regional_media'
-    return c.lead_source !== 'instagram_hashtag' && c.lead_source !== 'regional_media'
+    if (tab === 'iw') return c.lead_source === 'instagram_web'
+    return !['instagram_hashtag', 'regional_media', 'instagram_web'].includes(c.lead_source || '')
   }, [])
   const sourceCandidates = useMemo(
     () => candidates.filter((c) => inSource(c, sourceTab)),
@@ -719,6 +783,23 @@ export default function Leads() {
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   ※記事本文は保存せず、URL・タイトル・公開日・短い抜粋・抽出結果のみ保存。robots.txt尊重・レート制限・同一URL再取得回避。電話が取れないものはHOLD。巡回対象は <code>source_sites</code> テーブルで管理（base_urlは実URLに合わせて編集・is_activeで有効化）。自動実行は毎朝のCron（auto-leads内で順次・/api/cron/regional-media-leads でも手動可）。
+                </div>
+              </div>
+
+              {/* Instagram Web検索 設定 */}
+              <div className="mt-1 border-t pt-2 lg:col-span-4">
+                <div className="mb-1 text-xs font-bold text-fuchsia-600 dark:text-fuchsia-300">Instagram Web検索（Meta API不使用・Web検索＋Anthropic）</div>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwEnabled} onChange={(e) => saveSettings({ ...settings, iwEnabled: e.target.checked })} />Instagram Web検索を有効化</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期OFF）</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
+                  <div className="space-y-1"><Label>1日最大検索クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 30) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.iwPerQuery} onChange={(e) => saveSettings({ ...settings, iwPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 10)) })} className="h-8" /></div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  ※エリアは上のエリアプリセット（一都三県＝全市区町村）、業種は上の対象業種を使用。site:instagram.com の公開検索結果のみ。Instagramログイン/スクレイピングはしません。保存はURL/タイトル/スニペット/抽出/判定理由のみ。自動実行は毎朝6:30 Cron（/api/cron/instagram-web-leads）。
                 </div>
               </div>
             </div>
@@ -1073,6 +1154,55 @@ export default function Leads() {
             )}
           </div>
 
+          {/* Instagram Web検索 パネル */}
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-fuchsia-600 dark:text-fuchsia-300">Instagram Web検索（新店候補）</span>
+                {iwConfigured === null ? <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
+                  : iwConfigured ? <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">接続OK（{iwDiag?.provider || '検索'}）</span>
+                  : <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">未設定（検索APIキー/Supabase）</span>}
+                <button onClick={checkIwStatus} className="text-[10px] text-primary hover:underline">再確認</button>
+              </div>
+              <Button size="sm" onClick={runIw} disabled={iwRunning || !settings.iwEnabled}>
+                <Sparkles className="h-3.5 w-3.5" />{iwRunning ? '検索中...' : 'Instagram Web検索・実行'}
+              </Button>
+            </div>
+            {iwDiag && (
+              <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5">検索: {iwDiag.provider || 'なし'}</span>
+                <span className={cn('rounded px-1.5 py-0.5', iwDiag.serper?.hasKey || iwDiag.bing?.hasKey ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300')}>Serper{iwDiag.serper?.hasKey ? `✓(${iwDiag.serper.keyLength})` : '✗'}/Bing{iwDiag.bing?.hasKey ? '✓' : '✗'}</span>
+                <span className={cn('rounded px-1.5 py-0.5', iwDiag.anthropic?.hasKey ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-amber-100 text-amber-700')}>Anthropic{iwDiag.anthropic?.hasKey ? `✓(${iwDiag.anthropic.prefix}…)` : '✗→ルール判定'}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">Maps {iwDiag.googleMaps?.hasKey ? '✓' : '—'}</span>
+                {iwDiag.error && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">{iwDiag.error}</span>}
+              </div>
+            )}
+            <div className="mt-1 text-[10px] text-muted-foreground">site:instagram.com の公開検索結果のみ。HOT自動投入は初期OFF（このタブで確認して手動投入）。同一URL/同一クエリ(7日)スキップ。</div>
+            {iwResult && (
+              <div className="mt-2 space-y-1">
+                {iwResult.error ? <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{iwResult.error}</div> : (
+                  <>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-muted px-1.5 py-0.5">クエリ {iwResult.queries ?? 0}</span>
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">取得 {iwResult.results ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">IG候補 {iwResult.igCandidates ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">判定 {iwResult.judged ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話 {iwResult.phoneYes ?? 0}</span>
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {iwResult.hot ?? 0}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {iwResult.hold ?? 0}</span>
+                      <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {iwResult.excluded ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {iwResult.imported ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">重複skip {iwResult.dup ?? 0}</span>
+                    </div>
+                    {Array.isArray(iwResult.debug?.queries) && (
+                      <details className="rounded border bg-muted/30 p-2 text-[10px]"><summary className="cursor-pointer text-primary">実行クエリ（{iwResult.debug.queries.length}・総数{iwResult.debug.totalQueries ?? '-'}・7日skip{iwResult.debug.recentSkipped ?? 0}）</summary><div className="mt-1 max-h-32 overflow-y-auto">{iwResult.debug.queries.map((q: string, i: number) => <div key={i} className="truncate">{i + 1}. {q}</div>)}</div></details>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 集計カード */}
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
             {card(<Upload className="h-4 w-4 text-white" />, '本日の自動投入', summary.todayImported, 'bg-primary')}
@@ -1087,7 +1217,7 @@ export default function Leads() {
 
           {/* ソース切替（Google Places / Instagram / 地域メディア） */}
           <div className="flex gap-1">
-            {([['places', 'Google Places'], ['instagram', 'Instagram'], ['regional', '地域メディア']] as const).map(([k, lbl]) => (
+            {([['places', 'Google Places'], ['instagram', 'Instagram'], ['regional', '地域メディア'], ['iw', 'Instagram Web検索']] as const).map(([k, lbl]) => (
               <button
                 key={k}
                 onClick={() => setSourceTab(k)}
@@ -1247,7 +1377,65 @@ export default function Leads() {
                 ? 'Instagram候補がありません。設定でInstagram取得を有効化し、「Instagram取得・実行」を押してください。'
                 : sourceTab === 'regional'
                 ? '地域メディア候補がありません。source_sites の base_url を実URLに設定して is_active=true にし、「地域メディア巡回・実行」を押してください。'
+                : sourceTab === 'iw'
+                ? 'Instagram Web検索の候補がありません。SERPER_API_KEY（またはBing）と ANTHROPIC_API_KEY を設定し、「Instagram Web検索・実行」を押してください。'
                 : '候補がありません。「手動実行（モック）」を押すとサンプル候補を判定して取り込みます。'}
+            </div>
+          ) : sourceTab === 'iw' ? (
+            <div className="overflow-x-auto rounded-xl border bg-card">
+              <table className="w-full min-w-[1300px] text-2xs">
+                <thead className="bg-muted/50 text-muted-foreground">
+                  <tr>
+                    <th className="p-2 text-left">温度</th>
+                    <th className="p-2 text-left">店名 / 業種 / 種別</th>
+                    <th className="p-2 text-left">エリア</th>
+                    <th className="p-2 text-left">電話</th>
+                    <th className="p-2 text-left">LINE/予約/公式</th>
+                    <th className="p-2 text-left">Instagram / タイトル</th>
+                    <th className="p-2 text-left">スニペット / 判定理由</th>
+                    <th className="p-2 text-center">確度</th>
+                    <th className="p-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((c) => (
+                    <tr key={c.id} className="border-t align-top">
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature}</span></td>
+                      <td className="max-w-[150px] p-2">
+                        <div className="font-medium">{c.extracted_shop_name || c.name}</div>
+                        <div className="text-[9px] text-muted-foreground">{c.extracted_industry || '—'}{c.newness_type ? ` / ${c.newness_type}` : ''}</div>
+                      </td>
+                      <td className="p-2">{c.extracted_area || '—'}</td>
+                      <td className="p-2">{c.phone_number ? <span className="inline-flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-muted-foreground" />{c.phone_number}</span> : <span className="text-red-500">なし</span>}</td>
+                      <td className="max-w-[120px] p-2">
+                        <div className="flex flex-col gap-0.5">
+                          {c.line_url && <span className="text-green-600">LINE</span>}
+                          {c.reservation_url && <a href={c.reservation_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">予約</a>}
+                          {c.official_url && <a href={c.official_url} target="_blank" rel="noreferrer" className="truncate text-primary hover:underline">公式</a>}
+                          {!c.line_url && !c.reservation_url && !c.official_url && '—'}
+                        </div>
+                      </td>
+                      <td className="max-w-[180px] p-2">
+                        {c.instagram_url ? <a href={c.instagram_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">Instagram投稿</a> : '—'}
+                        <div className="line-clamp-2 text-[9px] text-muted-foreground" title={c.search_title ?? ''}>{c.search_title}</div>
+                      </td>
+                      <td className="max-w-[260px] p-2">
+                        <div className="line-clamp-2 text-[9px] text-muted-foreground" title={c.search_snippet ?? ''}>{c.search_snippet}</div>
+                        <div className="mt-0.5 line-clamp-2 text-fuchsia-700 dark:text-fuchsia-300" title={c.instagram_newness_reason ?? c.ai_comment ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>
+                      </td>
+                      <td className="p-2 text-center">{c.match_confidence ?? '—'}</td>
+                      <td className="p-2 text-right">
+                        <div className="flex flex-col items-end gap-1">
+                          {!c.imported_to_cases && c.lead_temperature !== 'EXCLUDED' && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('投入しました'))}>投入</Button>}
+                          {c.imported_to_cases && <span className="text-green-600">投入済</span>}
+                          <Button size="sm" variant="ghost" className="h-6 text-2xs" onClick={() => rejudgeCandidate(c)}>再判定</Button>
+                          {c.lead_temperature !== 'EXCLUDED' && <Button size="sm" variant="ghost" className="h-6 text-2xs text-red-600" onClick={() => excludeCandidate(c)}>除外</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : sourceTab === 'regional' ? (
             <div className="overflow-x-auto rounded-xl border bg-card">
