@@ -74,6 +74,7 @@ export default function Leads() {
   const [igResult, setIgResult] = useState<any>(null)
   const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional'>('places')
   const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
+  const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
   const [rmResult, setRmResult] = useState<any>(null)
 
@@ -135,7 +136,8 @@ export default function Leads() {
       const r = await fetch('/api/leads/regional-media/run', { cache: 'no-store' })
       const j = await r.json().catch(() => ({}))
       setRmConfigured(r.ok ? !!j.configured : false)
-    } catch { setRmConfigured(false) }
+      setRmDiag(r.ok ? j : { error: `HTTP ${r.status}（関数未デプロイの可能性）` })
+    } catch (e) { setRmConfigured(false); setRmDiag({ error: jpError(e) }) }
   }, [])
   useEffect(() => { checkRmStatus() }, [checkRmStatus])
 
@@ -925,10 +927,11 @@ export default function Leads() {
                 {rmConfigured === null ? (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
                 ) : rmConfigured ? (
-                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">有効サイトあり</span>
+                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">有効サイト {rmDiag?.activeSites ?? 0}件</span>
                 ) : (
-                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-600">有効サイトなし（source_sites を確認）</span>
+                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-600">有効サイトなし</span>
                 )}
+                <button onClick={checkRmStatus} className="text-[10px] text-primary hover:underline">再確認</button>
               </div>
               <Button size="sm" onClick={runRegional} disabled={rmRunning || !settings.regionalEnabled}>
                 <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '地域メディア巡回・実行'}
@@ -937,6 +940,18 @@ export default function Leads() {
             <div className="mt-1 text-[10px] text-muted-foreground">
               号外NET・埼北つうしん等の開店記事を巡回。記事本文は保存しません（URL/タイトル/公開日/抜粋/抽出のみ）。電話が取れHOT条件を満たすものだけ自動投入、他はHOLD/EXCLUDED。
             </div>
+            {rmDiag && (
+              <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5">source_sites 総数 {rmDiag.totalSites ?? '—'}</span>
+                <span className={cn('rounded px-1.5 py-0.5', (rmDiag.activeSites ?? 0) > 0 ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300')}>有効 {rmDiag.activeSites ?? '—'}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">DB: {rmDiag.projectRef ?? '不明'}</span>
+                <span className={cn('rounded px-1.5 py-0.5', rmDiag.hasRole ? 'bg-muted' : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300')}>ServiceRole {rmDiag.hasRole ? 'OK' : '未設定'}</span>
+                <span className={cn('rounded px-1.5 py-0.5', rmDiag.hasMapsKey ? 'bg-muted' : 'bg-amber-100 text-amber-700')}>Mapsキー {rmDiag.hasMapsKey ? 'OK' : 'なし(照合不可)'}</span>
+                {rmDiag.error && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">エラー: {String(rmDiag.error).slice(0, 160)}</span>}
+                {(rmDiag.totalSites ?? 0) > 0 && (rmDiag.activeSites ?? 0) === 0 && <span className="text-muted-foreground">→ source_sites に is_active=true の行がありません（または別Supabaseプロジェクト）。</span>}
+                {rmDiag.totalSites === 0 && <span className="text-muted-foreground">→ このDBに source_sites の行が0件です。migrations/2026-06-28_regional_media.sql の実行先プロジェクトと、Vercelの SUPABASE_URL（{rmDiag.projectRef ?? '不明'}）が一致しているか確認してください。</span>}
+              </div>
+            )}
             {rmResult && (
               <div className="mt-2 space-y-1">
                 {rmResult.error ? (

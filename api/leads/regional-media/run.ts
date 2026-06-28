@@ -10,15 +10,38 @@ export const config = { maxDuration: 60 }
 export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
     res.setHeader('Cache-Control', 'no-store, max-age=0')
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(200).json({ ok: true, configured: false, activeSites: 0, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY })
+    const supaUrl = process.env.SUPABASE_URL || ''
+    const hasUrl = supaUrl.length > 0
+    const hasRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY
+    let projectRef: string | null = null
+    try { projectRef = hasUrl ? new URL(supaUrl).host.split('.')[0] : null } catch { projectRef = null }
+
+    if (!hasUrl || !hasRole) {
+      return res.status(200).json({
+        ok: true, configured: false, totalSites: null, activeSites: null,
+        hasUrl, hasRole, projectRef, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY,
+        error: 'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です（Vercel環境変数）',
+      })
     }
     try {
       const admin = getAdminClient()
-      const { count } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('is_active', true)
-      return res.status(200).json({ ok: true, configured: (count || 0) > 0, activeSites: count || 0, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY })
+      // service role で総数と有効数を取得（RLSはバイパス）
+      const total = await admin.from('source_sites').select('id', { count: 'exact', head: true })
+      const active = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('is_active', true)
+      const err = total.error?.message || active.error?.message || null
+      const totalSites = total.count ?? null
+      const activeSites = active.count ?? null
+      return res.status(200).json({
+        ok: true, configured: (activeSites || 0) > 0, totalSites, activeSites,
+        hasUrl, hasRole, projectRef, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY,
+        error: err,
+      })
     } catch (e: any) {
-      return res.status(200).json({ ok: true, configured: false, activeSites: 0, error: String(e?.message || e) })
+      return res.status(200).json({
+        ok: true, configured: false, totalSites: null, activeSites: null,
+        hasUrl, hasRole, projectRef, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY,
+        error: String(e?.message || e),
+      })
     }
   }
 
