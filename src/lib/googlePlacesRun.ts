@@ -6,7 +6,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
-import { resolveAreas, type AreaPresetKey } from './areaPresets.js'
+import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
@@ -376,6 +376,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       await admin.from('lead_query_log').upsert({
         query, source: 'google_places', last_run_at: nowIso,
         places_count: r.places.length, hot_count: counts.hot - before.hot, runs: 1,
+        prefecture: prefectureOfArea(gq.area), area: gq.area,
       }, { onConflict: 'query' }).then(() => {}, () => {})
 
       debug.queryResults.push({

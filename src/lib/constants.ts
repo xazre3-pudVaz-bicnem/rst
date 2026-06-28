@@ -260,6 +260,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   maxQueriesPerDay: 50,
   maxPerQuery: 10,
   rotation: true,
+  autoFetch: true,
   areas: [
     '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),

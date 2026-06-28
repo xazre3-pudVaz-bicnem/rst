@@ -161,6 +161,35 @@ export const LeadCandidateApi = {
   },
 }
 
+/** 自動取得設定（Cronが参照する app_config） */
+export const AppConfigApi = {
+  async get(key: string): Promise<any | null> {
+    const { data, error } = await supabase.from('app_config').select('value').eq('key', key).maybeSingle()
+    if (error) { console.warn('[AppConfig] get skipped:', error.message); return null }
+    return (data as any)?.value ?? null
+  },
+  async set(key: string, value: any): Promise<void> {
+    const { error } = await supabase.from('app_config').upsert({ key, value, updated_date: new Date().toISOString() }, { onConflict: 'key' })
+    if (error) throw new Error(error.message)
+  },
+}
+
+/** クエリ実行履歴（巡回進捗の表示用） */
+export const LeadQueryLogApi = {
+  /** 直近 days 日に実行したクエリ履歴（都県別進捗の集計に使用） */
+  async recent(days = 7, limit = 5000): Promise<{ query: string; prefecture: string | null; area: string | null; last_run_at: string; hot_count: number; places_count: number }[]> {
+    const since = new Date(Date.now() - days * 86400000).toISOString()
+    const { data, error } = await supabase
+      .from('lead_query_log')
+      .select('query,prefecture,area,last_run_at,hot_count,places_count')
+      .gte('last_run_at', since)
+      .order('last_run_at', { ascending: false })
+      .limit(limit)
+    if (error) { console.warn('[LeadQueryLog] recent skipped:', error.message); return [] }
+    return (data as any[]) || []
+  },
+}
+
 /** プロフィール / ユーザー管理 */
 export const ProfileApi = {
   async list(limit = 200): Promise<Profile[]> {

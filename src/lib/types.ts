@@ -287,6 +287,7 @@ export interface LeadImportSettings {
   maxQueriesPerDay: number  // 1日あたり最大クエリ数（既定50）
   maxPerQuery: number       // 1クエリあたり最大取得件数（既定10）
   rotation: boolean         // 未実行/古いクエリから巡回
+  autoFetch: boolean        // 毎朝6:00のCron自動取得ON/OFF（app_configに保存）
 }
 
 /** Auto search settings stored in localStorage */

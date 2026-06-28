@@ -13,12 +13,12 @@ import { SkeletonRows } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { useAuth } from '@/context/AuthContext'
-import { CaseApi, LeadCandidateApi, ImportBatchApi, AuditApi } from '@/lib/api'
+import { CaseApi, LeadCandidateApi, ImportBatchApi, AuditApi, AppConfigApi, LeadQueryLogApi } from '@/lib/api'
 import { classifyLead, generateMockLeads } from '@/lib/leadScoring'
 import {
   DEFAULT_STATUS, LEAD_TEMP_COLORS, LS_LEAD_SETTINGS, DEFAULT_LEAD_SETTINGS, parseList,
 } from '@/lib/constants'
-import { AREA_PRESET_OPTIONS } from '@/lib/areaPresets'
+import { AREA_PRESET_OPTIONS, AREA_PRESETS, prefectureAreaTotals, presetLabel } from '@/lib/areaPresets'
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient'
 import { cn, jpError, copyToClipboard, mapUrl } from '@/lib/utils'
 import type { Case, LeadCandidate, LeadImportSettings, LeadRun, LeadTemperature } from '@/lib/types'
@@ -65,6 +65,9 @@ export default function Leads() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [gpResult, setGpResult] = useState<any>(null)
   const [lastRun, setLastRun] = useState<LeadRun | null>(null)
+  // 自動取得（Cron）巡回状況
+  const [qlog, setQlog] = useState<{ query: string; prefecture: string | null; area: string | null; last_run_at: string; hot_count: number; places_count: number }[]>([])
+  const [savingCfg, setSavingCfg] = useState(false)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -84,7 +87,12 @@ export default function Leads() {
     setLastRun(data && data[0] ? (data[0] as LeadRun) : null)
   }, [])
 
-  useEffect(() => { load(); loadRuns() }, [load, loadRuns])
+  const loadQlog = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    try { setQlog(await LeadQueryLogApi.recent(7)) } catch { /* テーブル未作成等は無視 */ }
+  }, [])
+
+  useEffect(() => { load(); loadRuns(); loadQlog() }, [load, loadRuns, loadQlog])
 
   // Google Places API 接続状態
   const checkGpStatus = useCallback(async () => {
@@ -140,7 +148,7 @@ export default function Leads() {
       }
       setGpResult(json)
       toast.success(`Google Places完了: 取得${json.fetched ?? 0} / HOT${json.hot ?? 0} / 投入${json.imported ?? 0}`)
-      load(); loadRuns()
+      load(); loadRuns(); loadQlog()
     } catch (e) {
       toast.error('実行に失敗しました: ' + jpError(e))
     } finally {
@@ -164,6 +172,53 @@ export default function Leads() {
     setSettings(s)
     localStorage.setItem(LS_LEAD_SETTINGS, JSON.stringify(s))
   }
+
+  // 自動取得設定をサーバー(app_config)へ保存 → 毎朝6:00のCronが参照
+  async function saveAutoConfig() {
+    setSavingCfg(true)
+    try {
+      await AppConfigApi.set('lead_auto', {
+        autoFetch: settings.autoFetch,
+        autoImport: settings.autoImport,
+        areaPreset: settings.areaPreset,
+        areas: parseList(settings.areas),
+        industries: parseList(settings.industries),
+        maxPerQuery: settings.maxPerQuery,
+        maxQueriesPerDay: settings.maxQueriesPerDay,
+        dailyCap: settings.dailyCap,
+        rotation: settings.rotation,
+        hotMaxReviews: settings.hotMaxReviews,
+        warmMaxReviews: settings.warmMaxReviews,
+        exclude100: settings.exclude100,
+        unknownHold: settings.unknownHold,
+      })
+      toast.success('自動取得設定を保存しました（毎朝6:00のCronに反映）')
+    } catch (e) {
+      toast.error('保存に失敗しました: ' + jpError(e))
+    } finally {
+      setSavingCfg(false)
+    }
+  }
+
+  // 都県別の巡回進捗（直近7日に実行済みのエリア数 / 全市区町村数）
+  const rotationProgress = useMemo(() => {
+    const totals = prefectureAreaTotals()
+    const runByPref = new Map<string, Set<string>>()
+    let todayQueries = 0
+    const startToday = moment().startOf('day')
+    for (const r of qlog) {
+      if (r.area) {
+        const set = runByPref.get(r.prefecture || 'その他') || new Set<string>()
+        set.add(r.area)
+        runByPref.set(r.prefecture || 'その他', set)
+      }
+      if (moment(r.last_run_at).isSameOrAfter(startToday)) todayQueries++
+    }
+    const perPref = totals.map((t) => ({ ...t, done: runByPref.get(t.label)?.size || 0 }))
+    const allAreas = AREA_PRESETS.ittokensanken.areas.length
+    const doneAreas = perPref.reduce((s, p) => s + p.done, 0)
+    return { perPref, allAreas, doneAreas, remainingAreas: Math.max(0, allAreas - doneAreas), todayQueries, skipped7d: qlog.length }
+  }, [qlog])
 
   // 案件へ投入
   async function importToCase(c: LeadCandidate): Promise<boolean> {
@@ -337,6 +392,16 @@ export default function Leads() {
                 <input type="checkbox" checked={settings.autoImport} onChange={(e) => saveSettings({ ...settings, autoImport: e.target.checked })} />
                 HOTを自動でcasesへ投入
               </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={settings.autoFetch} onChange={(e) => saveSettings({ ...settings, autoFetch: e.target.checked })} />
+                毎朝6:00に自動取得（Cron）
+              </label>
+              <div className="flex items-center md:col-span-2 lg:col-span-2">
+                <Button size="sm" variant="outline" onClick={saveAutoConfig} disabled={savingCfg}>
+                  {savingCfg ? '保存中...' : '自動取得設定を保存（Cronに反映）'}
+                </Button>
+                <span className="ml-2 text-[10px] text-muted-foreground">この設定を毎朝6:00のCronに反映します（手動実行はこの保存に関係なく即時実行）。</span>
+              </div>
               <div className="space-y-1">
                 <Label>エリアプリセット</Label>
                 <select
@@ -570,13 +635,42 @@ export default function Leads() {
                 )}
               </div>
             )}
-            {lastRun && (
-              <div className="mt-2 text-[10px] text-muted-foreground">
-                最終実行: {moment(lastRun.created_date).format('MM/DD HH:mm')} ・ {lastRun.status}
-                ・ 取得{lastRun.fetched_count} / HOT{lastRun.hot_count} / 投入{lastRun.imported_count} / 除外{lastRun.excluded_count} / 重複{lastRun.duplicate_count}
-                {lastRun.error_message ? ` ・ ${lastRun.error_message}` : ''}
+            {/* 自動取得（毎朝6:00 Cron）の巡回状況 */}
+            <div className="mt-2 rounded-lg border bg-card p-3 text-[11px]">
+              <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-semibold">自動取得（毎朝6:00）</span>
+                <span className={cn('rounded px-1.5 py-0.5 text-[10px]', settings.autoFetch ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-700')}>
+                  {settings.autoFetch ? 'ON' : 'OFF'}
+                </span>
+                <span className="text-muted-foreground">次回実行予定: 毎朝6:00（JST）</span>
+                <span className="text-muted-foreground">プリセット: {presetLabel(settings.areaPreset)}</span>
+                {lastRun && <span className="text-muted-foreground">最終実行: {moment(lastRun.created_date).format('MM/DD HH:mm')}（{lastRun.status}）</span>}
               </div>
-            )}
+              <div className="mb-1 flex flex-wrap gap-1.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5">今日の実行クエリ {rotationProgress.todayQueries}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">直近7日 実行クエリ {rotationProgress.skipped7d}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">巡回済みエリア {rotationProgress.doneAreas} / {rotationProgress.allAreas}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">残り未巡回エリア {rotationProgress.remainingAreas}</span>
+                {lastRun && <span className="rounded bg-muted px-1.5 py-0.5">前回 取得{lastRun.fetched_count}/HOT{lastRun.hot_count}/投入{lastRun.imported_count}/除外{lastRun.excluded_count}</span>}
+              </div>
+              <div className="grid grid-cols-2 gap-1 md:grid-cols-4">
+                {rotationProgress.perPref.map((p) => {
+                  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0
+                  return (
+                    <div key={p.key} className="rounded border bg-muted/30 p-1.5">
+                      <div className="flex justify-between"><span>{p.label}</span><span className="text-muted-foreground">{p.done}/{p.total}</span></div>
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-muted">
+                        <div className="h-full rounded bg-primary" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              {lastRun?.error_message && <div className="mt-1 text-red-600">エラー: {lastRun.error_message}</div>}
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                ※ 一都三県の全{rotationProgress.allAreas}市区町村を、1日最大{settings.maxQueriesPerDay}クエリでローテーション巡回（7日以内の同一クエリはスキップ）。HOTが0件の日もあります（厳格判定のため）。
+              </div>
+            </div>
           </div>
 
           {/* 集計カード */}
