@@ -200,6 +200,14 @@ export interface LeadCandidate {
   newness_reason?: string | null
   days_since_first_seen?: number | null
   from_new_open_query?: boolean | null
+  // 口コミ投稿日による判定（新店判定は oldest を重視）
+  latest_review_publish_time?: string | null
+  oldest_review_publish_time?: string | null
+  latest_review_days_ago?: number | null
+  oldest_review_days_ago?: number | null
+  oldest_review_is_recent?: boolean | null
+  review_dates_checked?: boolean | null
+  review_newness_reason?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -248,6 +256,10 @@ export interface RawLead {
   first_seen_days?: number
   /** 「新規オープン」系クエリで取得されたか */
   from_new_open_query?: boolean
+  /** 取得できたレビューの中で最新の publishTime（RFC3339） */
+  latest_review_publish_time?: string
+  /** 取得できたレビューの中で最古の publishTime（RFC3339）。新店判定に使用 */
+  oldest_review_publish_time?: string
 }
 
 /** 判定の閾値（口コミ件数など） */

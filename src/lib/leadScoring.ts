@@ -48,11 +48,7 @@ interface CommentCtx {
   signals: string[]
   score: number
   reviewCount: number | null
-  reviewKnown: boolean
-  fresh: boolean
   mid: boolean
-  high: boolean
-  veryHigh: boolean
   isChain: boolean
   inMall: boolean
   inStation: boolean
@@ -61,43 +57,50 @@ interface CommentCtx {
   excludedName: boolean
   hasPhone: boolean
   newnessReason: string
+  countZero: boolean
+  oldestDaysAgo: number | null
+  oldestRecent: boolean
+  fromNewOpenQuery: boolean
 }
 
 function buildComment(c: CommentCtx): string {
-  const { temperature, signals, score, reviewCount } = c
+  const { temperature, score, reviewCount, oldestDaysAgo } = c
   if (c.isDup) return '既存案件と電話番号・店名/住所・Web情報のいずれかが一致したため、重複として除外しました。'
   if (c.excludedName) return '官公庁・医療・金融・教育機関など、明らかに営業対象外の業態と判断したため除外しました。'
 
   if (temperature === 'EXCLUDED') {
-    // 口コミ過多による除外
-    if (c.veryHigh || c.high) {
-      return `Google Placesで検出しましたが、口コミ件数が${reviewCount}件と多く、既にGoogle上で十分に認知されている既存店舗の可能性が高いため、自動投入対象外としました。`
+    if (c.isChain || c.inMall || c.inStation || c.isBranch) {
+      const reasons: string[] = []
+      if (c.isChain) reasons.push('大手チェーン/フランチャイズ')
+      if (c.inMall) reasons.push('大型商業施設内テナント')
+      if (c.inStation) reasons.push('駅ビル・百貨店内テナント')
+      if (c.isBranch) reasons.push('大手企業の支店・営業所')
+      return `Google Placesで検出しましたが、${reasons.join('・')}のため、店舗電話ではオーナー・決裁者に繋がりにくいと判断し除外しました（到達スコア ${score}）。`
     }
-    // チェーン/施設内/支店による除外
-    const reasons: string[] = []
-    if (c.isChain) reasons.push('大手チェーン/フランチャイズ名を検出')
-    if (c.inMall) reasons.push('大型商業施設内テナント')
-    if (c.inStation) reasons.push('駅ビル内テナント')
-    if (c.isBranch) reasons.push('大手企業の支店・営業所の可能性')
-    const r = reasons.length ? reasons.join('・') : 'オーナー・決裁者に繋がりにくい業態'
-    return `Google Placesで検出しましたが、${r}のため、店舗電話ではオーナー・決裁者に繋がりにくいと判断し、自動投入対象から除外しました（到達スコア ${score}）。`
+    if (!c.hasPhone) return 'Google Placesで検出しましたが、電話番号が確認できないため除外しました。'
+    return `口コミ${reviewCount}件のため、新規GBP候補ではなく既存店舗の可能性が高く除外しました。`
   }
 
   if (temperature === 'HOLD') {
-    if (!c.hasPhone) return 'Google Placesで検出しましたが、電話番号が確認できないため自動投入せず保留にしました。'
-    if (!c.reviewKnown) return 'Google Placesで検出しましたが、口コミ件数が取得できず新規性の判断が曖昧なため、自動投入せず保留にしました。'
-    if (c.mid || c.high) return `Google Placesで検出しましたが、口コミ件数が${reviewCount}件で新規開業の確度が中程度のため、自動投入せず保留にしました。手動確認を推奨します。`
-    return `Google Placesで検出しましたが、新規シグナルが弱い、または個人店/チェーン判定が曖昧なため、自動投入せず保留にしました（到達スコア ${score}）。`
+    if (!c.hasPhone) return '電話番号が確認できないため、自動投入せず保留にしました。'
+    if (reviewCount === null) return '口コミ件数が取得できず新規性の判断が曖昧なため、自動投入せず保留にしました。'
+    if (c.mid) return `口コミ${reviewCount}件のため、新店判定としては弱く、自動投入せず保留にしました。`
+    if (c.countZero) return '口コミ0件のため新規GBPの可能性はありますが、新規オープン系クエリやopeningDateなどの追加根拠がないため、自動投入せず保留にしました。'
+    if (oldestDaysAgo === null) return `口コミ${reviewCount}件ですが、口コミ投稿日が取得できず新規性を確認できないため、自動投入せず保留にしました。`
+    if (!c.oldestRecent) return `口コミ${reviewCount}件ですが、一番古い口コミが${oldestDaysAgo}日前のため、新店判定としては弱く、自動投入せず保留にしました。`
+    return `新規性の根拠が弱いため、自動投入せず保留にしました（到達スコア ${score}）。`
   }
 
   if (temperature === 'WARM') {
-    return '新設法人の可能性を検出（電話番号あり）。明確な新規GBP/HP/広告/Instagramシグナルは未検出のため、参考情報として保留しています。'
+    return '新設法人の可能性を検出（電話番号あり）。明確な新規シグナルは未検出のため、参考情報として保留しています。'
   }
 
   // HOT
-  const firstSignal = signals[0]
-  const proposal = firstSignal ? PROPOSAL_TEXT[firstSignal] : 'MEO初期整備・HP制作'
-  return `Googleビジネスプロフィールを新規開業候補として検出しました（${c.newnessReason}）。電話番号が確認でき、Googleマップ掲載直後または開業直後の可能性があります。店名・住所から大型チェーンや商業施設内テナントではなく、個人店舗・小規模事業者（到達スコア ${score}）と判断しました。${proposal}の提案優先度が高いです。`
+  if (c.countZero) {
+    const why = c.fromNewOpenQuery ? '新規オープン系クエリで取得された' : c.newnessReason
+    return `口コミ0件、電話番号あり、${why}ため、Googleビジネスプロフィール掲載直後または開業直後の可能性が高いと判断し、自動投入しました。`
+  }
+  return `口コミ${reviewCount}件、取得できた口コミの一番古い投稿日が${oldestDaysAgo}日前のため、新規オープンまたはGBP掲載直後の可能性が高いと判定しました（${c.newnessReason}）。`
 }
 
 /**
@@ -144,43 +147,76 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
 
   const dupId = findDuplicateCaseId(raw, cases)
   const isDup = !!dupId
-  const shouldExclude = isDup || excludedName || score < 50
 
-  // 除外（新規候補から必ず外す条件）
-  const hardExclude = isDup || excludedName || isChain || inMall || inStation || isBranch || !hasPhone || veryHigh
+  // 到達不可（チェーン/施設内/駅ビル/支店）
+  const nonReachable = isChain || inMall || inStation || isBranch
+  const hardExclude = isDup || excludedName || nonReachable || !hasPhone || veryHigh
 
-  // ---- 新規オープン候補の複合判定 ----
+  // ---- 新規性シグナル ----
   const hasWebsite = !!normalizeUrl(raw.website_url)
   const firstSeenDays = typeof raw.first_seen_days === 'number' ? raw.first_seen_days : 0
   const fromNewOpenQuery = !!raw.from_new_open_query
 
-  // 1) 開店日が現在から前後90日以内
   const openingWithin90 = (() => {
     if (!raw.opening_date) return false
     const t = Date.parse(raw.opening_date)
     if (Number.isNaN(t)) return false
     return Math.abs(Date.now() - t) <= 90 * 86400000
   })()
-  // 2) RST初回発見30日以内 かつ 口コミ <= hotMax(5)
-  const cond2 = firstSeenDays <= 30 && fresh
-  // 3) 新規オープン系クエリで取得 かつ 口コミ <= warmMax(15)
-  const cond3 = fromNewOpenQuery && reviewKnown && (reviewCount as number) <= warmMax
-  // 4) 口コミ <= 3 かつ HPなし かつ 非チェーン/施設内
-  const cond4 = reviewKnown && (reviewCount as number) <= 3 && !hasWebsite && !isChain && !inMall && !inStation && operational
 
-  const isNewCandidate = !hardExclude && (openingWithin90 || cond2 || cond3 || cond4)
+  // ---- 口コミ投稿日(publishTime)による判定（新店判定は最古=oldest を重視） ----
+  const toDaysAgo = (s: string | null | undefined): number | null => {
+    if (!s) return null
+    const t = Date.parse(s)
+    return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 86400000))
+  }
+  const latestPub = raw.latest_review_publish_time || null
+  const oldestPub = raw.oldest_review_publish_time || null
+  const latestDaysAgo = toDaysAgo(latestPub)
+  const oldestDaysAgo = toDaysAgo(oldestPub)
+  // 取得できた口コミ（最大5件）の一番古い投稿日が30日以内か＝全口コミが新しい＝新店可能性
+  const oldestRecent = oldestDaysAgo !== null && oldestDaysAgo <= 30
+  // 口コミ日付の確認可否（0件は確認不要、1件以上は投稿日が取れたか）
+  const reviewDatesChecked = reviewCount === 0 || oldestDaysAgo !== null
+
+  const countZero = reviewCount === 0
+  const count1to5 = reviewKnown && (reviewCount as number) >= 1 && (reviewCount as number) <= hotMax
+  const countOk = reviewKnown && (reviewCount as number) <= hotMax  // 0〜5
+
+  // 口コミゲート（HOT必須）：0件はOK／1〜5件は「取得できた最古の口コミが30日以内」のみOK
+  const recencyOk = countZero ? true : (count1to5 && oldestRecent)
+
+  // 新規性の根拠（first_seenだけでは不可。openingDate / 新規オープン系クエリ / 口コミ少+HPなし）
+  const newnessStrong =
+    openingWithin90 ||
+    fromNewOpenQuery ||
+    (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite)
+
+  const isNewCandidate = !hardExclude && countOk && recencyOk && newnessStrong
+  const isHotFinal = isNewCandidate && score >= 80
+
+  // 口コミ日付の判定理由（新店判定は最古を重視）
+  const reviewNewnessReason = countZero
+    ? '口コミ0件（新規可能性あり）'
+    : (oldestDaysAgo === null
+        ? '口コミ投稿日が取得できず（自動投入対象外）'
+        : (oldestRecent
+            ? `最古口コミ ${oldestDaysAgo}日前（30日以内＝全口コミが新しい）`
+            : `最古口コミ ${oldestDaysAgo}日前（30日超・新店判定は弱い）`))
 
   // 新規判定理由
   const newnessParts: string[] = []
   if (openingWithin90) newnessParts.push(`開店日±90日以内(${raw.opening_date})`)
-  if (cond2) newnessParts.push(`初回発見${firstSeenDays}日以内＋口コミ${reviewCount}件`)
-  if (cond3) newnessParts.push(`新規オープン系クエリ＋口コミ${reviewCount}件`)
-  if (cond4) newnessParts.push(`口コミ${reviewCount}件・HPなし・個人店`)
+  if (fromNewOpenQuery) newnessParts.push('新規オープン系クエリで取得')
+  if (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite) newnessParts.push(`口コミ${reviewCount}件・HPなし・個人店`)
   const newnessReason = isNewCandidate
-    ? newnessParts.join(' / ')
-    : (hardExclude ? '除外条件に該当（新規候補外）' : '新規性の条件を満たさず')
+    ? `${countZero ? '口コミ0件' : `口コミ${reviewCount}件・${reviewNewnessReason}`} / ${newnessParts.join(' / ')}`
+    : hardExclude ? '除外条件に該当（新規候補外）'
+      : !countOk ? `口コミ${reviewCount}件で多い（新規候補外）`
+        : !recencyOk ? '最新口コミが30日超 または 日付取得不可'
+          : !newnessStrong ? 'openingDate/新規オープン系クエリ/HPなし等の新規根拠なし'
+            : '新規条件を満たさず'
 
-  // 旧フィールド互換：is_new_gbp は新規候補と同値にする
   const isNewGbp = isNewCandidate
   const signalFlags = {
     is_new_gbp: isNewGbp,
@@ -194,15 +230,14 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   let temperature: LeadTemperature
   if (isDup) temperature = 'EXCLUDED'
   else if (excludedName) temperature = 'EXCLUDED'
-  else if (!hasPhone) temperature = 'HOLD'
-  else if (score < 50) temperature = 'EXCLUDED'                 // チェーン/施設内/支店が明確
-  else if (exclude100 && veryHigh) temperature = 'EXCLUDED'     // 口コミ100件以上＝既存店
-  else if (isNewCandidate && score >= 80) temperature = 'HOT'   // 複合判定で新規＋到達可能
-  else if (high) temperature = 'EXCLUDED'                       // 16〜99件で新規でない → 除外
-  else if (!reviewKnown && unknownHold) temperature = 'HOLD'    // 口コミ不明 → 保留
-  else if (mid) temperature = 'HOLD'                            // 6〜15件 → 保留
-  else if (raw.is_new_corporation) temperature = 'WARM'
-  else temperature = 'HOLD'
+  else if (nonReachable) temperature = 'EXCLUDED'              // チェーン/施設内/駅ビル/支店
+  else if (!hasPhone) temperature = 'EXCLUDED'                 // 電話番号なし
+  else if (reviewKnown && (reviewCount as number) > warmMax) temperature = 'EXCLUDED'  // 16件以上(100+含む)
+  else if (isHotFinal) temperature = 'HOT'
+  else if (mid) temperature = 'HOLD'                           // 6〜15件
+  else if (!reviewKnown && unknownHold) temperature = 'HOLD'   // 口コミ不明
+  else if (raw.is_new_corporation && countOk) temperature = 'WARM'
+  else temperature = 'HOLD'                                    // 1〜5で根拠不足/口コミ古い等
 
   const exclusionReasons: string[] = []
   if (isDup) exclusionReasons.push('既存案件と重複')
@@ -213,8 +248,13 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   if (isBranch) exclusionReasons.push('大手企業の支店・営業所')
   if (!hasPhone) exclusionReasons.push('電話番号なし')
   if (veryHigh) exclusionReasons.push(`口コミ${reviewCount}件（既存人気店の可能性）`)
-  else if (high) exclusionReasons.push(`口コミ${reviewCount}件（既存店寄り）`)
-  else if (mid) exclusionReasons.push(`口コミ${reviewCount}件（新規確度 中）`)
+  else if (high) exclusionReasons.push(`口コミ${reviewCount}件（16件以上・既存店）`)
+  else if (mid) exclusionReasons.push(`口コミ${reviewCount}件（6〜15件・新店判定弱）`)
+  else if (count1to5 && !oldestRecent) {
+    exclusionReasons.push(oldestDaysAgo === null ? '口コミ投稿日が取得できず' : `最古口コミ${oldestDaysAgo}日前（30日超）`)
+  } else if (countOk && !newnessStrong) {
+    exclusionReasons.push('新規根拠なし（openingDate/新規オープン系/HPなし）')
+  }
   if (!reviewKnown) exclusionReasons.push('口コミ件数不明')
 
   const detected = [
@@ -223,9 +263,9 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   ]
 
   const comment = buildComment({
-    temperature, signals: signals as string[], score, reviewCount, reviewKnown,
-    fresh, mid, high, veryHigh, isChain, inMall, inStation, isBranch, isDup, excludedName, hasPhone,
-    newnessReason,
+    temperature, signals: signals as string[], score, reviewCount, mid,
+    isChain, inMall, inStation, isBranch, isDup, excludedName, hasPhone,
+    newnessReason, countZero, oldestDaysAgo, oldestRecent, fromNewOpenQuery,
   })
 
   return {
@@ -251,7 +291,7 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     is_large_company_branch: isBranch,
     owner_reachability_score: score,
     exclusion_reason: exclusionReasons.length ? exclusionReasons.join(' / ') : null,
-    should_exclude_from_call_list: shouldExclude,
+    should_exclude_from_call_list: hardExclude,
     auto_import_reason: buildReason(signals as string[], reviewCount),
     ai_comment: comment,
     lead_temperature: temperature,
@@ -263,6 +303,13 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     newness_reason: newnessReason,
     days_since_first_seen: firstSeenDays,
     from_new_open_query: fromNewOpenQuery,
+    latest_review_publish_time: latestPub,
+    oldest_review_publish_time: oldestPub,
+    latest_review_days_ago: latestDaysAgo,
+    oldest_review_days_ago: oldestDaysAgo,
+    oldest_review_is_recent: oldestRecent,
+    review_dates_checked: reviewDatesChecked,
+    review_newness_reason: reviewNewnessReason,
   }
 }
 
@@ -271,29 +318,37 @@ export function isHot(c: Partial<LeadCandidate>): boolean {
   return c.lead_temperature === 'HOT'
 }
 
-/** Phase1用モック候補（口コミ件数・営業状態付き） */
+/** Phase1用モック候補（口コミ件数・投稿日付き） */
 export function generateMockLeads(): RawLead[] {
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString()
+  const RECENT = daysAgo(10)   // 最古口コミも30日以内＝新店
+  const OLD = daysAgo(120)     // 最古口コミが古い＝既存店
   return [
-    { name: '炭火焼鳥 とり源', address: '東京都杉並区高円寺南3-12-5', industry: '飲食', phone_number: '03-1234-5678', is_new_gbp: true, review_count: 2, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
-    { name: 'Nail Salon Mary', address: '神奈川県川崎市中原区小杉町2-8-1', industry: '美容', phone_number: '044-222-3344', instagram_url: 'https://instagram.com/nail_mary', is_new_instagram: true, review_count: 3, business_status: 'OPERATIONAL', source_type: 'Instagram新規' },
-    { name: '整体院 ことのは', address: '埼玉県さいたま市浦和区高砂4-1-9', industry: '健康', phone_number: '048-555-7788', website_url: 'https://kotonoha-seitai.jp', is_new_website: true, review_count: 1, business_status: 'OPERATIONAL', source_type: 'HP新規' },
-    { name: 'カフェ＆バル すずらん', address: '千葉県柏市柏3-5-12', industry: '飲食', phone_number: '04-7100-2200', is_new_ad_listing: true, review_count: 0, business_status: 'OPERATIONAL', source_type: '広告新規' },
-    { name: 'パーソナルジム FORCE', address: '東京都目黒区自由が丘1-9-3', industry: '健康', phone_number: '03-9090-1010', is_new_gbp: true, is_new_website: true, is_new_corporation: true, review_count: 4, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
-    // 口コミ多数の既存人気店 → EXCLUDED（新規GBPでも除外）
-    { name: 'P.S.Gemmie hair salon', address: '東京都葛飾区新小岩1-1-1', industry: '美容', phone_number: '03-3333-2222', is_new_gbp: true, review_count: 2431, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
-    // 口コミ中程度 → HOLD
-    { name: '美容室 Lien', address: '東京都葛飾区亀有3-2-1', industry: '美容', phone_number: '03-5555-1212', is_new_gbp: true, review_count: 12, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
-    // 電話番号なし → HOLD
-    { name: 'リラクゼーション 月', address: '東京都新宿区神楽坂5-1', industry: '美容', is_new_gbp: true, review_count: 2, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
+    // 口コミ0件＋新規オープン系クエリ相当 → HOT
+    { name: '炭火焼鳥 とり源', address: '東京都杉並区高円寺南3-12-5', industry: '飲食', phone_number: '03-1234-5678', review_count: 0, business_status: 'OPERATIONAL', from_new_open_query: true, source_type: 'GBP新規' },
+    // 口コミ3件・最古10日前・HPなし → HOT
+    { name: 'Nail Salon Mary', address: '神奈川県川崎市中原区小杉町2-8-1', industry: '美容', phone_number: '044-222-3344', review_count: 3, business_status: 'OPERATIONAL', latest_review_publish_time: daysAgo(2), oldest_review_publish_time: RECENT, from_new_open_query: true, source_type: 'GBP新規' },
+    // 口コミ4件だが最古120日前 → HOLD（新店判定弱）
+    { name: '整体院 ことのは', address: '埼玉県さいたま市浦和区高砂4-1-9', industry: '健康', phone_number: '048-555-7788', review_count: 4, business_status: 'OPERATIONAL', latest_review_publish_time: daysAgo(5), oldest_review_publish_time: OLD, source_type: 'GBP新規' },
+    // 口コミ0件＋openingDate直近 → HOT
+    { name: 'カフェ＆バル すずらん', address: '千葉県柏市柏3-5-12', industry: '飲食', phone_number: '04-7100-2200', review_count: 0, business_status: 'OPERATIONAL', opening_date: daysAgo(20), source_type: 'GBP新規' },
+    // 口コミ2件・最古8日前・HPなし → HOT
+    { name: 'パーソナルジム FORCE', address: '東京都目黒区自由が丘1-9-3', industry: '健康', phone_number: '03-9090-1010', review_count: 2, business_status: 'OPERATIONAL', latest_review_publish_time: daysAgo(3), oldest_review_publish_time: daysAgo(8), opening_date: daysAgo(25), source_type: 'GBP新規' },
+    // 口コミ多数の既存人気店 → EXCLUDED
+    { name: 'P.S.Gemmie hair salon', address: '東京都葛飾区新小岩1-1-1', industry: '美容', phone_number: '03-3333-2222', review_count: 2431, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
+    // 口コミ中程度(6〜15) → HOLD
+    { name: '美容室 Lien', address: '東京都葛飾区亀有3-2-1', industry: '美容', phone_number: '03-5555-1212', review_count: 12, business_status: 'OPERATIONAL', latest_review_publish_time: daysAgo(4), oldest_review_publish_time: daysAgo(40), source_type: 'GBP新規' },
+    // 電話番号なし → EXCLUDED
+    { name: 'リラクゼーション 月', address: '東京都新宿区神楽坂5-1', industry: '美容', review_count: 0, business_status: 'OPERATIONAL', from_new_open_query: true, source_type: 'GBP新規' },
     // 大手チェーン → EXCLUDED
-    { name: 'スターバックスコーヒー 高円寺店', address: '東京都杉並区高円寺北2-3-1', industry: '飲食', phone_number: '03-3333-0000', is_new_gbp: true, review_count: 5, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
+    { name: 'スターバックスコーヒー 高円寺店', address: '東京都杉並区高円寺北2-3-1', industry: '飲食', phone_number: '03-3333-0000', review_count: 5, business_status: 'OPERATIONAL', oldest_review_publish_time: RECENT, from_new_open_query: true, source_type: 'GBP新規' },
     // 大型商業施設内 → EXCLUDED
-    { name: 'Hair Make ALOHA', address: '千葉県船橋市浜町2-1-1 ららぽーとTOKYO-BAY 2F', industry: '美容', phone_number: '047-100-9999', is_new_gbp: true, review_count: 3, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
-    // 支店 → EXCLUDED寄り
-    { name: '○○保険 さいたま支店', address: '埼玉県さいたま市大宮区桜木町1-7-5', industry: 'その他', phone_number: '048-600-1111', is_new_website: true, review_count: 8, business_status: 'OPERATIONAL', source_type: 'HP新規' },
-    // 新設法人のみ（シグナルなし）→ WARM
-    { name: '合同会社 みらいキッチン', address: '東京都板橋区成増2-15-3', industry: '飲食', phone_number: '03-7777-2222', is_new_corporation: true, review_count: 0, business_status: 'OPERATIONAL', source_type: '法人登記' },
-    // 個人店・口コミ少 → HOT
-    { name: 'BodyCare ほぐし処 結', address: '茨城県つくば市研究学園5-19', industry: '健康', phone_number: '029-800-3210', is_new_gbp: true, review_count: 1, business_status: 'OPERATIONAL', source_type: 'GBP新規' },
+    { name: 'Hair Make ALOHA', address: '千葉県船橋市浜町2-1-1 ららぽーとTOKYO-BAY 2F', industry: '美容', phone_number: '047-100-9999', review_count: 3, business_status: 'OPERATIONAL', oldest_review_publish_time: RECENT, source_type: 'GBP新規' },
+    // 支店 → EXCLUDED
+    { name: '○○保険 さいたま支店', address: '埼玉県さいたま市大宮区桜木町1-7-5', industry: 'その他', phone_number: '048-600-1111', review_count: 8, business_status: 'OPERATIONAL', source_type: 'HP新規' },
+    // 口コミ0件だが新規根拠なし（通常クエリのみ）→ HOLD
+    { name: '合同会社 みらいキッチン', address: '東京都板橋区成増2-15-3', industry: '飲食', phone_number: '03-7777-2222', review_count: 0, business_status: 'OPERATIONAL', website_url: 'https://mirai-kitchen.jp', is_new_corporation: true, source_type: '法人登記' },
+    // 個人店・口コミ1件・最古10日前・HPなし → HOT
+    { name: 'BodyCare ほぐし処 結', address: '茨城県つくば市研究学園5-19', industry: '健康', phone_number: '029-800-3210', review_count: 1, business_status: 'OPERATIONAL', latest_review_publish_time: daysAgo(6), oldest_review_publish_time: daysAgo(10), source_type: 'GBP新規' },
   ]
 }

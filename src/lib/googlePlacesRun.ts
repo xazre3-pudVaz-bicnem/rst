@@ -27,7 +27,24 @@ const BASE_FIELDS = [
 // 400 が出たら自動で BASE にフォールバックする（下記 searchTextRaw 参照）。
 const EXT_FIELDS = [...BASE_FIELDS, 'places.regularOpeningHours']
 const BASE_FIELD_MASK = BASE_FIELDS.join(',')
-const EXT_FIELD_MASK = [...EXT_FIELDS, 'places.openingDate'].join(',')
+// 拡張: openingDate と reviews(publishTime) を取得。未対応なら400→BASEへフォールバック。
+const EXT_FIELD_MASK = [...EXT_FIELDS, 'places.openingDate', 'places.reviews'].join(',')
+
+/** 取得できた reviews から最古/最新の publishTime を求める */
+function reviewDates(p: any): { latest: string | null; oldest: string | null } {
+  const reviews = Array.isArray(p.reviews) ? p.reviews : []
+  let latest: string | null = null
+  let oldest: string | null = null
+  for (const r of reviews) {
+    const pt = r?.publishTime
+    if (!pt) continue
+    const t = Date.parse(pt)
+    if (Number.isNaN(t)) continue
+    if (latest === null || t > Date.parse(latest)) latest = pt
+    if (oldest === null || t < Date.parse(oldest)) oldest = pt
+  }
+  return { latest, oldest }
+}
 
 // 拡張フィールド(openingDate/未来オープン)が使えるか。400発生で false に倒す。
 let extendedSupported = true
@@ -244,6 +261,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           ? Math.max(0, Math.floor((Date.now() - Date.parse(existing.first_seen_at)) / 86400000))
           : 0
         const fromNewOpen = /(新規オープン|ニューオープン|オープン|開店)/.test(query)
+        const { latest: latestPub, oldest: oldestPub } = reviewDates(p)
 
         const classified: any = classifyLead(
           {
@@ -253,14 +271,14 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             phone_number: phone,
             website_url: p.websiteUri || '',
             place_id: placeId,
-            // 「未登録のplace_id（first-seen）」を新規の前提として渡す。
-            // 最終判定（openingDate/口コミ/新規オープン系クエリ等）は classifyLead 側で行う。
             is_new_gbp: !existing,
             review_count: reviewCount ?? undefined,
             business_status: p.businessStatus || undefined,
             opening_date: openingDate || undefined,
             first_seen_days: firstSeenDays,
             from_new_open_query: fromNewOpen,
+            latest_review_publish_time: latestPub || undefined,
+            oldest_review_publish_time: oldestPub || undefined,
           },
           cases,
           opts,
@@ -315,10 +333,15 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
               owner_reachability_score: classified.owner_reachability_score,
               is_new_opening_candidate: classified.is_new_opening_candidate,
               newness_reason: classified.newness_reason || '',
+              review_newness_reason: classified.review_newness_reason || '',
               opening_date: classified.opening_date || null,
               days_since_first_seen: classified.days_since_first_seen,
               from_new_open_query: fromNewOpen,
               user_rating_count: reviewCount,
+              latest_review_publish_time: classified.latest_review_publish_time || null,
+              oldest_review_publish_time: classified.oldest_review_publish_time || null,
+              oldest_review_days_ago: classified.oldest_review_days_ago,
+              review_dates_checked: classified.review_dates_checked,
               phone_normalized: classified.phone_normalized || '',
               should_exclude_from_call_list: classified.should_exclude_from_call_list,
               exclusion_reason: classified.exclusion_reason || '',

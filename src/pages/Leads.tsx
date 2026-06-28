@@ -31,6 +31,12 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'EXCLUDED', label: '除外' },
 ]
 
+function fmtDate(s?: string | null): string {
+  if (!s) return '—'
+  const m = moment(s)
+  return m.isValid() ? m.format('YYYY/MM/DD') : '—'
+}
+
 function loadSettings(): LeadImportSettings {
   try {
     const raw = localStorage.getItem(LS_LEAD_SETTINGS)
@@ -515,6 +521,10 @@ export default function Leads() {
                       <div>電話: {gpResult.debug.sample.place?.nationalPhoneNumber || gpResult.debug.sample.place?.internationalPhoneNumber || '（なし）'}</div>
                       <div>primaryType: {gpResult.debug.sample.place?.primaryType || '—'}</div>
                       <div className="font-bold">口コミ数: {gpResult.debug.sample.place?.userRatingCount ?? '不明'}</div>
+                      <div>最新口コミ日: {fmtDate(gpResult.debug.sample.classified?.latest_review_publish_time)}</div>
+                      <div className="font-bold">一番古い口コミ日: {fmtDate(gpResult.debug.sample.classified?.oldest_review_publish_time)}</div>
+                      <div className="font-bold">最古口コミから: {gpResult.debug.sample.classified?.oldest_review_days_ago ?? '—'}日前</div>
+                      <div className="md:col-span-2">口コミ日付判定: {gpResult.debug.sample.classified?.review_newness_reason || '—'}</div>
                       <div>開店日(openingDate): {gpResult.debug.sample.place?.openingDate || gpResult.debug.sample.classified?.opening_date || '取得不可'}</div>
                       <div>RST初回発見からの日数: {gpResult.debug.sample.classified?.days_since_first_seen ?? 0}日</div>
                       <div>新規オープン系クエリ: <b>{String(gpResult.debug.sample.classified?.from_new_open_query)}</b></div>
@@ -641,6 +651,11 @@ export default function Leads() {
                             <div className="flex flex-col items-center gap-0.5">
                               <span className="font-bold">{n}</span>
                               <span className={cn('rounded-sm px-1 text-[8px]', cls)}>{label}</span>
+                              {c.oldest_review_days_ago != null && (
+                                <span className={cn('text-[8px]', c.oldest_review_is_recent ? 'text-green-600' : 'text-muted-foreground')} title={`最古口コミ ${fmtDate(c.oldest_review_publish_time)}`}>
+                                  最古{c.oldest_review_days_ago}日前
+                                </span>
+                              )}
                             </div>
                           )
                         })()}
@@ -661,9 +676,9 @@ export default function Leads() {
                           {c.exclusion_reason && <div className="w-full text-[9px] text-muted-foreground">{c.exclusion_reason}</div>}
                         </div>
                       </td>
-                      <td className="max-w-[280px] p-2">
+                      <td className="max-w-[300px] p-2">
+                        {c.review_newness_reason && <div className="text-[10px] text-sky-700 dark:text-sky-300">口コミ日付: {c.review_newness_reason}</div>}
                         {c.newness_reason && <div className="text-[10px] text-green-700 dark:text-green-300">新規理由: {c.newness_reason}</div>}
-                        <div className="font-medium text-foreground">{c.auto_import_reason}</div>
                         <div className="mt-0.5 line-clamp-3 text-[10px] text-muted-foreground" title={c.ai_comment ?? ''}>{c.ai_comment}</div>
                       </td>
                       <td className="whitespace-nowrap p-2 text-center text-muted-foreground">{moment(c.first_seen_at).format('MM/DD')}</td>
