@@ -18,6 +18,7 @@ import { classifyLead, generateMockLeads } from '@/lib/leadScoring'
 import {
   DEFAULT_STATUS, LEAD_TEMP_COLORS, LS_LEAD_SETTINGS, DEFAULT_LEAD_SETTINGS, parseList,
 } from '@/lib/constants'
+import { AREA_PRESET_OPTIONS } from '@/lib/areaPresets'
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient'
 import { cn, jpError, copyToClipboard, mapUrl } from '@/lib/utils'
 import type { Case, LeadCandidate, LeadImportSettings, LeadRun, LeadTemperature } from '@/lib/types'
@@ -117,10 +118,13 @@ export default function Leads() {
           settings: {
             testFixed,
             autoImport: settings.autoImport,
-            fetchLimit: settings.fetchLimit,
             dailyCap: settings.dailyCap,
+            areaPreset: settings.areaPreset,
             areas: parseList(settings.areas),
             industries: parseList(settings.industries),
+            maxPerQuery: settings.maxPerQuery,
+            maxQueriesPerDay: settings.maxQueriesPerDay,
+            rotation: settings.rotation,
             hotMaxReviews: settings.hotMaxReviews,
             warmMaxReviews: settings.warmMaxReviews,
             exclude100: settings.exclude100,
@@ -334,13 +338,31 @@ export default function Leads() {
                 HOTを自動でcasesへ投入
               </label>
               <div className="space-y-1">
-                <Label>1クエリあたりの取得上限（最大20）</Label>
-                <Input type="number" min={1} max={20} value={settings.fetchLimit} onChange={(e) => saveSettings({ ...settings, fetchLimit: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} className="h-8" />
+                <Label>エリアプリセット</Label>
+                <select
+                  value={settings.areaPreset}
+                  onChange={(e) => saveSettings({ ...settings, areaPreset: e.target.value })}
+                  className="h-8 w-full rounded border border-input bg-card px-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {AREA_PRESET_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>1日あたり最大クエリ数</Label>
+                <Input type="number" min={1} value={settings.maxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, maxQueriesPerDay: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
+              </div>
+              <div className="space-y-1">
+                <Label>1クエリ最大取得件数（最大20）</Label>
+                <Input type="number" min={1} max={20} value={settings.maxPerQuery} onChange={(e) => saveSettings({ ...settings, maxPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} className="h-8" />
               </div>
               <div className="space-y-1">
                 <Label>1日あたりの投入上限</Label>
                 <Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
               </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={settings.rotation} onChange={(e) => saveSettings({ ...settings, rotation: e.target.checked })} />
+                ローテーション（7日以内の同一クエリは再実行しない）
+              </label>
               <div className="space-y-1">
                 <Label>HOT判定の最大口コミ数</Label>
                 <Input type="number" min={0} value={settings.hotMaxReviews} onChange={(e) => saveSettings({ ...settings, hotMaxReviews: Math.max(0, Number(e.target.value) || 0) })} className="h-8" />
@@ -362,8 +384,14 @@ export default function Leads() {
                 first_seen_at だけで新規扱いしない（常時ON）
               </label>
               <div className="space-y-1 lg:col-span-2">
-                <Label>対象エリア（1行に1つ）</Label>
-                <Textarea value={settings.areas} onChange={(e) => saveSettings({ ...settings, areas: e.target.value })} rows={4} />
+                <Label>対象エリア{settings.areaPreset === 'custom' ? '（1行に1つ）' : '（プリセットで自動展開）'}</Label>
+                {settings.areaPreset === 'custom' ? (
+                  <Textarea value={settings.areas} onChange={(e) => saveSettings({ ...settings, areas: e.target.value })} rows={4} />
+                ) : (
+                  <div className="rounded border bg-muted/30 p-2 text-[10px] text-muted-foreground">
+                    「{AREA_PRESET_OPTIONS.find((o) => o.value === settings.areaPreset)?.label}」の主要市区町村＋主要駅を自動展開します（毎日ローテーションで巡回）。細かいエリアの手入力は不要です。
+                  </div>
+                )}
               </div>
               <div className="space-y-1 lg:col-span-2">
                 <Label>対象業種（1行に1つ）</Label>
@@ -435,8 +463,10 @@ export default function Leads() {
                   <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">DB保存 {gpResult.saved ?? 0}</span>
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {gpResult.phoneYes ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
-                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内 {gpResult.chainExcluded ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
                   {Number(gpResult.error ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">APIエラー {gpResult.error}</span>}
                   {Number(gpResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {gpResult.saveError}</span>}
                 </div>
@@ -459,18 +489,20 @@ export default function Leads() {
                   </div>
                 )}
 
-                {/* 使用した条件 */}
-                {gpResult.debug?.settings && (
+                {/* 使用した条件・ローテーション状況 */}
+                {gpResult.debug && (
                   <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
-                    <div><b>使用した対象エリア:</b> {(gpResult.debug.settings.areas || []).join(' / ') || '（なし）'}</div>
-                    <div><b>使用した対象業種:</b> {(gpResult.debug.settings.industries || []).join(' / ') || '（なし）'}</div>
+                    <div><b>エリアプリセット:</b> {AREA_PRESET_OPTIONS.find((o) => o.value === gpResult.debug.preset)?.label || gpResult.debug.preset}（エリア {(gpResult.debug.areas || []).length} / 業種 {(gpResult.debug.industries || []).length}）</div>
                     <div className="text-muted-foreground">
-                      生成クエリ数 {gpResult.debug.totalQueries ?? (gpResult.debug.queries?.length ?? 0)}
-                      （実行 {gpResult.debug.ranQueries ?? '—'} ・ 1クエリ{gpResult.debug.perQuery ?? '—'}件）
+                      実行クエリ {gpResult.debug.ranQueries ?? 0}（新規オープン系 {gpResult.newOpenRan ?? 0} / 通常 {gpResult.normalRan ?? 0}）・
+                      生成総数 {gpResult.debug.totalQueries ?? 0} ・ 7日内スキップ {gpResult.debug.recentSkipped ?? 0} ・ 残り {gpResult.debug.remaining ?? 0}
+                    </div>
+                    <div className="text-muted-foreground">
+                      1クエリ{gpResult.debug.perQuery ?? '—'}件 ・ 推定API呼び出し {gpResult.debug.estApiCalls ?? '—'}回（検索{gpResult.debug.ranQueries ?? 0}＋詳細{gpResult.detailCalls ?? 0}）
                     </div>
                     {Array.isArray(gpResult.debug.queries) && (
                       <details className="mt-0.5">
-                        <summary className="cursor-pointer text-primary">全検索クエリ一覧（{gpResult.debug.queries.length}）</summary>
+                        <summary className="cursor-pointer text-primary">実行クエリ一覧（{gpResult.debug.queries.length}）</summary>
                         <div className="mt-1 max-h-32 overflow-y-auto">
                           {gpResult.debug.queries.map((q: string, i: number) => <div key={i}>{i + 1}. {q}</div>)}
                         </div>

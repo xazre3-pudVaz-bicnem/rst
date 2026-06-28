@@ -250,19 +250,25 @@ export const LS_LEAD_SETTINGS = 'rst_lead_settings'
 export const DEFAULT_LEAD_SETTINGS = {
   autoImport: true,
   placesEnabled: true,
-  fetchLimit: 60,
+  fetchLimit: 10,
   dailyCap: 30,
   hotMaxReviews: 5,
   warmMaxReviews: 15,
   exclude100: true,
   unknownHold: true,
+  areaPreset: 'ittokensanken',
+  maxQueriesPerDay: 50,
+  maxPerQuery: 10,
+  rotation: true,
   areas: [
-    '東京都葛飾区', '東京都足立区', '東京都江戸川区',
-    '千葉県市川市', '千葉県船橋市', '埼玉県草加市', '埼玉県越谷市',
+    '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),
   industries: [
-    '美容室', '整体', '整骨院', 'リラクゼーション', 'エステ', '飲食店',
-    '居酒屋', 'パーソナルジム', '士業', 'リフォーム', 'ハウスクリーニング',
+    '整体', '整骨院', '接骨院', '鍼灸院', '美容室', '理容室', 'ネイルサロン',
+    'まつ毛サロン', 'エステ', 'リラクゼーション', 'パーソナルジム', 'ピラティス',
+    '歯科', '動物病院', 'ペットサロン', '飲食店', 'カフェ', '居酒屋', 'テイクアウト',
+    'ハウスクリーニング', '不用品回収', 'リフォーム', '外壁塗装', '水道修理', '電気工事',
+    '行政書士', '税理士', '写真館', 'レンタルスペース',
   ].join('\n'),
 }
 

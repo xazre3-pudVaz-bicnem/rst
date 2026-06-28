@@ -282,6 +282,11 @@ export interface LeadImportSettings {
   warmMaxReviews: number    // WARM判定の最大口コミ数（既定15）
   exclude100: boolean       // 口コミ100件以上は自動除外
   unknownHold: boolean      // 口コミ件数不明はHOLD
+  // エリアプリセット & ローテーション
+  areaPreset: string        // 'ittokensanken' | 'tokyo' | ... | 'custom'
+  maxQueriesPerDay: number  // 1日あたり最大クエリ数（既定50）
+  maxPerQuery: number       // 1クエリあたり最大取得件数（既定10）
+  rotation: boolean         // 未実行/古いクエリから巡回
 }
 
 /** Auto search settings stored in localStorage */
