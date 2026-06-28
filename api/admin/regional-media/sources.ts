@@ -39,6 +39,27 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ ok: true, action: 'seed', upserted: rows.length, seeded: rows.length, active: active || 0 })
     }
 
+    // 重複整理: base_url を正規化（末尾スラッシュ/空白）して同一URLは1件のみ有効化、他は is_active=false（削除しない）
+    if (body?.action === 'dedupe') {
+      const { data, error } = await admin.from('source_sites').select('*')
+      if (error) return res.status(200).json({ ok: false, error: error.message })
+      const groups = new Map<string, any[]>()
+      for (const s of (data || [])) {
+        const key = normalizeUrl(s.base_url)
+        const arr = groups.get(key) || []; arr.push(s); groups.set(key, arr)
+      }
+      let deactivated = 0
+      for (const arr of groups.values()) {
+        if (arr.length < 2) continue
+        // 残す1件: 有効 → 信頼度高 → last_crawled_at新しい
+        arr.sort((a, b) => Number(b.is_active) - Number(a.is_active) || (b.reliability_score || 0) - (a.reliability_score || 0) || String(b.last_crawled_at || '').localeCompare(String(a.last_crawled_at || '')))
+        for (const dup of arr.slice(1)) {
+          if (dup.is_active) { await admin.from('source_sites').update({ is_active: false, updated_at: new Date().toISOString(), last_crawl_result: '重複のため無効化' }).eq('id', dup.id); deactivated++ }
+        }
+      }
+      return res.status(200).json({ ok: true, action: 'dedupe', deactivated })
+    }
+
     const sane = sanitizeSitePayload(body)
     if (!sane.ok) return res.status(400).json({ ok: false, error: sane.error })
     const { error, data } = await admin.from('source_sites')

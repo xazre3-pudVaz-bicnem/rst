@@ -236,6 +236,12 @@ export default function Leads() {
     catch (e) { setAllTest({ error: jpError(e) }) } finally { setRmBusy(false) }
   }
 
+  async function dedupeSites() {
+    setRmBusy(true)
+    try { const j = await adminFetch('/api/admin/regional-media/sources', 'POST', { action: 'dedupe' }); toast.success(`重複を整理しました（無効化 ${j.deactivated}件）`); loadSites(); checkRmStatus() }
+    catch (e) { toast.error('整理に失敗: ' + jpError(e)) } finally { setRmBusy(false) }
+  }
+
   async function runInstagram() {
     if (!settings.igEnabled) { toast.error('設定でInstagram取得がOFFです'); return }
     if (igConfigured === false) { toast.error('IG_ACCESS_TOKEN / IG_USER_ID が未設定です'); return }
@@ -1039,11 +1045,16 @@ export default function Leads() {
                       {Number(rmResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {rmResult.saveError}</span>}
                     </div>
                     {Array.isArray(rmResult.debug?.siteResults) && (
-                      <details className="rounded border bg-muted/30 p-2 text-[10px]">
-                        <summary className="cursor-pointer text-primary">サイト別結果（{rmResult.debug.siteResults.length}）</summary>
-                        <div className="mt-1 max-h-40 overflow-y-auto">
+                      <details className="rounded border bg-muted/30 p-2 text-[10px]" open>
+                        <summary className="cursor-pointer text-primary">サイト別診断（{rmResult.debug.siteResults.length}）</summary>
+                        <div className="mt-1 max-h-56 space-y-1 overflow-y-auto">
                           {rmResult.debug.siteResults.map((h: any, i: number) => (
-                            <div key={i}>{h.site}: 記事リンク{h.links ?? 0}/採用{h.used ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}{h.error ? ` ・ ${h.error}` : ''}</div>
+                            <div key={i} className="border-b pb-0.5">
+                              <div className="font-medium">{h.site} <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span></div>
+                              <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ 記事候補{h.candidateLinks ?? 0} ・ 新店語一致{h.keywordHits ?? 0} ・ 新着{h.newArticles ?? 0} ・ 3日内{h.recent ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
+                              {h.reason && h.reason !== 'OK' && <div className="text-amber-600">理由: {h.reason}</div>}
+                              {h.error && <div className="text-red-600">エラー: {h.error}</div>}
+                            </div>
                           ))}
                         </div>
                       </details>
@@ -1098,6 +1109,7 @@ export default function Leads() {
                 <div className="flex flex-wrap gap-1.5">
                   <Button size="sm" variant="outline" onClick={seedInitial} disabled={rmBusy}>初期ソースを登録</Button>
                   <Button size="sm" variant="outline" onClick={() => setSiteForm({ ...emptySite })}>巡回サイトを追加</Button>
+                  <Button size="sm" variant="outline" onClick={dedupeSites} disabled={rmBusy}>重複を整理</Button>
                   <Button size="sm" onClick={testAllSites} disabled={rmBusy}>全有効サイトをテスト巡回</Button>
                 </div>
               </div>
@@ -1162,18 +1174,20 @@ export default function Leads() {
                             <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => testSite(s)}>テスト</Button>
                           </div>
                           {siteTests[s.id] && (
-                            <div className="mt-1 max-w-[260px] rounded border bg-muted/30 p-1 text-left text-[9px]">
-                              {siteTests[s.id].loading ? 'テスト中…'
-                                : siteTests[s.id].error ? <span className="text-red-600">{siteTests[s.id].error}</span>
-                                : siteTests[s.id].ok === false ? <span className="text-red-600">{siteTests[s.id].error}</span>
-                                : (
-                                  <>
-                                    <div>記事{siteTests[s.id].counts?.articles ?? 0} / 3日内{siteTests[s.id].counts?.recent ?? 0} / 新店{siteTests[s.id].counts?.open ?? 0} / HOT候補{siteTests[s.id].counts?.hotLike ?? 0}{siteTests[s.id].error ? ` ・ ${siteTests[s.id].error}` : ''}</div>
-                                    {(siteTests[s.id].articles || []).slice(0, 5).map((a: any, i: number) => (
-                                      <div key={i} className="truncate"><a href={a.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{a.estimate}・{a.title}</a> {a.within_recent ? '🟢' : ''}{a.published_at ? `(${fmtDate(a.published_at)})` : ''}</div>
-                                    ))}
-                                  </>
-                                )}
+                            <div className="mt-1 max-w-[320px] rounded border bg-muted/30 p-1 text-left text-[9px]">
+                              {siteTests[s.id].loading ? 'テスト中…' : (
+                                <>
+                                  <div className={cn(siteTests[s.id].diag?.fetchOk ? 'text-green-600' : 'text-red-600')}>
+                                    {siteTests[s.id].diag?.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{siteTests[s.id].diag?.status ?? '-'} ・ HTML{siteTests[s.id].diag?.htmlLength ?? 0}字 ・ 全リンク{siteTests[s.id].diag?.totalLinks ?? 0} ・ 記事候補{siteTests[s.id].diag?.candidateLinks ?? 0}
+                                  </div>
+                                  <div className="text-muted-foreground">取得記事{siteTests[s.id].counts?.articles ?? 0} / 3日内{siteTests[s.id].counts?.recent ?? 0} / 新店{siteTests[s.id].counts?.open ?? 0} / HOT候補{siteTests[s.id].counts?.hotLike ?? 0}</div>
+                                  {(siteTests[s.id].diag?.reason && siteTests[s.id].diag.reason !== 'OK') && <div className="text-amber-600">{siteTests[s.id].diag.reason}</div>}
+                                  {siteTests[s.id].error && <div className="text-red-600">{siteTests[s.id].error}</div>}
+                                  {(siteTests[s.id].articles || []).slice(0, 10).map((a: any, i: number) => (
+                                    <div key={i} className="truncate"><a href={a.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{a.estimate}・{a.title || a.url}</a> {a.within_recent ? '🟢3日内' : ''}{a.published_at ? `(${fmtDate(a.published_at)})` : '(日付不明)'}</div>
+                                  ))}
+                                </>
+                              )}
                             </div>
                           )}
                         </td>
@@ -1200,7 +1214,7 @@ export default function Leads() {
                         <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED{allTest.excluded}</span>
                       </div>
                       {(allTest.results || []).map((r: any, i: number) => (
-                        <div key={i} className={cn('mt-0.5', r.ok ? '' : 'text-red-600')}>{r.site}: {r.ok ? `記事${r.articles}/3日内${r.recent}/新店${r.open}/HOT候補${r.hotLike}` : `失敗 ${r.error || ''}`}</div>
+                        <div key={i} className={cn('mt-0.5', r.ok ? '' : 'text-red-600')}>{r.site}: {r.ok ? `HTTP${r.status} HTML${r.htmlLength ?? 0}字 記事候補${r.candidateLinks ?? 0}/取得${r.articles}/3日内${r.recent}/新店${r.open}/HOT候補${r.hotLike}${r.reason && r.reason !== 'OK' ? ` ・ ${r.reason}` : ''}` : `失敗 ${r.error || ''}`}</div>
                       ))}
                     </>
                   )}

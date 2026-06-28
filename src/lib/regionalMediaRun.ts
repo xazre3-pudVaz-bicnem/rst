@@ -14,6 +14,7 @@ export function getDefaultRegionalSettings() {
     maxSitesPerDay: 3,
     maxArticlesPerSite: 5,
     periodDays: 30,
+    saveDays: 3,        // lead_candidates へ保存する公開日の上限（既定3日以内）
     requirePhone: true,
     dailyCap: 30,
     fetchDelayMs: 800,
@@ -23,17 +24,23 @@ export function getDefaultRegionalSettings() {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 
-async function fetchText(url: string, timeoutMs = 12000): Promise<string | null> {
+async function fetchHtml(url: string, timeoutMs = 12000): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null }> {
   try {
     const ctrl = new AbortController()
     const to = setTimeout(() => ctrl.abort(), timeoutMs)
-    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' }, signal: ctrl.signal })
+    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'ja,en;q=0.8' }, redirect: 'follow', signal: ctrl.signal })
     clearTimeout(to)
-    if (!res.ok) return null
     const ct = res.headers.get('content-type') || ''
-    if (!/text|html|xml/i.test(ct)) return null
-    return await res.text()
-  } catch { return null }
+    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `HTTP ${res.status}` }
+    if (ct && !/text|html|xml|json/i.test(ct)) return { ok: false, status: res.status, html: '', length: 0, error: `非HTML(${ct})` }
+    const html = await res.text()
+    return { ok: true, status: res.status, html, length: html.length, error: null }
+  } catch (e: any) { return { ok: false, status: 0, html: '', length: 0, error: String(e?.message || e).slice(0, 120) } }
+}
+
+async function fetchText(url: string, timeoutMs = 12000): Promise<string | null> {
+  const r = await fetchHtml(url, timeoutMs)
+  return r.ok ? r.html : null
 }
 
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
@@ -57,36 +64,76 @@ function stripTags(html: string): string {
     .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
 }
 
-/** カテゴリページHTMLから記事リンク（同一ドメイン・新店系タイトル）を抽出 */
-function extractArticleLinks(html: string, base: URL): { url: string; title: string }[] {
+interface LinkOpts { mediaFamily?: string; categoryLabel?: string; listUrl?: string }
+
+/** 開店/閉店・新店系のソースか（記事URLっぽければアンカー文言不問で拾う） */
+function isOpenCloseContext(o: LinkOpts): boolean {
+  const fam = o.mediaFamily || ''
+  if (['goguynet', 'kaitenheiten', 'tsushin', 'local_news'].includes(fam)) return true
+  if (['開店閉店', '新店情報'].includes(o.categoryLabel || '')) return true
+  if (/open|close|kaiten|heiten|shinten|newopen|cat_/i.test(o.listUrl || '')) return true
+  return false
+}
+
+const EXCLUDE_PATH = /\/(category|tag|author|page|search|feed|amp|wp-admin|wp-content|wp-json|wp-login|about|contact|privacy|policy|sitemap|ranking|login|mypage|profile|terms|company|recruit)\b/i
+
+/** パスが個別記事URLっぽいか（号外NETの数字ID・WPの日本語/英字slug 等） */
+function looksLikeArticle(pathname: string): boolean {
+  if (pathname === '/' || pathname.length < 2) return false
+  if (EXCLUDE_PATH.test(pathname)) return false
+  if (/\/archives\/\d+/i.test(pathname)) return true        // WP /archives/123
+  if (/\/\d{4}\/\d{1,2}\//.test(pathname)) return true       // /2026/06/...
+  if (/\/\d{4,}(\/|\.html?)?$/.test(pathname)) return true   // 号外NET 数字ID /123456
+  if (/-[a-z0-9-]{4,}/i.test(pathname)) return true          // 英字スラッグ
+  if (/%[0-9a-f]{2}/i.test(pathname)) return true            // %エンコード日本語スラッグ(WP)
+  try { if (/[ぁ-んァ-ヶ一-龥]/.test(decodeURIComponent(pathname))) return true } catch { /* noop */ }
+  return false
+}
+
+/** リストページから記事リンクを抽出（メディア別）。total/candidate も返す */
+function extractArticleLinks(html: string, base: URL, opts: LinkOpts = {}): { links: { url: string; title: string }[]; totalLinks: number; candidateLinks: number; keywordHits: number } {
   const out: { url: string; title: string }[] = []
   const seen = new Set<string>()
+  const openCtx = isOpenCloseContext(opts)
+  let totalLinks = 0
+  let keywordHits = 0
   for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    totalLinks++
     const href = m[1]
-    const title = stripTags(m[2]).slice(0, 120)
-    if (!title || title.length < 6) continue
+    const title = stripTags(m[2]).slice(0, 140)
     let abs: URL
     try { abs = new URL(href, base) } catch { continue }
-    if (abs.host !== base.host) continue
-    if (/\/(category|tag|author|page|wp-|feed)\b/i.test(abs.pathname)) continue
-    if (abs.pathname === '/' || abs.pathname.length < 6) continue
-    if (!isOpenTitle(title)) continue
+    // 同一ホスト or 同一サイトの別サブドメイン（goguynetの地域別など）
+    const sameHost = abs.host === base.host
+    const sameRoot = abs.host.split('.').slice(-2).join('.') === base.host.split('.').slice(-2).join('.')
+    if (!sameHost && !sameRoot) continue
+    if (/^(mailto:|tel:|javascript:)/i.test(href)) continue
+    const articleLike = looksLikeArticle(abs.pathname)
+    const titleOpen = title.length >= 4 && isOpenTitle(title)
+    if (titleOpen) keywordHits++
+    // 開店閉店系ソースは「記事URLっぽい」だけで採用（アンカー文言不問）。それ以外は文言一致必須。
+    const accept = openCtx ? (articleLike || titleOpen) : (titleOpen && (articleLike || title.length >= 8))
+    if (!accept) continue
     const key = abs.origin + abs.pathname
     if (seen.has(key)) continue
     seen.add(key)
     out.push({ url: abs.toString(), title })
   }
-  return out
+  return { links: out, totalLinks, candidateLinks: out.length, keywordHits }
 }
 
-function articleMeta(html: string): { published_at: string | null; excerpt: string } {
+function articleMeta(html: string): { published_at: string | null; excerpt: string; title: string } {
   let published_at: string | null = null
   const pub = html.match(/<meta[^>]+property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i)
     || html.match(/<time[^>]+datetime=["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+(?:itemprop|name)=["'](?:datePublished|pubdate)["'][^>]*content=["']([^"']+)["']/i)
   if (pub && !Number.isNaN(Date.parse(pub[1]))) published_at = new Date(pub[1]).toISOString()
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)
+  const tt = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+  const title = stripTags((og ? og[1] : tt ? tt[1] : '')).slice(0, 160)
   const desc = html.match(/<meta[^>]+(?:name|property)=["'](?:og:description|description)["'][^>]*content=["']([^"']+)["']/i)
   const excerpt = (desc ? desc[1] : stripTags(html).slice(0, 300)).slice(0, 300)
-  return { published_at, excerpt }
+  return { published_at, excerpt, title }
 }
 
 function matchConfidence(shop: string, placeName: string): number {
@@ -101,7 +148,8 @@ function matchConfidence(shop: string, placeName: string): number {
 
 export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSettings: any, userId: string | null) {
   const s = { ...getDefaultRegionalSettings(), ...(rawSettings || {}) }
-  const periodMs = Math.max(1, Number(s.periodDays) || 30) * 86400000
+  const recentDays = Math.max(1, Number(s.saveDays) || 3)
+  const recentMs = recentDays * 86400000
   const maxSites = Math.max(1, Number(s.maxSitesPerDay) || 3)
   const maxArticles = Math.max(1, Number(s.maxArticlesPerSite) || 5)
   const dailyCap = Math.max(1, Number(s.dailyCap) || 30)
@@ -127,7 +175,6 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
     for (const site of list) {
       counts.sites++
-      const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
       const crawlUrl = site.list_url || site.base_url
       let base: URL
       try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正' }).eq('id', site.id).then(() => {}, () => {}); continue }
@@ -139,11 +186,21 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         continue
       }
 
-      const indexHtml = await fetchText(crawlUrl)
+      const idx = await fetchHtml(crawlUrl)
       await sleep(delay)
-      if (!indexHtml) { counts.error++; debug.siteResults.push({ site: site.name, error: 'カテゴリページ取得失敗' }); await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: 'ページ取得失敗' }).eq('id', site.id); continue }
+      const linkOpts: LinkOpts = { mediaFamily: site.media_family, categoryLabel: site.category_label, listUrl: crawlUrl }
+      const diag: any = { site: site.name, url: crawlUrl, fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, error: idx.error, reason: '' }
+      if (!idx.ok) {
+        counts.error++; diag.reason = `リスト取得失敗（${idx.error}）`
+        debug.siteResults.push(diag)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: `取得失敗 ${idx.error}` }).eq('id', site.id)
+        continue
+      }
+      const extracted = extractArticleLinks(idx.html, base, linkOpts)
+      diag.totalLinks = extracted.totalLinks; diag.candidateLinks = extracted.candidateLinks; diag.keywordHits = extracted.keywordHits
+      const links = extracted.links.slice(0, maxArticles * 2)
+      if (links.length === 0) diag.reason = `記事候補リンク0（全リンク${extracted.totalLinks}・新店語一致${extracted.keywordHits}）。list_url/パーサーを確認`
 
-      const links = extractArticleLinks(indexHtml, base).slice(0, maxArticles * 2)
       let used = 0
       for (const link of links) {
         if (used >= maxArticles) break
@@ -156,24 +213,29 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const html = await fetchText(link.url)
         await sleep(delay)
         const body = html ? stripTags(html) : ''
-        const meta = html ? articleMeta(html) : { published_at: null, excerpt: '' }
-        const ex = extractFromArticle(link.title, body.slice(0, 4000))
+        const meta = html ? articleMeta(html) : { published_at: null, excerpt: '', title: '' }
+        const bestTitle = meta.title && meta.title.length >= link.title.length ? meta.title : (link.title || meta.title)
+        const ex = extractFromArticle(bestTitle, body.slice(0, 4000))
 
         const publishedMs = meta.published_at ? Date.parse(meta.published_at) : NaN
-        const tooOld = !Number.isNaN(publishedMs) && (now - publishedMs) > periodMs
+        const pubKnown = !Number.isNaN(publishedMs)
+        const tooOld = pubKnown && (now - publishedMs) > recentMs
+        if (pubKnown && !tooOld) diag.recent++
 
-        // source_articles 保存（本文は保存しない・抜粋のみ）
-        const artStatus = ex.is_excluded ? 'skipped' : 'processed'
+        // source_articles 保存（本文は保存しない・抜粋のみ。再取得回避のため古い/除外も記録）
+        const artStatus = ex.is_excluded ? 'skipped' : (tooOld ? 'skipped' : 'processed')
         await admin.from('source_articles').insert({
-          source_site_id: site.id, article_url: link.url, article_url_hash: hash, title: link.title,
+          source_site_id: site.id, article_url: link.url, article_url_hash: hash, title: bestTitle,
           published_at: meta.published_at, detected_type: ex.detected_type, raw_excerpt: meta.excerpt.slice(0, 300),
           processed_status: artStatus, extracted_shop_name: ex.shop_name || null, extracted_area: ex.area || null,
           extracted_address: ex.address || null, extracted_open_date: ex.open_date || null, extracted_industry: ex.industry || null,
-          exclusion_reason: ex.is_excluded ? ex.exclude_reason : null,
+          exclusion_reason: ex.is_excluded ? ex.exclude_reason : (tooOld ? `公開${Math.round((now - publishedMs) / 86400000)}日前（保存対象外）` : null),
         }).then(() => {}, () => {})
 
         // 除外記事は lead_candidate を作らずカウントのみ
-        if (ex.is_excluded) { counts.excluded++; continue }
+        if (ex.is_excluded) { counts.excluded++; diag.excluded++; continue }
+        // 保存条件: 公開日が判明していて3日(=saveDays)より古いものは lead_candidates に保存しない
+        if (tooOld) { diag.tooOld = (diag.tooOld || 0) + 1; continue }
 
         // 任意: Google Places照合（必須にしない）
         let placeMatched = false, placeHot = false, confidence = 0
@@ -213,11 +275,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         else if (phone) { temperature = 'HOLD'; reason = placeMatched ? '電話は取れたがGBPの口コミ条件未達のためHOLD（要確認）。' : 'Google Places未照合のためHOLD（電話は取得済み・要確認）。' }
         else { temperature = 'HOLD'; reason = '電話番号が取得できないためHOLD（自動投入しない）。' }
 
-        if (temperature === 'HOT') counts.hot++; else counts.hold++
+        if (temperature === 'HOT') { counts.hot++; diag.hot++ } else { counts.hold++; diag.hold++ }
         counts.candidates++
 
         const name = ex.shop_name || `${ex.area}${ex.industry}`.trim() || '地域メディア候補'
-        const newnessReason = `${site.name}「${link.title}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''} / ${reason}`
+        const newnessReason = `${site.name}「${bestTitle}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''} / ${reason}`
 
         const payload: any = {
           name, address: ex.address || (placeMatched ? placeFields.formattedAddress : '') || null, industry: ex.industry || null,
@@ -227,7 +289,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           should_exclude_from_call_list: temperature === 'EXCLUDED',
           owner_reachability_score: phone ? 70 : 30,
           auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason,
-          source_article_url: link.url, source_article_title: link.title, source_site_name: site.name,
+          source_article_url: link.url, source_article_title: bestTitle, source_site_name: site.name,
           regional_media_detected_at: nowIso, extracted_open_date: ex.open_date || null,
           extracted_shop_name: ex.shop_name || null, extracted_area: ex.area || null, extracted_address: ex.address || null,
           extracted_industry: ex.industry || null, regional_media_newness_reason: newnessReason,
@@ -241,10 +303,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const alreadyImported = !!dupCand?.[0]?.imported_to_cases
         if (candidateId) {
           const { error } = await admin.from('lead_candidates').update(payload).eq('id', candidateId)
-          if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else counts.saved++
+          if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
         } else {
           const { data: ins, error } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single()
-          if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else counts.saved++
+          if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
           candidateId = ins?.id || null
         }
 
@@ -261,12 +323,17 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           }
         }
 
-        if (!debug.sample) debug.sample = { site: site.name, title: link.title, url: link.url, published_at: meta.published_at, extracted: ex, temperature, reason, confidence, matchedPlaceId }
+        if (!debug.sample) debug.sample = { site: site.name, title: bestTitle, url: link.url, published_at: meta.published_at, extracted: ex, temperature, reason, confidence, matchedPlaceId }
       }
 
-      const dh = counts.hot - before.hot, dhold = counts.hold - before.hold, dex = counts.excluded - before.excluded
-      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `記事${used}件 HOT${dh}/HOLD${dhold}/除外${dex}` }).eq('id', site.id)
-      debug.siteResults.push({ site: site.name, links: links.length, used, hot: dh, hold: dhold, excluded: dex })
+      if (!diag.reason) {
+        if (diag.candidateLinks > 0 && diag.recent === 0) diag.reason = `記事候補${diag.candidateLinks}件あるが3日以内の新着が0（日付条件で保存対象外）`
+        else if (diag.saved === 0 && diag.candidateLinks > 0) diag.reason = '記事は取得できたが保存条件を満たさず（電話/店名/エリア/日付）'
+        else diag.reason = 'OK'
+      }
+      diag.newArticles = used
+      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `リンク${diag.candidateLinks}/新着${used} HOT${diag.hot}/HOLD${diag.hold}/除外${diag.excluded} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
+      debug.siteResults.push(diag)
     }
 
     await admin.from('auto_lead_runs').update({
@@ -287,26 +354,35 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
  * 巡回テスト（DBへ書き込まない・cases投入しない）。
  * 1サイトのリストページから記事を取得し、URL/タイトル/公開日/3日以内判定/新店判定を返す。
  */
-export async function testCrawlSite(site: any, maxArticles = 8, recentDays = 3) {
+export async function testCrawlSite(site: any, maxArticles = 10, recentDays = 3) {
   const crawlUrl = site.list_url || site.base_url
-  const out: any = { site: site.name, url: crawlUrl, ok: false, error: null as string | null, articles: [] as any[], counts: { articles: 0, recent: 0, open: 0, excluded: 0, hotLike: 0, holdLike: 0 } }
+  const out: any = {
+    site: site.name, url: crawlUrl, ok: false, error: null as string | null, articles: [] as any[],
+    diag: { fetchOk: false, status: 0, htmlLength: 0, totalLinks: 0, candidateLinks: 0, keywordHits: 0, reason: '' },
+    counts: { articles: 0, recent: 0, open: 0, excluded: 0, hotLike: 0, holdLike: 0 },
+  }
   let base: URL
-  try { base = new URL(crawlUrl) } catch { out.error = 'URL不正'; return out }
+  try { base = new URL(crawlUrl) } catch { out.error = 'URL不正'; out.diag.reason = 'list_url/base_url が不正'; return out }
   try {
     const allowed = await robotsAllows(base.origin, base.pathname)
-    if (!allowed) { out.error = 'robots.txtにより不許可'; return out }
-    const html = await fetchText(crawlUrl)
-    if (!html) { out.error = 'リストページ取得失敗（URL/接続を確認）'; return out }
+    if (!allowed) { out.error = 'robots.txtにより不許可'; out.diag.reason = 'robots.txtにより不許可'; return out }
+    const idx = await fetchHtml(crawlUrl)
+    out.diag.fetchOk = idx.ok; out.diag.status = idx.status; out.diag.htmlLength = idx.length
+    if (!idx.ok) { out.error = `リストページ取得失敗（${idx.error}）`; out.diag.reason = out.error; return out }
     out.ok = true
     const now = Date.now()
-    const links = extractArticleLinks(html, base).slice(0, maxArticles)
+    const extracted = extractArticleLinks(idx.html, base, { mediaFamily: site.media_family, categoryLabel: site.category_label, listUrl: crawlUrl })
+    out.diag.totalLinks = extracted.totalLinks; out.diag.candidateLinks = extracted.candidateLinks; out.diag.keywordHits = extracted.keywordHits
+    if (extracted.links.length === 0) { out.diag.reason = `記事候補リンク0（全リンク${extracted.totalLinks}）。list_url/パーサー要確認`; return out }
+    const links = extracted.links.slice(0, maxArticles)
     for (const link of links) {
       out.counts.articles++
       const ah = await fetchText(link.url)
       await sleep(300)
       const body = ah ? stripTags(ah) : ''
-      const meta = ah ? articleMeta(ah) : { published_at: null, excerpt: '' }
-      const ex = extractFromArticle(link.title, body.slice(0, 4000))
+      const meta = ah ? articleMeta(ah) : { published_at: null, excerpt: '', title: '' }
+      const bestTitle = meta.title && meta.title.length >= link.title.length ? meta.title : (link.title || meta.title)
+      const ex = extractFromArticle(bestTitle, body.slice(0, 4000))
       const pubMs = meta.published_at ? Date.parse(meta.published_at) : NaN
       const within = !Number.isNaN(pubMs) && (now - pubMs) <= recentDays * 86400000
       const isOpen = ex.detected_type === 'open' || ex.detected_type === 'reopen'
@@ -316,13 +392,15 @@ export async function testCrawlSite(site: any, maxArticles = 8, recentDays = 3) 
       if (ex.is_excluded) { out.counts.excluded++; est = 'EXCLUDED' }
       else if (isOpen && ex.shop_name && ex.area && ex.phone) { out.counts.hotLike++; est = 'HOT候補' }
       else { out.counts.holdLike++ }
+      // テストでは3日以内でなくても「抽出できた記事」として表示する
       out.articles.push({
-        url: link.url, title: link.title, published_at: meta.published_at, within_recent: within,
+        url: link.url, title: bestTitle, published_at: meta.published_at, within_recent: within,
         detected_type: ex.detected_type, is_new: isOpen && !ex.is_excluded, shop_name: ex.shop_name,
         area: ex.area, phone: ex.phone, estimate: est, exclusion_reason: ex.is_excluded ? ex.exclude_reason : null,
       })
     }
-  } catch (e: any) { out.error = String(e?.message || e) }
+    out.diag.reason = out.counts.recent === 0 ? `記事は取得できたが3日以内が0（保存は3日以内のみ／テストは全件表示）` : 'OK'
+  } catch (e: any) { out.error = String(e?.message || e); out.diag.reason = out.error }
   return out
 }
 
@@ -337,7 +415,7 @@ export async function testCrawlAll(admin: any, maxArticles = 5, recentDays = 3) 
     if (r.ok) agg.success++; else agg.fail++
     agg.articles += r.counts.articles; agg.recent += r.counts.recent
     agg.candidates += r.counts.open; agg.hot += r.counts.hotLike; agg.hold += r.counts.holdLike; agg.excluded += r.counts.excluded
-    results.push({ site: r.site, ok: r.ok, error: r.error, ...r.counts })
+    results.push({ site: r.site, ok: r.ok, error: r.error, status: r.diag?.status, htmlLength: r.diag?.htmlLength, totalLinks: r.diag?.totalLinks, candidateLinks: r.diag?.candidateLinks, reason: r.diag?.reason, ...r.counts })
   }
   return { ...agg, results }
 }
