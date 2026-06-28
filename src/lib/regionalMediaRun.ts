@@ -128,19 +128,20 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     for (const site of list) {
       counts.sites++
       const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
+      const crawlUrl = site.list_url || site.base_url
       let base: URL
-      try { base = new URL(site.base_url) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); continue }
+      try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正' }).eq('id', site.id).then(() => {}, () => {}); continue }
 
       const allowed = await robotsAllows(base.origin, base.pathname)
       if (!allowed) {
         debug.siteResults.push({ site: site.name, error: 'robots.txt により不許可' })
-        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: 'robots.txtにより不許可' }).eq('id', site.id)
         continue
       }
 
-      const indexHtml = await fetchText(site.base_url)
+      const indexHtml = await fetchText(crawlUrl)
       await sleep(delay)
-      if (!indexHtml) { counts.error++; debug.siteResults.push({ site: site.name, error: 'カテゴリページ取得失敗' }); await admin.from('source_sites').update({ last_crawled_at: nowIso }).eq('id', site.id); continue }
+      if (!indexHtml) { counts.error++; debug.siteResults.push({ site: site.name, error: 'カテゴリページ取得失敗' }); await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: 'ページ取得失敗' }).eq('id', site.id); continue }
 
       const links = extractArticleLinks(indexHtml, base).slice(0, maxArticles * 2)
       let used = 0
@@ -263,8 +264,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         if (!debug.sample) debug.sample = { site: site.name, title: link.title, url: link.url, published_at: meta.published_at, extracted: ex, temperature, reason, confidence, matchedPlaceId }
       }
 
-      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id)
-      debug.siteResults.push({ site: site.name, links: links.length, used, hot: counts.hot - before.hot, hold: counts.hold - before.hold, excluded: counts.excluded - before.excluded })
+      const dh = counts.hot - before.hot, dhold = counts.hold - before.hold, dex = counts.excluded - before.excluded
+      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `記事${used}件 HOT${dh}/HOLD${dhold}/除外${dex}` }).eq('id', site.id)
+      debug.siteResults.push({ site: site.name, links: links.length, used, hot: dh, hold: dhold, excluded: dex })
     }
 
     await admin.from('auto_lead_runs').update({
@@ -279,4 +281,63 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg }).eq('id', runId)
     throw new Error(msg)
   }
+}
+
+/**
+ * 巡回テスト（DBへ書き込まない・cases投入しない）。
+ * 1サイトのリストページから記事を取得し、URL/タイトル/公開日/3日以内判定/新店判定を返す。
+ */
+export async function testCrawlSite(site: any, maxArticles = 8, recentDays = 3) {
+  const crawlUrl = site.list_url || site.base_url
+  const out: any = { site: site.name, url: crawlUrl, ok: false, error: null as string | null, articles: [] as any[], counts: { articles: 0, recent: 0, open: 0, excluded: 0, hotLike: 0, holdLike: 0 } }
+  let base: URL
+  try { base = new URL(crawlUrl) } catch { out.error = 'URL不正'; return out }
+  try {
+    const allowed = await robotsAllows(base.origin, base.pathname)
+    if (!allowed) { out.error = 'robots.txtにより不許可'; return out }
+    const html = await fetchText(crawlUrl)
+    if (!html) { out.error = 'リストページ取得失敗（URL/接続を確認）'; return out }
+    out.ok = true
+    const now = Date.now()
+    const links = extractArticleLinks(html, base).slice(0, maxArticles)
+    for (const link of links) {
+      out.counts.articles++
+      const ah = await fetchText(link.url)
+      await sleep(300)
+      const body = ah ? stripTags(ah) : ''
+      const meta = ah ? articleMeta(ah) : { published_at: null, excerpt: '' }
+      const ex = extractFromArticle(link.title, body.slice(0, 4000))
+      const pubMs = meta.published_at ? Date.parse(meta.published_at) : NaN
+      const within = !Number.isNaN(pubMs) && (now - pubMs) <= recentDays * 86400000
+      const isOpen = ex.detected_type === 'open' || ex.detected_type === 'reopen'
+      if (within) out.counts.recent++
+      if (isOpen && !ex.is_excluded) out.counts.open++
+      let est = 'HOLD'
+      if (ex.is_excluded) { out.counts.excluded++; est = 'EXCLUDED' }
+      else if (isOpen && ex.shop_name && ex.area && ex.phone) { out.counts.hotLike++; est = 'HOT候補' }
+      else { out.counts.holdLike++ }
+      out.articles.push({
+        url: link.url, title: link.title, published_at: meta.published_at, within_recent: within,
+        detected_type: ex.detected_type, is_new: isOpen && !ex.is_excluded, shop_name: ex.shop_name,
+        area: ex.area, phone: ex.phone, estimate: est, exclusion_reason: ex.is_excluded ? ex.exclude_reason : null,
+      })
+    }
+  } catch (e: any) { out.error = String(e?.message || e) }
+  return out
+}
+
+/** 全有効サイトをテスト巡回（DB書き込みなし） */
+export async function testCrawlAll(admin: any, maxArticles = 5, recentDays = 3) {
+  const { data: sites } = await admin.from('source_sites').select('*').eq('is_active', true)
+  const list = sites || []
+  const agg = { activeSites: list.length, success: 0, fail: 0, articles: 0, recent: 0, candidates: 0, hot: 0, hold: 0, excluded: 0 }
+  const results: any[] = []
+  for (const site of list) {
+    const r = await testCrawlSite(site, maxArticles, recentDays)
+    if (r.ok) agg.success++; else agg.fail++
+    agg.articles += r.counts.articles; agg.recent += r.counts.recent
+    agg.candidates += r.counts.open; agg.hot += r.counts.hotLike; agg.hold += r.counts.holdLike; agg.excluded += r.counts.excluded
+    results.push({ site: r.site, ok: r.ok, error: r.error, ...r.counts })
+  }
+  return { ...agg, results }
 }

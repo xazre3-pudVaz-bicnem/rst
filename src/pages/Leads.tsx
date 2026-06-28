@@ -77,6 +77,14 @@ export default function Leads() {
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
   const [rmResult, setRmResult] = useState<any>(null)
+  // 巡回サイト管理
+  const [rmSites, setRmSites] = useState<any[]>([])
+  const [rmCounts, setRmCounts] = useState<{ total: number; active: number; inactive: number }>({ total: 0, active: 0, inactive: 0 })
+  const [rmSitesErr, setRmSitesErr] = useState<string | null>(null)
+  const [rmBusy, setRmBusy] = useState(false)
+  const [siteForm, setSiteForm] = useState<any>(null) // {id?, name, base_url, list_url, media_family, source_type, category_label, is_active, reliability_score, crawl_interval_hours}
+  const [siteTests, setSiteTests] = useState<Record<string, any>>({})
+  const [allTest, setAllTest] = useState<any>(null)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -166,6 +174,66 @@ export default function Leads() {
     } catch (e) {
       toast.error('実行に失敗しました: ' + jpError(e))
     } finally { setRmRunning(false) }
+  }
+
+  // 管理API（ログインJWTで認可・service roleはサーバー側のみ）
+  const adminFetch = useCallback(async (path: string, method: string, body?: any) => {
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok || json?.ok === false) throw new Error(json?.error || `HTTP ${res.status}`)
+    return json
+  }, [])
+
+  const loadSites = useCallback(async () => {
+    try {
+      const j = await adminFetch('/api/admin/regional-media/sources', 'GET')
+      setRmSites(j.sites || [])
+      setRmCounts({ total: j.total || 0, active: j.active || 0, inactive: j.inactive || 0 })
+      setRmSitesErr(null)
+    } catch (e) { setRmSitesErr(jpError(e)) }
+  }, [adminFetch])
+  useEffect(() => { if (sourceTab === 'regional') loadSites() }, [sourceTab, loadSites])
+
+  const emptySite = { name: '', base_url: '', list_url: '', media_family: 'other', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 50, crawl_interval_hours: 24 }
+
+  async function seedInitial() {
+    setRmBusy(true)
+    try { const j = await adminFetch('/api/admin/regional-media/sources', 'POST', { action: 'seed' }); toast.success(`初期ソースを登録しました（${j.seeded}件）`); loadSites(); checkRmStatus() }
+    catch (e) { toast.error('登録に失敗: ' + jpError(e)) } finally { setRmBusy(false) }
+  }
+
+  async function saveSite() {
+    if (!siteForm) return
+    setRmBusy(true)
+    try {
+      if (siteForm.id) await adminFetch(`/api/admin/regional-media/sources/${siteForm.id}`, 'PATCH', siteForm)
+      else await adminFetch('/api/admin/regional-media/sources', 'POST', siteForm)
+      toast.success(siteForm.id ? 'サイトを更新しました' : 'サイトを登録しました（base_url重複時は更新）')
+      setSiteForm(null); loadSites(); checkRmStatus()
+    } catch (e) { toast.error('保存に失敗: ' + jpError(e)) } finally { setRmBusy(false) }
+  }
+
+  async function toggleSiteActive(s: any) {
+    try { await adminFetch(`/api/admin/regional-media/sources/${s.id}`, 'PATCH', { is_active: !s.is_active }); loadSites(); checkRmStatus() }
+    catch (e) { toast.error('切替に失敗: ' + jpError(e)) }
+  }
+
+  async function testSite(s: any) {
+    setSiteTests((p) => ({ ...p, [s.id]: { loading: true } }))
+    try { const j = await adminFetch(`/api/admin/regional-media/sources/${s.id}/test`, 'POST'); setSiteTests((p) => ({ ...p, [s.id]: j })) }
+    catch (e) { setSiteTests((p) => ({ ...p, [s.id]: { error: jpError(e) } })) }
+  }
+
+  async function testAllSites() {
+    setRmBusy(true); setAllTest({ loading: true })
+    try { const j = await adminFetch('/api/admin/regional-media/test-all', 'POST'); setAllTest(j) }
+    catch (e) { setAllTest({ error: jpError(e) }) } finally { setRmBusy(false) }
   }
 
   async function runInstagram() {
@@ -1018,6 +1086,128 @@ export default function Leads() {
               </button>
             ))}
           </div>
+
+          {/* 巡回サイト管理（地域メディアタブ） */}
+          {sourceTab === 'regional' && (
+            <div className="rounded-xl border bg-card p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  巡回サイト管理
+                  <span className="text-[10px] font-normal text-muted-foreground">総数 {rmCounts.total} ・ 有効 {rmCounts.active} ・ 無効 {rmCounts.inactive}</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button size="sm" variant="outline" onClick={seedInitial} disabled={rmBusy}>初期ソースを登録</Button>
+                  <Button size="sm" variant="outline" onClick={() => setSiteForm({ ...emptySite })}>巡回サイトを追加</Button>
+                  <Button size="sm" onClick={testAllSites} disabled={rmBusy}>全有効サイトをテスト巡回</Button>
+                </div>
+              </div>
+              {rmSitesErr && <div className="mt-1 rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">サイト一覧の取得に失敗: {rmSitesErr}</div>}
+
+              {/* 追加/編集フォーム */}
+              {siteForm && (
+                <div className="mt-2 grid gap-2 rounded-lg border bg-muted/30 p-2 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-0.5"><Label className="text-[10px]">サイト名</Label><Input className="h-8" value={siteForm.name} onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })} /></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">base_url</Label><Input className="h-8" value={siteForm.base_url} onChange={(e) => setSiteForm({ ...siteForm, base_url: e.target.value })} placeholder="https://example.com/" /></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">list_url（空ならbase_url）</Label><Input className="h-8" value={siteForm.list_url} onChange={(e) => setSiteForm({ ...siteForm, list_url: e.target.value })} /></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">メディア種別</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.media_family} onChange={(e) => setSiteForm({ ...siteForm, media_family: e.target.value })}>
+                      {['goguynet', 'kaitenheiten', 'tsushin', 'local_blog', 'local_news', 'local_directory', 'other'].map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">source_type</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.source_type} onChange={(e) => setSiteForm({ ...siteForm, source_type: e.target.value })}>
+                      {['html_list', 'rss', 'sitemap', 'category_page'].map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">カテゴリラベル</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.category_label} onChange={(e) => setSiteForm({ ...siteForm, category_label: e.target.value })}>
+                      {['開店閉店', '新店情報', '地域ニュース', '店舗情報'].map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">信頼度スコア(0-100)</Label><Input type="number" min={0} max={100} className="h-8" value={siteForm.reliability_score} onChange={(e) => setSiteForm({ ...siteForm, reliability_score: Number(e.target.value) })} /></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">巡回間隔(時間)</Label><Input type="number" min={1} className="h-8" value={siteForm.crawl_interval_hours} onChange={(e) => setSiteForm({ ...siteForm, crawl_interval_hours: Number(e.target.value) })} /></div>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={siteForm.is_active} onChange={(e) => setSiteForm({ ...siteForm, is_active: e.target.checked })} />有効化する</label>
+                  <div className="flex items-end gap-1.5 lg:col-span-2">
+                    <Button size="sm" onClick={saveSite} disabled={rmBusy}>{siteForm.id ? '更新' : '登録'}</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setSiteForm(null)}>キャンセル</Button>
+                  </div>
+                </div>
+              )}
+
+              {/* サイト一覧 */}
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[1000px] text-2xs">
+                  <thead className="bg-muted/50 text-muted-foreground">
+                    <tr>
+                      <th className="p-1.5 text-left">サイト名</th><th className="p-1.5 text-left">URL</th><th className="p-1.5 text-left">種別/カテゴリ</th>
+                      <th className="p-1.5 text-center">信頼度</th><th className="p-1.5 text-center">間隔</th><th className="p-1.5 text-center">最終巡回</th>
+                      <th className="p-1.5 text-left">最終結果</th><th className="p-1.5 text-center">有効</th><th className="p-1.5 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rmSites.length === 0 ? (
+                      <tr><td colSpan={9} className="p-3 text-center text-muted-foreground">巡回サイトがありません。「初期ソースを登録」または「巡回サイトを追加」してください。</td></tr>
+                    ) : rmSites.map((s) => (
+                      <tr key={s.id} className="border-t align-top">
+                        <td className="p-1.5 font-medium">{s.name}</td>
+                        <td className="max-w-[200px] p-1.5"><a href={s.list_url || s.base_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{s.list_url || s.base_url}</a></td>
+                        <td className="p-1.5">{s.media_family} / {s.source_type}<div className="text-muted-foreground">{s.category_label}</div></td>
+                        <td className="p-1.5 text-center">{s.reliability_score}</td>
+                        <td className="p-1.5 text-center">{s.crawl_interval_hours}h</td>
+                        <td className="p-1.5 text-center">{s.last_crawled_at ? moment(s.last_crawled_at).format('MM/DD HH:mm') : '—'}</td>
+                        <td className="max-w-[140px] p-1.5 text-muted-foreground">{s.last_crawl_result || '—'}</td>
+                        <td className="p-1.5 text-center">
+                          <button onClick={() => toggleSiteActive(s)} className={cn('rounded px-1.5 py-0.5 font-bold', s.is_active ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-700')}>{s.is_active ? 'ON' : 'OFF'}</button>
+                        </td>
+                        <td className="p-1.5 text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setSiteForm({ id: s.id, name: s.name, base_url: s.base_url, list_url: s.list_url || '', media_family: s.media_family || 'other', source_type: s.source_type || 'html_list', category_label: s.category_label || '開店閉店', is_active: s.is_active, reliability_score: s.reliability_score ?? 50, crawl_interval_hours: s.crawl_interval_hours ?? 24 })}>編集</Button>
+                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => testSite(s)}>テスト</Button>
+                          </div>
+                          {siteTests[s.id] && (
+                            <div className="mt-1 max-w-[260px] rounded border bg-muted/30 p-1 text-left text-[9px]">
+                              {siteTests[s.id].loading ? 'テスト中…'
+                                : siteTests[s.id].error ? <span className="text-red-600">{siteTests[s.id].error}</span>
+                                : siteTests[s.id].ok === false ? <span className="text-red-600">{siteTests[s.id].error}</span>
+                                : (
+                                  <>
+                                    <div>記事{siteTests[s.id].counts?.articles ?? 0} / 3日内{siteTests[s.id].counts?.recent ?? 0} / 新店{siteTests[s.id].counts?.open ?? 0} / HOT候補{siteTests[s.id].counts?.hotLike ?? 0}{siteTests[s.id].error ? ` ・ ${siteTests[s.id].error}` : ''}</div>
+                                    {(siteTests[s.id].articles || []).slice(0, 5).map((a: any, i: number) => (
+                                      <div key={i} className="truncate"><a href={a.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{a.estimate}・{a.title}</a> {a.within_recent ? '🟢' : ''}{a.published_at ? `(${fmtDate(a.published_at)})` : ''}</div>
+                                    ))}
+                                  </>
+                                )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 全サイトテスト結果 */}
+              {allTest && (
+                <div className="mt-2 rounded border bg-muted/30 p-2 text-[11px]">
+                  {allTest.loading ? '全サイトテスト中…' : allTest.error ? <span className="text-red-600">{allTest.error}</span> : (
+                    <>
+                      <div className="flex flex-wrap gap-1.5 text-[10px]">
+                        <span className="rounded bg-muted px-1.5 py-0.5">有効{allTest.activeSites}</span>
+                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">成功{allTest.success}</span>
+                        <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">失敗{allTest.fail}</span>
+                        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">記事{allTest.articles}</span>
+                        <span className="rounded bg-muted px-1.5 py-0.5">3日内{allTest.recent}</span>
+                        <span className="rounded bg-muted px-1.5 py-0.5">新店候補{allTest.candidates}</span>
+                        <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT{allTest.hot}</span>
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD{allTest.hold}</span>
+                        <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED{allTest.excluded}</span>
+                      </div>
+                      {(allTest.results || []).map((r: any, i: number) => (
+                        <div key={i} className={cn('mt-0.5', r.ok ? '' : 'text-red-600')}>{r.site}: {r.ok ? `記事${r.articles}/3日内${r.recent}/新店${r.open}/HOT候補${r.hotLike}` : `失敗 ${r.error || ''}`}</div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* フィルタ */}
           <div className="flex flex-wrap gap-1">
