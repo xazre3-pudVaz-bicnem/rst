@@ -55,10 +55,10 @@ export async function authorizeAdmin(admin: any, headers: any): Promise<{ ok: bo
   return { ok: false, userId: null, error: 'unauthorized（ログイン または X-Admin-Secret が必要）' }
 }
 
-/** 初期ソース（「初期ソースを登録」ボタン用） */
+/** 初期ソース（「初期ソースを登録」ボタン / setup CLI 用・コードに固定） */
 export const INITIAL_SOURCES = [
-  { name: '開店閉店.com', base_url: 'https://kaiten-heiten.com/', list_url: 'https://kaiten-heiten.com/', media_family: 'kaitenheiten', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 85 },
-  { name: '号外NET', base_url: 'https://goguynet.jp/', list_url: 'https://goguynet.jp/', media_family: 'goguynet', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 80 },
-  { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 70 },
-  { name: '彩北なび', base_url: 'https://saihokunavi.net/', list_url: 'https://saihokunavi.net/', media_family: 'local_directory', source_type: 'html_list', category_label: '店舗情報', is_active: false, reliability_score: 40 },
+  { name: '開店閉店.com', base_url: 'https://kaiten-heiten.com/', list_url: 'https://kaiten-heiten.com/', media_family: 'kaitenheiten', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 85, crawl_interval_hours: 24 },
+  { name: '号外NET', base_url: 'https://goguynet.jp/', list_url: 'https://goguynet.jp/', media_family: 'goguynet', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
+  { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
+  { name: '彩北なび', base_url: 'https://saihokunavi.net/', list_url: 'https://saihokunavi.net/', media_family: 'local_directory', source_type: 'html_list', category_label: '店舗情報', is_active: false, reliability_score: 40, crawl_interval_hours: 72 },
 ]

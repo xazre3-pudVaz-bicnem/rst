@@ -20,21 +20,23 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === 'GET') {
     const { data, error } = await admin.from('source_sites').select('*').order('is_active', { ascending: false }).order('reliability_score', { ascending: false }).order('name')
-    if (error) return res.status(200).json({ ok: false, error: error.message, sites: [], total: 0, active: 0, inactive: 0 })
+    if (error) return res.status(200).json({ ok: false, error: error.message, sources: [], sites: [], total: 0, active: 0, inactive: 0 })
     const sites = data || []
     const active = sites.filter((s: any) => s.is_active).length
-    return res.status(200).json({ ok: true, sites, total: sites.length, active, inactive: sites.length - active })
+    // sources/sites は同一配列（呼び出し側互換のため両方返す）
+    return res.status(200).json({ ok: true, sources: sites, sites, total: sites.length, active, inactive: sites.length - active })
   }
 
   if (req.method === 'POST') {
     const body = typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})
 
-    // 初期ソース一括登録
+    // 初期ソース一括登録（base_url重複はupsert＝エラーにしない）
     if (body?.action === 'seed') {
       const rows = INITIAL_SOURCES.map((s) => ({ ...s, base_url: normalizeUrl(s.base_url), list_url: normalizeUrl(s.list_url), updated_at: new Date().toISOString() }))
       const { error } = await admin.from('source_sites').upsert(rows, { onConflict: 'base_url' })
       if (error) return res.status(200).json({ ok: false, error: error.message })
-      return res.status(200).json({ ok: true, seeded: rows.length })
+      const { count: active } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('is_active', true)
+      return res.status(200).json({ ok: true, action: 'seed', upserted: rows.length, seeded: rows.length, active: active || 0 })
     }
 
     const sane = sanitizeSitePayload(body)
