@@ -328,8 +328,8 @@ export default function Leads() {
                 HOTを自動でcasesへ投入
               </label>
               <div className="space-y-1">
-                <Label>1回あたりの取得上限</Label>
-                <Input type="number" min={1} value={settings.fetchLimit} onChange={(e) => saveSettings({ ...settings, fetchLimit: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
+                <Label>1クエリあたりの取得上限（最大20）</Label>
+                <Input type="number" min={1} max={20} value={settings.fetchLimit} onChange={(e) => saveSettings({ ...settings, fetchLimit: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} className="h-8" />
               </div>
               <div className="space-y-1">
                 <Label>1日あたりの投入上限</Label>
@@ -453,15 +453,38 @@ export default function Leads() {
                   </div>
                 )}
 
-                {/* クエリ別の取得状況（0件の切り分け） */}
+                {/* 使用した条件 */}
+                {gpResult.debug?.settings && (
+                  <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
+                    <div><b>使用した対象エリア:</b> {(gpResult.debug.settings.areas || []).join(' / ') || '（なし）'}</div>
+                    <div><b>使用した対象業種:</b> {(gpResult.debug.settings.industries || []).join(' / ') || '（なし）'}</div>
+                    <div className="text-muted-foreground">
+                      生成クエリ数 {gpResult.debug.totalQueries ?? (gpResult.debug.queries?.length ?? 0)}
+                      （実行 {gpResult.debug.ranQueries ?? '—'} ・ 1クエリ{gpResult.debug.perQuery ?? '—'}件）
+                    </div>
+                    {Array.isArray(gpResult.debug.queries) && (
+                      <details className="mt-0.5">
+                        <summary className="cursor-pointer text-primary">全検索クエリ一覧（{gpResult.debug.queries.length}）</summary>
+                        <div className="mt-1 max-h-32 overflow-y-auto">
+                          {gpResult.debug.queries.map((q: string, i: number) => <div key={i}>{i + 1}. {q}</div>)}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+
+                {/* クエリ別の取得状況（0件の切り分け・クエリ別HOT/HOLD/EXCLUDED） */}
                 {Array.isArray(gpResult.debug?.queryResults) && gpResult.debug.queryResults.length > 0 && (
                   <div className="overflow-x-auto rounded-md border">
-                    <table className="w-full min-w-[480px] text-[10px]">
+                    <table className="w-full min-w-[560px] text-[10px]">
                       <thead className="bg-muted/50 text-muted-foreground">
                         <tr>
                           <th className="p-1 text-left">検索クエリ</th>
                           <th className="p-1 text-center">HTTP</th>
                           <th className="p-1 text-center">places数</th>
+                          <th className="p-1 text-center">HOT</th>
+                          <th className="p-1 text-center">HOLD</th>
+                          <th className="p-1 text-center">除外</th>
                           <th className="p-1 text-left">エラー</th>
                         </tr>
                       </thead>
@@ -471,7 +494,10 @@ export default function Leads() {
                             <td className="p-1">{q.query}</td>
                             <td className={cn('p-1 text-center font-bold', q.status === 200 ? 'text-green-600' : 'text-red-600')}>{q.status}</td>
                             <td className="p-1 text-center">{q.placesLength}</td>
-                            <td className={cn('max-w-[260px] truncate p-1', q.error ? 'text-red-600' : 'text-muted-foreground')} title={q.error || ''}>{q.error || '—'}</td>
+                            <td className="p-1 text-center font-bold text-red-600">{q.hot ?? 0}</td>
+                            <td className="p-1 text-center">{q.hold ?? 0}</td>
+                            <td className="p-1 text-center text-muted-foreground">{q.excluded ?? 0}</td>
+                            <td className={cn('max-w-[220px] truncate p-1', q.error ? 'text-red-600' : 'text-muted-foreground')} title={q.error || ''}>{q.error || '—'}</td>
                           </tr>
                         ))}
                       </tbody>

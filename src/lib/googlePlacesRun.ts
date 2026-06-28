@@ -65,9 +65,11 @@ export function getDefaultSettings() {
 }
 
 function asArray(v: unknown, fallback: string[]): string[] {
-  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean)
-  if (typeof v === 'string') return v.split(/[\n、,・]+/).map((x) => x.trim()).filter(Boolean)
-  return fallback
+  let arr: string[] = []
+  if (Array.isArray(v)) arr = v.map((x) => String(x).trim()).filter(Boolean)
+  else if (typeof v === 'string') arr = v.split(/[\n、,・]+/).map((x) => x.trim()).filter(Boolean)
+  // 値が空のときだけデフォルトを使う
+  return arr.length ? arr : fallback
 }
 
 async function callPlaces(apiKey: string, query: string, maxResultCount: number, extended: boolean) {
@@ -148,11 +150,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     industries: asArray(rawSettings?.industries, def.industries),
   }
 
-  // 動作確認用の固定条件（葛飾区 × 整体 × 20件）
+  // 動作確認用の固定条件（葛飾区 × 整体 × 1クエリ5件）
   if (rawSettings?.testFixed) {
     settings.areas = ['東京都葛飾区']
     settings.industries = ['整体']
-    settings.fetchLimit = 20
+    settings.fetchLimit = 5
   }
 
   // 判定の閾値（口コミ件数など）
@@ -202,11 +204,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
     const nowIso = new Date().toISOString()
 
-    for (const query of queries) {
-      if (counts.fetched >= settings.fetchLimit) break
-      const remain = settings.fetchLimit - counts.fetched
-      const r = await searchTextRaw(apiKey, query, remain)
-      debug.queryResults.push({ query, status: r.status, placesLength: r.places.length, error: r.error })
+    // fetchLimit は「1クエリあたりの取得上限」。全クエリ（areas × industries × パターン）を実行する。
+    const perQuery = Math.max(1, Math.min(20, Number(settings.fetchLimit) || 20))
+    const MAX_QUERIES = 150
+    const runQueries = queries.slice(0, MAX_QUERIES)
+    debug.totalQueries = queries.length
+    debug.ranQueries = runQueries.length
+    debug.perQuery = perQuery
+
+    for (const query of runQueries) {
+      const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded, saved: counts.saved }
+      const r = await searchTextRaw(apiKey, query, perQuery)
       if (r.error) {
         counts.error++
         errorMessage = r.error
@@ -214,7 +222,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       const places = r.places
 
       for (const p of places) {
-        if (counts.fetched >= settings.fetchLimit) break
         counts.fetched++
         const placeId: string = p.id || ''
         const phone = phoneOf(p)
@@ -382,6 +389,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           }
         }
       }
+
+      debug.queryResults.push({
+        query,
+        status: r.status,
+        placesLength: r.places.length,
+        error: r.error,
+        hot: counts.hot - before.hot,
+        hold: counts.hold - before.hold,
+        excluded: counts.excluded - before.excluded,
+        saved: counts.saved - before.saved,
+      })
     }
 
     await admin.from('auto_lead_runs').update({
