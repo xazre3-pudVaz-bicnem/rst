@@ -72,7 +72,10 @@ export default function Leads() {
   const [igConfigured, setIgConfigured] = useState<boolean | null>(null)
   const [igRunning, setIgRunning] = useState(false)
   const [igResult, setIgResult] = useState<any>(null)
-  const [sourceTab, setSourceTab] = useState<'places' | 'instagram'>('places')
+  const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional'>('places')
+  const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
+  const [rmRunning, setRmRunning] = useState(false)
+  const [rmResult, setRmResult] = useState<any>(null)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -125,6 +128,43 @@ export default function Leads() {
     } catch { setIgConfigured(false) }
   }, [])
   useEffect(() => { checkIgStatus() }, [checkIgStatus])
+
+  // 地域メディア 接続状態
+  const checkRmStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/leads/regional-media/run', { cache: 'no-store' })
+      const j = await r.json().catch(() => ({}))
+      setRmConfigured(r.ok ? !!j.configured : false)
+    } catch { setRmConfigured(false) }
+  }, [])
+  useEffect(() => { checkRmStatus() }, [checkRmStatus])
+
+  async function runRegional() {
+    if (!settings.regionalEnabled) { toast.error('設定で地域メディア取得がOFFです'); return }
+    setRmRunning(true); setRmResult(null)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/leads/regional-media/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          settings: {
+            regionalEnabled: settings.regionalEnabled, maxSitesPerDay: settings.regionalMaxSites,
+            maxArticlesPerSite: settings.regionalMaxArticles, periodDays: settings.regionalPeriodDays, dailyCap: settings.dailyCap,
+          },
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { toast.error(json.error || '地域メディア取得に失敗しました'); setRmResult({ error: json.error }); return }
+      setRmResult(json)
+      toast.success(`地域メディア完了: 記事${json.newArticles ?? 0} / HOT${json.hot ?? 0} / 投入${json.imported ?? 0}`)
+      load(); loadRuns()
+    } catch (e) {
+      toast.error('実行に失敗しました: ' + jpError(e))
+    } finally { setRmRunning(false) }
+  }
 
   async function runInstagram() {
     if (!settings.igEnabled) { toast.error('設定でInstagram取得がOFFです'); return }
@@ -248,7 +288,14 @@ export default function Leads() {
         igMaxHashtagsPerDay: settings.igMaxHashtagsPerDay,
         dailyCap: settings.dailyCap,
       })
-      toast.success('自動取得設定を保存しました（毎朝6:00 Places / 6:30 Instagram のCronに反映）')
+      await AppConfigApi.set('regional_auto', {
+        regionalEnabled: settings.regionalEnabled,
+        maxSitesPerDay: settings.regionalMaxSites,
+        maxArticlesPerSite: settings.regionalMaxArticles,
+        periodDays: settings.regionalPeriodDays,
+        dailyCap: settings.dailyCap,
+      })
+      toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram に反映）')
     } catch (e) {
       toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
@@ -398,9 +445,14 @@ export default function Leads() {
     }
   }, [candidates])
 
+  const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional') => {
+    if (tab === 'instagram') return c.lead_source === 'instagram_hashtag'
+    if (tab === 'regional') return c.lead_source === 'regional_media'
+    return c.lead_source !== 'instagram_hashtag' && c.lead_source !== 'regional_media'
+  }, [])
   const sourceCandidates = useMemo(
-    () => candidates.filter((c) => sourceTab === 'instagram' ? c.lead_source === 'instagram_hashtag' : c.lead_source !== 'instagram_hashtag'),
-    [candidates, sourceTab],
+    () => candidates.filter((c) => inSource(c, sourceTab)),
+    [candidates, sourceTab, inSource],
   )
   const filtered = useMemo(
     () => (filter === 'ALL' ? sourceCandidates : sourceCandidates.filter((c) => c.lead_temperature === filter)),
@@ -565,6 +617,32 @@ export default function Leads() {
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   ※Instagramは新規シグナルとして使用。Google Places照合は必須にせず、A:Places一致HOT / B:Instagram単体HOT候補（初期は自動投入せずHOLD扱い）/ C:HOLD に分類します。自動実行は Cron（/api/cron/instagram-leads・毎朝6:30）。
+                </div>
+              </div>
+
+              {/* 地域メディア設定 */}
+              <div className="mt-1 border-t pt-2 lg:col-span-4">
+                <div className="mb-1 text-xs font-bold text-orange-600 dark:text-orange-300">地域メディア巡回（号外NET・埼北つうしん 等）</div>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={settings.regionalEnabled} onChange={(e) => saveSettings({ ...settings, regionalEnabled: e.target.checked })} />
+                    地域メディア取得を有効化
+                  </label>
+                  <div className="space-y-1">
+                    <Label>1日の巡回サイト数</Label>
+                    <Input type="number" min={1} value={settings.regionalMaxSites} onChange={(e) => saveSettings({ ...settings, regionalMaxSites: Math.max(1, Number(e.target.value) || 3) })} className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>1サイト最大記事数</Label>
+                    <Input type="number" min={1} value={settings.regionalMaxArticles} onChange={(e) => saveSettings({ ...settings, regionalMaxArticles: Math.max(1, Number(e.target.value) || 5) })} className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>記事の対象期間（日）</Label>
+                    <Input type="number" min={1} value={settings.regionalPeriodDays} onChange={(e) => saveSettings({ ...settings, regionalPeriodDays: Math.max(1, Number(e.target.value) || 30) })} className="h-8" />
+                  </div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  ※記事本文は保存せず、URL・タイトル・公開日・短い抜粋・抽出結果のみ保存。robots.txt尊重・レート制限・同一URL再取得回避。電話が取れないものはHOLD。巡回対象は <code>source_sites</code> テーブルで管理（base_urlは実URLに合わせて編集・is_activeで有効化）。自動実行は毎朝のCron（auto-leads内で順次・/api/cron/regional-media-leads でも手動可）。
                 </div>
               </div>
             </div>
@@ -839,6 +917,68 @@ export default function Leads() {
             )}
           </div>
 
+          {/* 地域メディア巡回 パネル */}
+          <div className="rounded-xl border bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-orange-600 dark:text-orange-300">地域メディア巡回（新店記事）</span>
+                {rmConfigured === null ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">確認中…</span>
+                ) : rmConfigured ? (
+                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">有効サイトあり</span>
+                ) : (
+                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-600">有効サイトなし（source_sites を確認）</span>
+                )}
+              </div>
+              <Button size="sm" onClick={runRegional} disabled={rmRunning || !settings.regionalEnabled}>
+                <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '地域メディア巡回・実行'}
+              </Button>
+            </div>
+            <div className="mt-1 text-[10px] text-muted-foreground">
+              号外NET・埼北つうしん等の開店記事を巡回。記事本文は保存しません（URL/タイトル/公開日/抜粋/抽出のみ）。電話が取れHOT条件を満たすものだけ自動投入、他はHOLD/EXCLUDED。
+            </div>
+            {rmResult && (
+              <div className="mt-2 space-y-1">
+                {rmResult.error ? (
+                  <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{rmResult.error}</div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-muted px-1.5 py-0.5">巡回サイト {rmResult.sites ?? 0}</span>
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">新規記事 {rmResult.newArticles ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">候補 {rmResult.candidates ?? 0}</span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places一致 {rmResult.placeMatched ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {rmResult.phoneYes ?? 0}</span>
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {rmResult.hot ?? 0}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {rmResult.hold ?? 0}</span>
+                      <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {rmResult.excluded ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {rmResult.imported ?? 0}</span>
+                      {Number(rmResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {rmResult.saveError}</span>}
+                    </div>
+                    {Array.isArray(rmResult.debug?.siteResults) && (
+                      <details className="rounded border bg-muted/30 p-2 text-[10px]">
+                        <summary className="cursor-pointer text-primary">サイト別結果（{rmResult.debug.siteResults.length}）</summary>
+                        <div className="mt-1 max-h-40 overflow-y-auto">
+                          {rmResult.debug.siteResults.map((h: any, i: number) => (
+                            <div key={i}>{h.site}: 記事リンク{h.links ?? 0}/採用{h.used ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}{h.error ? ` ・ ${h.error}` : ''}</div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {rmResult.debug?.sample && (
+                      <div className="rounded border bg-muted/30 p-2 text-[10px]">
+                        <div className="font-semibold">サンプル: {rmResult.debug.sample.site}</div>
+                        <div className="truncate">{rmResult.debug.sample.title}（{fmtDate(rmResult.debug.sample.published_at)}）</div>
+                        <div>店名: {rmResult.debug.sample.extracted?.shop_name || '—'} / エリア: {rmResult.debug.sample.extracted?.area || '—'} / 業種: {rmResult.debug.sample.extracted?.industry || '—'} / 電話: {rmResult.debug.sample.extracted?.phone || '—'}</div>
+                        <div>判定: <b>{rmResult.debug.sample.temperature}</b> ・ {rmResult.debug.sample.reason}</div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 集計カード */}
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
             {card(<Upload className="h-4 w-4 text-white" />, '本日の自動投入', summary.todayImported, 'bg-primary')}
@@ -851,15 +991,15 @@ export default function Leads() {
             {card(<Store className="h-4 w-4 text-white" />, '新規広告', summary.ad, 'bg-amber-500')}
           </div>
 
-          {/* ソース切替（Google Places / Instagram） */}
+          {/* ソース切替（Google Places / Instagram / 地域メディア） */}
           <div className="flex gap-1">
-            {([['places', 'Google Places'], ['instagram', 'Instagram']] as const).map(([k, lbl]) => (
+            {([['places', 'Google Places'], ['instagram', 'Instagram'], ['regional', '地域メディア']] as const).map(([k, lbl]) => (
               <button
                 key={k}
                 onClick={() => setSourceTab(k)}
                 className={cn('rounded-md border px-3 py-1 text-xs font-medium', sourceTab === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground hover:bg-accent')}
               >
-                {lbl}（{candidates.filter((c) => k === 'instagram' ? c.lead_source === 'instagram_hashtag' : c.lead_source !== 'instagram_hashtag').length}）
+                {lbl}（{candidates.filter((c) => inSource(c, k)).length}）
               </button>
             ))}
           </div>
@@ -886,8 +1026,57 @@ export default function Leads() {
             <div className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">
               {sourceTab === 'instagram'
                 ? 'Instagram候補がありません。設定でInstagram取得を有効化し、「Instagram取得・実行」を押してください。'
+                : sourceTab === 'regional'
+                ? '地域メディア候補がありません。source_sites の base_url を実URLに設定して is_active=true にし、「地域メディア巡回・実行」を押してください。'
                 : '候補がありません。「手動実行（モック）」を押すとサンプル候補を判定して取り込みます。'}
-              <div className="mt-1 text-2xs">※ Instagram利用には migrations/2026-06-28_instagram.sql の実行と IG_ACCESS_TOKEN / IG_USER_ID の設定が必要です。</div>
+            </div>
+          ) : sourceTab === 'regional' ? (
+            <div className="overflow-x-auto rounded-xl border bg-card">
+              <table className="w-full min-w-[1200px] text-2xs">
+                <thead className="bg-muted/50 text-muted-foreground">
+                  <tr>
+                    <th className="p-2 text-left">温度</th>
+                    <th className="p-2 text-left">店名 / 業種</th>
+                    <th className="p-2 text-left">エリア / 住所</th>
+                    <th className="p-2 text-left">電話</th>
+                    <th className="p-2 text-left">開店日</th>
+                    <th className="p-2 text-left">ソース / 記事</th>
+                    <th className="p-2 text-center">公開日</th>
+                    <th className="p-2 text-center">Places照合</th>
+                    <th className="p-2 text-left">判定理由</th>
+                    <th className="p-2 text-center">状態</th>
+                    <th className="p-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((c) => (
+                    <tr key={c.id} className="border-t align-top">
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature}</span></td>
+                      <td className="max-w-[160px] p-2">
+                        <div className="font-medium">{c.extracted_shop_name || c.name}</div>
+                        {c.extracted_industry && <div className="text-[9px] text-muted-foreground">{c.extracted_industry}</div>}
+                      </td>
+                      <td className="max-w-[180px] p-2">
+                        <div>{c.extracted_area || '—'}</div>
+                        {c.address && <a href={mapUrl(c.address, c.name)} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">{c.address}</a>}
+                      </td>
+                      <td className="p-2">{c.phone_number ? <span className="inline-flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-muted-foreground" />{c.phone_number}</span> : <span className="text-red-500">なし</span>}</td>
+                      <td className="p-2">{c.extracted_open_date || '—'}</td>
+                      <td className="max-w-[200px] p-2">
+                        <div className="font-medium text-orange-600 dark:text-orange-300">{c.source_site_name}</div>
+                        {c.source_article_url ? <a href={c.source_article_url} target="_blank" rel="noreferrer" className="line-clamp-2 text-primary hover:underline" title={c.source_article_title ?? ''}>{c.source_article_title || '記事を開く'}</a> : <span className="text-muted-foreground">—</span>}
+                      </td>
+                      <td className="p-2 text-center">{fmtDate(c.regional_media_detected_at)}</td>
+                      <td className="p-2 text-center">{c.matched_google_place_id ? <span className="text-green-600">一致{c.match_confidence ? `(${c.match_confidence})` : ''}</span> : <span className="text-amber-600">未照合</span>}</td>
+                      <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.regional_media_newness_reason ?? ''}>{c.regional_media_newness_reason || c.ai_comment}</div></td>
+                      <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
+                      <td className="p-2 text-right">
+                        {!c.imported_to_cases && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : sourceTab === 'instagram' ? (
             <div className="overflow-x-auto rounded-xl border bg-card">

@@ -269,6 +269,10 @@ export const DEFAULT_LEAD_SETTINGS = {
   igRequireArea: true,
   igPeriodDays: 14,
   igMaxHashtagsPerDay: 5,
+  regionalEnabled: true,
+  regionalMaxSites: 3,
+  regionalMaxArticles: 5,
+  regionalPeriodDays: 30,
   areas: [
     '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),

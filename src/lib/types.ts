@@ -232,6 +232,13 @@ export interface LeadCandidate {
   ig_phone_reachable_score?: number | null
   ig_newness_score?: number | null
   ig_auto_importable?: boolean | null
+  // 地域メディア由来
+  source_article_url?: string | null
+  source_article_title?: string | null
+  source_site_name?: string | null
+  regional_media_detected_at?: string | null
+  extracted_open_date?: string | null
+  regional_media_newness_reason?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -321,6 +328,11 @@ export interface LeadImportSettings {
   igRequireArea: boolean       // 一都三県エリア情報必須（初期ON）
   igPeriodDays: number         // 対象投稿期間（既定14日）
   igMaxHashtagsPerDay: number  // 1日のハッシュタグ検索数（既定5・7日30ユニーク制限内）
+  // 地域メディア巡回
+  regionalEnabled: boolean     // 地域メディア取得ON/OFF
+  regionalMaxSites: number     // 1日の巡回サイト数（既定3）
+  regionalMaxArticles: number  // 1サイトの最大記事数（既定5）
+  regionalPeriodDays: number   // 記事公開の対象期間（既定30日）
 }
 
 /** Auto search settings stored in localStorage */
