@@ -23,11 +23,23 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => {
+  // Radix Select / DropdownMenu / Popover はポータルで body 直下に描画される。
+  // それらの内部操作を「外側クリック」と誤検知してモーダルが閉じるのを防ぐ。
+  const insidePopper = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null
+    return !!el?.closest?.(
+      '[data-radix-popper-content-wrapper],[data-radix-select-viewport],[data-radix-menu-content],[role="listbox"]',
+    )
+  }
+  return (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      onPointerDownOutside={(e) => { if (insidePopper(e.target)) e.preventDefault() }}
+      onInteractOutside={(e) => { if (insidePopper(e.target)) e.preventDefault() }}
+      onFocusOutside={(e) => { if (insidePopper(e.target)) e.preventDefault() }}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 border bg-background p-4 shadow-lg rounded-lg max-h-[92vh] overflow-y-auto',
         className,
@@ -41,7 +53,8 @@ const DialogContent = React.forwardRef<
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>
-))
+  )
+})
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

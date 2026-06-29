@@ -128,10 +128,26 @@ export interface Profile {
   id: string
   full_name?: string | null
   organization_id?: string | null
-  /** 'admin' | 'member' | 'viewer' */
+  /** 'admin' | 'manager' | 'sales' | 'viewer'（'member' は旧データ互換） */
   role: string
+  email?: string | null
+  username?: string | null
+  is_active?: boolean | null
+  is_sales_assignee?: boolean | null
+  last_login?: string | null
+  created_by?: string | null
   created_date: string
   updated_date: string
+}
+
+/** 新規登録申請 */
+export interface SignupRequest {
+  id: string
+  email: string
+  display_name?: string | null
+  memo?: string | null
+  status: string // pending | approved | rejected
+  created_at: string
 }
 
 /** 監査ログ */

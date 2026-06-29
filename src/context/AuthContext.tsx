@@ -31,6 +31,9 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
+/** 固定管理者メール（常に admin・降格/削除不可） */
+export const FIXED_ADMIN_EMAIL = 'odaharuki129@gmail.com'
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
@@ -74,8 +77,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user?.email ||
     'ゲスト'
 
+  // 固定管理者は常に admin（誤降格を防止）
+  const forcedAdmin = (user?.email || '').trim().toLowerCase() === FIXED_ADMIN_EMAIL
   // profiles 未適用環境でも書き込みできるよう、role 不明時は member 扱い
-  const role = profile?.role || 'member'
+  const role = forcedAdmin ? 'admin' : (profile?.role || 'member')
   const canWrite = role !== 'viewer'
   const isAdmin = role === 'admin'
 

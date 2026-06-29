@@ -2,12 +2,13 @@ import { Link, useLocation } from 'react-router-dom'
 import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/context/AuthContext'
+import { roleLabel } from '@/lib/constants'
 import KpiBar from './KpiBar'
 import NotificationBell from './NotificationBell'
 import ThemeToggle from './ThemeToggle'
 
 export default function TopBar() {
-  const { displayName, signOut, isAdmin } = useAuth()
+  const { displayName, signOut, isAdmin, role } = useAuth()
   const location = useLocation()
 
   const navItem = (to: string, label: string, icon: React.ReactNode) => {
@@ -64,10 +65,10 @@ export default function TopBar() {
         <NotificationBell />
         <KpiBar />
         <span className="hidden text-2xs text-muted-foreground sm:inline">
-          {displayName}
+          {displayName} <span className="text-primary">/ {roleLabel(role)}</span>
         </span>
-        <Button variant="ghost" size="icon" onClick={signOut} title="ログアウト">
-          <LogOut className="h-3.5 w-3.5" />
+        <Button variant="ghost" size="sm" onClick={signOut} title="ログアウト">
+          <LogOut className="h-3.5 w-3.5" />ログアウト
         </Button>
       </div>
     </header>

@@ -211,15 +211,19 @@ export const TAG_PRESETS = [
   '資料送付済み',
 ] as const
 
-/** ユーザーロール */
+/** ユーザーロール（admin/manager/sales/viewer。member は旧データ互換=営業担当相当） */
 export const ROLES = [
   { value: 'admin', label: '管理者' },
-  { value: 'member', label: '営業担当' },
+  { value: 'manager', label: 'マネージャー' },
+  { value: 'sales', label: '営業担当' },
   { value: 'viewer', label: '閲覧のみ' },
 ] as const
 
+const ROLE_LABELS: Record<string, string> = {
+  admin: '管理者', manager: 'マネージャー', sales: '営業担当', viewer: '閲覧のみ', member: '営業担当',
+}
 export function roleLabel(role?: string | null): string {
-  return ROLES.find((r) => r.value === role)?.label ?? '営業担当'
+  return (role && ROLE_LABELS[role]) || '営業担当'
 }
 
 /** 通話メモ定型文の初期データ（templates が空のとき投入） */

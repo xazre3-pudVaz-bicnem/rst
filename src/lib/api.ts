@@ -9,6 +9,7 @@ import type {
   LeadCandidate,
   Profile,
   Recall,
+  SignupRequest,
   Template,
 } from './types'
 
@@ -187,6 +188,47 @@ export const LeadQueryLogApi = {
       .limit(limit)
     if (error) { console.warn('[LeadQueryLog] recent skipped:', error.message); return [] }
     return (data as any[]) || []
+  },
+}
+
+/** 新規登録申請（ログイン前でも anon で作成可。一覧/承認は管理者） */
+export const SignupRequestApi = {
+  async create(input: { email: string; display_name?: string; memo?: string }): Promise<void> {
+    const email = input.email.trim().toLowerCase()
+    if (!email) throw new Error('メールアドレスを入力してください')
+    const { data: existing } = await supabase.from('signup_requests').select('id').eq('email', email).eq('status', 'pending').limit(1)
+    if (existing && existing[0]) throw new Error('既にこのメールアドレスで申請済みです（管理者の確認待ち）')
+    const { error } = await supabase.from('signup_requests').insert({
+      email, display_name: input.display_name?.trim() || null, memo: input.memo?.trim() || null, status: 'pending',
+    })
+    if (error) throw new Error(error.message)
+  },
+  async list(status?: string): Promise<SignupRequest[]> {
+    let q = supabase.from('signup_requests').select('*').order('created_at', { ascending: false }).limit(200)
+    if (status) q = q.eq('status', status)
+    const { data, error } = await q
+    if (error) { console.warn('[SignupRequest] list', error.message); return [] }
+    return (data as SignupRequest[]) || []
+  },
+  async setStatus(id: string, status: string): Promise<void> {
+    const { error } = await supabase.from('signup_requests').update({ status }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+/** 管理ユーザーAPI（service role はサーバー側のみ。JWTで admin 判定） */
+export const AdminUserApi = {
+  async call(action: string, payload: any): Promise<any> {
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    const res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ action, ...payload }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok || json?.ok === false) throw new Error(json?.error || `HTTP ${res.status}`)
+    return json
   },
 }
 

@@ -74,7 +74,7 @@ export default function CallLogFormModal({
   const [newStatus, setNewStatus] = useState('')
   const [busy, setBusy] = useState(false)
   const [templates, setTemplates] = useState<Template[]>([])
-  const { user } = useAuth()
+  const { user, displayName } = useAuth()
   const toast = useToast()
 
   useEffect(() => {
@@ -109,10 +109,11 @@ export default function CallLogFormModal({
       setAppoRep(selectedCase?.sales_rep ?? '')
       setRecallAt('')
       setMemo('')
-      setLogRep(selectedCase?.sales_rep ?? '')
+      // 記録者はログイン中ユーザーを初期値に（原則ログインユーザーで自動設定）
+      setLogRep(displayName || selectedCase?.sales_rep || '')
       setNewStatus(selectedCase?.status ?? '')
     }
-  }, [open, editingLog, selectedCase])
+  }, [open, editingLog, selectedCase, displayName])
 
   const summary = useMemo(
     () =>
@@ -388,14 +389,14 @@ export default function CallLogFormModal({
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>担当者（記録者）</Label>
+              <Label>記録者</Label>
               <Select value={logRep || NONE} onValueChange={(v) => setLogRep(v === NONE ? '' : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="選択" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>（なし）</SelectItem>
-                  {SALES_REPS.map((r) => (
+                  {(logRep && !(SALES_REPS as readonly string[]).includes(logRep) ? [logRep, ...SALES_REPS] : SALES_REPS).map((r) => (
                     <SelectItem key={r} value={r}>{r}</SelectItem>
                   ))}
                 </SelectContent>

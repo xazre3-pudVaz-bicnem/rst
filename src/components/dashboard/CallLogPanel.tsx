@@ -71,7 +71,7 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                 <Badge variant={l.contact_type === '接触' ? 'success' : 'secondary'}>
                   {l.contact_type}
                 </Badge>
-                {l.sales_rep && <Badge variant="outline">{l.sales_rep}</Badge>}
+                {l.sales_rep && <Badge variant="outline">記録者: {l.sales_rep}</Badge>}
               </div>
               <div className="flex gap-0.5">
                 <button className="rounded p-1 text-muted-foreground hover:bg-accent" onClick={() => onEdit(l)} title="編集">
