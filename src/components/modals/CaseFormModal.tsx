@@ -18,7 +18,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { CaseApi, AuditApi } from '@/lib/api'
-import { INDUSTRIES, SALES_REPS, STATUSES, DEFAULT_STATUS, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { INDUSTRIES, STATUSES, DEFAULT_STATUS, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { normalizePhone, phoneDigits, normalizeUrl, jpError, cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
@@ -57,6 +58,7 @@ export default function CaseFormModal({
   onSaved,
 }: Props) {
   const { user, displayName } = useAuth()
+  const { users: assignableUsers, names: assignableNames } = useAssignableUsers()
   const toast = useToast()
   const [form, setForm] = useState({ ...EMPTY })
   const [priority, setPriority] = useState('')
@@ -153,12 +155,18 @@ export default function CaseFormModal({
         await CaseApi.update(editingCase.id, payload)
         AuditApi.log({ action: 'update', entity: 'case', entity_id: editingCase.id, entity_name: payload.name, actor_id: user?.id ?? null })
       } else {
-        // 作成者を固定（created_by_name）。営業担当が未選択なら作成者を初期担当に。
+        // 作成者=固定 / 投入者=手動作成者 / 営業担当=初期値は作成者（後で変更可）
+        const repName = payload.sales_rep || displayName || null
+        const matched = assignableUsers.find((u) => u.name === repName)
         const created = await CaseApi.create({
           ...payload,
-          sales_rep: payload.sales_rep || displayName || null,
+          sales_rep: repName,
           created_by_id: user?.id ?? null,
           created_by_name: displayName || null,
+          created_by_user_id: user?.id ?? null,
+          created_by_user_name: displayName || null,
+          assigned_user_id: matched?.id ?? user?.id ?? null,
+          assigned_user_name: repName,
         })
         AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, actor_id: user?.id ?? null })
       }
@@ -242,8 +250,8 @@ export default function CaseFormModal({
                 <SelectValue placeholder="選択" />
               </SelectTrigger>
               <SelectContent>
-                {/* ログインユーザー名が定義リストに無い場合も選択維持 */}
-                {(form.sales_rep && !(SALES_REPS as readonly string[]).includes(form.sales_rep) ? [form.sales_rep, ...SALES_REPS] : SALES_REPS).map((r) => (
+                {/* 営業担当候補はユーザー管理から。現在値が候補に無くても選択維持 */}
+                {withCurrent(assignableNames, form.sales_rep).map((r) => (
                   <SelectItem key={r} value={r}>
                     {r}
                   </SelectItem>

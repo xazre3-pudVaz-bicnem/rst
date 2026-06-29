@@ -6,6 +6,23 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * クリック/フォーカス対象が「Select/Popover/メニュー/日付ピッカー」などの
+ * ポップアップ内かを判定。Dialog の外側クリック誤検知を防ぐための共通判定。
+ */
+export function isInteractiveOverlayTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || typeof el.closest !== 'function') return false
+  return !!el.closest(
+    '[data-radix-popper-content-wrapper],[data-radix-select-content],[data-radix-select-viewport],[data-radix-popover-content],[data-radix-menu-content],[data-radix-dropdown-menu-content],[role="listbox"],[role="menu"],.react-datepicker',
+  )
+}
+
+/** Radix の onInteractOutside 等から実際のDOMターゲットを取り出す（detail.originalEvent 優先） */
+export function realOutsideTarget(e: { detail?: { originalEvent?: Event }; target?: EventTarget | null }): EventTarget | null {
+  return e?.detail?.originalEvent?.target ?? e?.target ?? null
+}
+
+/**
  * datetime-local の値（YYYY-MM-DDTHH:mm）を最も近い15分単位に丸めて返す。
  * 空文字はそのまま返す。既存の13:07などが渡っても安全に丸める。
  */

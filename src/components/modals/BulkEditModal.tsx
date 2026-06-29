@@ -13,7 +13,8 @@ import { CaseApi, RecallApi, AuditApi, changeCaseStatus } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { STATUSES, SALES_REPS, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { STATUSES, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { jpError } from '@/lib/utils'
 import type { Case } from '@/lib/types'
 
@@ -31,6 +32,7 @@ const NONE = '__none__'
 
 export default function BulkEditModal({ open, onClose, cases, selectedIds, onDone }: Props) {
   const { user, displayName } = useAuth()
+  const { names: assignableNames } = useAssignableUsers()
   const toast = useToast()
   const confirm = useConfirm()
   const [action, setAction] = useState<Action>('status')
@@ -133,7 +135,7 @@ export default function BulkEditModal({ open, onClose, cases, selectedIds, onDon
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>未割当</SelectItem>
-                  {SALES_REPS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                  {assignableNames.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

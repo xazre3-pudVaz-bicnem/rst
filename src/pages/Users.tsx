@@ -9,6 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { ProfileApi, SignupRequestApi, AdminUserApi } from '@/lib/api'
+import { invalidateAssignableUsers } from '@/hooks/useAssignableUsers'
 import { useAuth, FIXED_ADMIN_EMAIL } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { ROLES, roleLabel } from '@/lib/constants'
@@ -61,6 +62,7 @@ export default function Users() {
     try {
       const role = isFixedAdmin(p) ? 'admin' : e.role // 固定adminはadmin固定
       await ProfileApi.update(p.id, { full_name: e.full_name || null, role })
+      invalidateAssignableUsers()
       toast.success('ユーザー情報を更新しました')
       await load()
     } catch (err) {
@@ -75,6 +77,7 @@ export default function Users() {
     try {
       await ProfileApi.update(p.id, { [key]: value })
       setProfiles((ps) => ps.map((x) => (x.id === p.id ? { ...x, [key]: value } : x)))
+      invalidateAssignableUsers()
     } catch (err) {
       toast.error('更新に失敗しました: ' + jpError(err))
     }
@@ -92,6 +95,7 @@ export default function Users() {
     setCfBusy(true)
     try {
       await AdminUserApi.call('create', cf)
+      invalidateAssignableUsers()
       toast.success('ユーザーを作成しました')
       setCreateOpen(false)
       await load()

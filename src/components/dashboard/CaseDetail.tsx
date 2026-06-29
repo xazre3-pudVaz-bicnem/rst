@@ -13,7 +13,8 @@ import { CaseApi, CallLogApi, AuditApi, changeCaseStatus } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { SALES_REPS, STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } from '@/lib/constants'
+import { STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } from '@/lib/constants'
+import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { mapUrl, googleSearchUrl, normalizeUrl, copyToClipboard, cn, jpError } from '@/lib/utils'
 import type { Case, CallLog, Recall, Template } from '@/lib/types'
 
@@ -43,6 +44,7 @@ export default function CaseDetail({
   const { user, displayName } = useAuth()
   const toast = useToast()
   const confirm = useConfirm()
+  const { users: assignableUsers, names: assignableNames } = useAssignableUsers()
   const [salesRep, setSalesRep] = useState('')
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
@@ -93,6 +95,11 @@ export default function CaseDetail({
       } else {
         await CaseApi.update(c.id, { sales_rep: salesRep || null })
       }
+      // 営業担当をユーザーID＋名前で保存（作成者/投入者は変更しない）。列が無い環境でも壊さない。
+      try {
+        const matched = assignableUsers.find((u) => u.name === salesRep)
+        await CaseApi.update(c.id, { assigned_user_name: salesRep || null, assigned_user_id: matched?.id ?? null })
+      } catch { /* 列未適用環境は無視 */ }
       toast.success('保存しました')
       onChanged()
     } catch (e) {
@@ -215,7 +222,7 @@ export default function CaseDetail({
                 <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>未割当</SelectItem>
-                  {(salesRep && !(SALES_REPS as readonly string[]).includes(salesRep) ? [salesRep, ...SALES_REPS] : SALES_REPS).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                  {withCurrent(assignableNames, salesRep).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

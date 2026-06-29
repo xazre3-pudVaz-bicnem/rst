@@ -26,9 +26,9 @@ import {
   GENDERS,
   NO_CONTACT_RESULTS,
   RECEIVER_ATTRS,
-  SALES_REPS,
   STATUSES,
 } from '@/lib/constants'
+import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { generateSummary } from '@/lib/summary'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
@@ -75,6 +75,7 @@ export default function CallLogFormModal({
   const [busy, setBusy] = useState(false)
   const [templates, setTemplates] = useState<Template[]>([])
   const { user, displayName } = useAuth()
+  const { names: assignableNames } = useAssignableUsers()
   const toast = useToast()
 
   useEffect(() => {
@@ -362,7 +363,7 @@ export default function CallLogFormModal({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NONE}>（なし）</SelectItem>
-                    {SALES_REPS.map((r) => (
+                    {withCurrent(assignableNames, appoRep).map((r) => (
                       <SelectItem key={r} value={r}>
                         {r}
                       </SelectItem>
@@ -396,7 +397,7 @@ export default function CallLogFormModal({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>（なし）</SelectItem>
-                  {(logRep && !(SALES_REPS as readonly string[]).includes(logRep) ? [logRep, ...SALES_REPS] : SALES_REPS).map((r) => (
+                  {withCurrent(assignableNames, logRep).map((r) => (
                     <SelectItem key={r} value={r}>{r}</SelectItem>
                   ))}
                 </SelectContent>

@@ -16,7 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { INDUSTRIES, SALES_REPS, STATUSES } from '@/lib/constants'
+import { INDUSTRIES, STATUSES } from '@/lib/constants'
+import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 
 export interface SearchCriteria {
   name: string
@@ -49,6 +50,7 @@ interface Props {
 }
 
 export default function SearchModal({ open, initial, onClose, onSearch, onReset }: Props) {
+  const { names: assignableNames } = useAssignableUsers()
   const [c, setC] = useState<SearchCriteria>({ ...EMPTY })
   const set = (k: keyof SearchCriteria, v: string | boolean) =>
     setC((p) => ({ ...p, [k]: v === ALL ? '' : v }))
@@ -92,7 +94,7 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>すべて</SelectItem>
-                {SALES_REPS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                {withCurrent(assignableNames, c.sales_rep).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

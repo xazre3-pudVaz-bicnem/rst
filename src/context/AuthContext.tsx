@@ -24,6 +24,8 @@ interface AuthContextValue {
   canWrite: boolean
   /** 管理者か */
   isAdmin: boolean
+  /** 有効ユーザーか（is_active=false は利用不可。固定adminは常に有効） */
+  isActive: boolean
   signIn: (email: string, password: string) => Promise<void>
   signUp: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
@@ -83,6 +85,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const role = forcedAdmin ? 'admin' : (profile?.role || 'member')
   const canWrite = role !== 'viewer'
   const isAdmin = role === 'admin'
+  // is_active=false は利用不可（読み込み中=profile未取得 は有効扱いでブロックしない）
+  const isActive = forcedAdmin || profile?.is_active !== false
 
   const value: AuthContextValue = {
     session,
@@ -93,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     role,
     canWrite,
     isAdmin,
+    isActive,
     async signIn(email, password) {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) throw new Error(error.message)

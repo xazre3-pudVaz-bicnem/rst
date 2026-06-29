@@ -77,6 +77,12 @@ INSERT INTO app_config (key, value) VALUES ('fixed_admin_email', '"${FIXED_ADMIN
 
 -- 固定adminメールの profiles 行があれば admin に固定
 UPDATE profiles SET role = 'admin', is_active = true WHERE lower(email) = lower('${FIXED_ADMIN_EMAIL}');
+
+-- 既存案件の担当者名を assigned_user_name に補完（user_idは紐付けできる範囲のみ・空なら据え置き）
+UPDATE cases SET assigned_user_name = sales_rep
+  WHERE (assigned_user_name IS NULL OR assigned_user_name = '') AND sales_rep IS NOT NULL AND sales_rep <> '';
+UPDATE cases SET created_by_user_name = created_by_name
+  WHERE (created_by_user_name IS NULL OR created_by_user_name = '') AND created_by_name IS NOT NULL AND created_by_name <> '';
 `
 
 async function main() {
@@ -93,9 +99,14 @@ async function main() {
     const sr = await client.query('SELECT count(*)::int AS c FROM signup_requests')
     const pr = await client.query('SELECT count(*)::int AS c FROM profiles')
     const admins = await client.query(`SELECT count(*)::int AS c FROM profiles WHERE role='admin'`)
+    const sales = await client.query(`SELECT count(*)::int AS c FROM profiles WHERE is_active = true AND is_sales_assignee = true`)
+    const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name='cases' AND column_name = ANY($1)`,
+      [['assigned_user_id', 'assigned_user_name', 'created_by_user_id', 'created_by_user_name', 'imported_by_user_id', 'imported_by_user_name']])
+    console.log('  ✓ app_users(profiles)総数:', pr.rows[0].c, '件')
+    console.log('  ✓ 営業担当候補(is_active&is_sales_assignee):', sales.rows[0].c, '件')
+    console.log('  ✓ admin:', admins.rows[0].c, '件 / 固定admin:', FIXED_ADMIN_EMAIL)
     console.log('  ✓ signup_requests:', sr.rows[0].c, '件')
-    console.log('  ✓ profiles:', pr.rows[0].c, '件 / admin:', admins.rows[0].c, '件')
-    console.log('  ✓ 固定adminメール:', FIXED_ADMIN_EMAIL)
+    console.log('  ✓ cases 追加/確認カラム:', cols.rows.map((r: any) => r.column_name).join(', '))
     console.log('\n✅ セットアップ完了')
     console.log('次: npm run build → ログイン画面の「新規登録申請」/ ユーザー管理画面 を確認')
   } finally {

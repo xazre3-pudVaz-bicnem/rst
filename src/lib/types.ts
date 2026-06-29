@@ -24,6 +24,13 @@ export interface Case {
   /** リスト作成者名（作成時に固定。営業担当 sales_rep とは別管理） */
   created_by_name?: string | null
   assigned_to?: string | null
+  // ユーザーID単位の担当/作成/投入（作成者・投入者は固定、担当は可変）
+  assigned_user_id?: string | null
+  assigned_user_name?: string | null
+  created_by_user_id?: string | null
+  created_by_user_name?: string | null
+  imported_by_user_id?: string | null
+  imported_by_user_name?: string | null
   created_date: string
   updated_date: string
 }

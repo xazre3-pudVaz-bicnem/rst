@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { AppointmentApi, CaseApi } from '@/lib/api'
-import { SALES_REPS } from '@/lib/constants'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -37,6 +37,7 @@ export default function Appointments() {
   const navigate = useNavigate()
   const toast = useToast()
   const confirm = useConfirm()
+  const { names: assignableNames } = useAssignableUsers()
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [cases, setCases] = useState<Case[]>([])
   const [currentDate, setCurrentDate] = useState(moment().format('YYYY-MM-DD'))
@@ -66,7 +67,7 @@ export default function Appointments() {
     load()
   }, [load])
 
-  const reps = filterRep ? [filterRep] : SALES_REPS
+  const reps = filterRep ? [filterRep] : assignableNames
 
   const dayAppos = useMemo(
     () => appointments.filter((a) => moment(a.appo_at).isSame(currentDate, 'day')),
@@ -173,7 +174,7 @@ export default function Appointments() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>全員</SelectItem>
-              {SALES_REPS.map((r) => (
+              {assignableNames.map((r) => (
                 <SelectItem key={r} value={r}>
                   {r}
                 </SelectItem>
@@ -284,7 +285,7 @@ export default function Appointments() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>（なし）</SelectItem>
-                  {SALES_REPS.map((r) => (
+                  {assignableNames.map((r) => (
                     <SelectItem key={r} value={r}>
                       {r}
                     </SelectItem>
