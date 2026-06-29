@@ -133,12 +133,13 @@ export default function CallLogFormModal({
   async function handleRelease() {
     if (!selectedCase) return
     try {
-      await CaseApi.update(selectedCase.id, { sales_rep: null, status: '未架電' })
-      toast.success('案件を開放しました')
+      // 解放は「担当者の割当解除」のみ。ステータスもコール履歴も変更・削除しない。
+      await CaseApi.update(selectedCase.id, { sales_rep: null })
+      toast.success('案件を解放しました（担当者を解除。コール履歴・ステータスは保持）')
       onSaved()
       onClose()
     } catch (e) {
-      toast.error('開放に失敗しました: ' + jpError(e))
+      toast.error('解放に失敗しました: ' + jpError(e))
     }
   }
 

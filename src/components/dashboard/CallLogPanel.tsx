@@ -1,5 +1,5 @@
 import moment from 'moment'
-import { Plus, Pencil, Trash2, ArrowRight } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi } from '@/lib/api'
@@ -12,11 +12,13 @@ interface Props {
   callLogs: CallLog[]
   selectedCase: Case | null
   onAdd: () => void
+  onAbsent: () => void
   onEdit: (log: CallLog) => void
   onChanged: () => void
+  canWrite?: boolean
 }
 
-export default function CallLogPanel({ callLogs, selectedCase, onAdd, onEdit, onChanged }: Props) {
+export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, onEdit, onChanged, canWrite = true }: Props) {
   const toast = useToast()
   const confirm = useConfirm()
   const logs = selectedCase
@@ -36,16 +38,27 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onEdit, on
 
   return (
     <div className="flex h-full flex-col border-l">
-      <div className="flex items-center justify-between border-b bg-card p-2">
+      <div className="flex items-center justify-between gap-1 border-b bg-card p-2">
         <span className="text-sm font-bold">コール履歴 {logs.length > 0 && <span className="text-muted-foreground">({logs.length})</span>}</span>
-        <Button size="sm" onClick={onAdd} disabled={!selectedCase}>
-          <Plus className="h-3.5 w-3.5" />登録
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onAbsent}
+            disabled={!selectedCase || !canWrite}
+            title="不在をコール履歴として記録（ステータスは変更しません）"
+          >
+            <PhoneMissed className="h-3.5 w-3.5" />不在
+          </Button>
+          <Button size="sm" onClick={onAdd} disabled={!selectedCase || !canWrite}>
+            <Plus className="h-3.5 w-3.5" />登録
+          </Button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
         {logs.length === 0 && (
           <div className="p-4 text-center text-xs text-muted-foreground">
-            {selectedCase ? 'この案件の通話履歴はまだありません' : '案件を選択すると履歴が表示されます'}
+            {selectedCase ? '履歴はまだありません' : '案件を選択すると履歴が表示されます'}
           </div>
         )}
         {logs.map((l) => (

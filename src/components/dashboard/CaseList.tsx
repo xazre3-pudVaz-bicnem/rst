@@ -1,12 +1,12 @@
 import { List, type RowComponentProps } from 'react-window'
 import moment from 'moment'
-import { Search, Bot, MapPin, Store, Upload, Plus, X, CheckSquare, Download, Flag } from 'lucide-react'
+import { Search, Plus, X, Flag } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   HIGHLIGHT_STATUSES,
-  QUICK_FILTERS,
   statusColor,
+  displayStatus,
   PRIORITY_COLORS,
   type QuickFilterKey,
 } from '@/lib/constants'
@@ -58,8 +58,8 @@ function CaseRow({
             )}
             <span className="truncate text-sm font-semibold">{c.name}</span>
           </div>
-          <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium', statusColor(c.status))}>
-            {c.status}
+          <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium', statusColor(displayStatus(c.status)))}>
+            {displayStatus(c.status)}
           </span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted-foreground">
@@ -142,48 +142,13 @@ export default function CaseList(props: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* ツールバー */}
-      <div className="flex flex-wrap items-center gap-1 border-b bg-card p-2">
+      {/* ツールバー（案件追加・詳細検索のみ） */}
+      <div className="flex items-center gap-2 border-b bg-card p-2">
         <Button size="sm" onClick={onOpenNew} disabled={!canWrite}>
           <Plus className="h-3.5 w-3.5" />案件追加
         </Button>
-        <Button variant="outline" size="sm" onClick={onOpenImport} disabled={!canWrite}>
-          <Upload className="h-3.5 w-3.5" />CSV取込
-        </Button>
-        <Button variant="outline" size="sm" onClick={onExport} title="表示中の案件をCSV出力">
-          <Download className="h-3.5 w-3.5" />CSV出力
-        </Button>
         <Button variant={searchActive ? 'default' : 'outline'} size="sm" onClick={onOpenSearch}>
           <Search className="h-3.5 w-3.5" />詳細検索
-        </Button>
-        <Button variant={selectionMode ? 'default' : 'outline'} size="sm" onClick={onToggleSelectionMode} disabled={!canWrite}>
-          <CheckSquare className="h-3.5 w-3.5" />一括選択
-        </Button>
-        <div className="relative">
-          <Button variant="outline" size="sm" onClick={onOpenAutoSearch}>
-            <Bot className="h-3.5 w-3.5" />自動検索
-          </Button>
-          {autoBadge > 0 && (
-            <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-white">
-              {autoBadge}
-            </span>
-          )}
-        </div>
-        <Button
-          size="sm"
-          className={cn(mapSearching ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700', 'text-white')}
-          onClick={onToggleMap}
-          title="Googleマップから新規開業店舗を自動収集"
-        >
-          {mapSearching ? '■ 停止' : (<><MapPin className="h-3.5 w-3.5" />地図検索</>)}
-        </Button>
-        <Button
-          size="sm"
-          className={cn(townpageSearching ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-500 hover:bg-orange-600', 'text-white')}
-          onClick={onToggleTownpage}
-          title="タウンページの新規掲載店舗を自動収集"
-        >
-          {townpageSearching ? '■ 停止' : (<><Store className="h-3.5 w-3.5" />新規店検索</>)}
         </Button>
       </div>
 
@@ -207,57 +172,19 @@ export default function CaseList(props: Props) {
         )}
       </div>
 
-      {/* クイックフィルター */}
-      <div className="flex flex-wrap gap-1 border-b bg-muted/30 px-2 py-1.5">
-        {QUICK_FILTERS.map((f) => (
-          <button
-            key={f.key}
-            onClick={() => onQuickFilter(f.key)}
-            className={cn(
-              'rounded-full border px-2 py-0.5 text-2xs transition-colors',
-              quickFilter === f.key
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-input bg-card text-muted-foreground hover:bg-accent',
-            )}
+      {/* 件数 + 並び替え */}
+      <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-2 py-1.5 text-2xs font-medium text-muted-foreground">
+        <span className="shrink-0">{cases.length} 件</span>
+        <label className="flex items-center gap-1">
+          並び替え:
+          <select
+            value={sortKey}
+            onChange={(e) => onSortChange(e.target.value)}
+            className="rounded border border-input bg-card px-1 py-0.5 text-2xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      {/* 保存ビュー（フィルタプリセット） */}
-      <div className="flex flex-wrap items-center gap-1 border-b bg-card px-2 py-1">
-        <span className="text-[10px] text-muted-foreground">ビュー:</span>
-        {savedViews.map((v) => (
-          <span key={v.id} className="group inline-flex items-center rounded-full border border-input bg-card text-2xs">
-            <button className="px-2 py-0.5 hover:text-primary" onClick={() => onApplyView(v.id)} title="このビューを適用">{v.name}</button>
-            <button className="px-1 text-muted-foreground hover:text-destructive" onClick={() => onDeleteView(v.id)} title="削除">×</button>
-          </span>
-        ))}
-        <button className="rounded-full border border-dashed border-input px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent" onClick={onSaveView}>
-          ＋現在の条件を保存
-        </button>
-      </div>
-
-      {/* 件数 + 並び替え + 一括選択操作 */}
-      <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-2 py-1 text-2xs font-medium text-muted-foreground">
-        <span className="shrink-0">{cases.length} 件{selectionMode && selectedIds.size > 0 && ` / ${selectedIds.size} 件選択中`}</span>
-        {selectionMode ? (
-          <button className="text-primary hover:underline" onClick={onSelectAllVisible}>
-            表示中をすべて選択/解除
-          </button>
-        ) : (
-          <label className="flex items-center gap-1">
-            並び替え:
-            <select
-              value={sortKey}
-              onChange={(e) => onSortChange(e.target.value)}
-              className="rounded border border-input bg-card px-1 py-0.5 text-2xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </label>
-        )}
+            {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
       </div>
 
       {/* 一覧（仮想スクロール / react-window v2） */}

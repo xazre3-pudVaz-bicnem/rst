@@ -342,6 +342,27 @@ export default function Dashboard() {
     }
   }
 
+  // 「不在」をコール履歴として記録（ステータスは変更しない＝コール結果として扱う）
+  async function handleAbsent() {
+    if (!selectedCase || !canWrite) return
+    try {
+      await CallLogApi.create({
+        case_id: selectedCase.id,
+        case_name: selectedCase.name,
+        call_at: new Date().toISOString(),
+        contact_type: '非接触',
+        result: '不在',
+        summary: '不在',
+        sales_rep: selectedCase.sales_rep ?? null,
+        created_by_id: user?.id ?? null,
+      })
+      toast.success('「不在」をコール履歴に記録しました')
+      loadAll()
+    } catch (e) {
+      toast.error('記録に失敗しました: ' + (e instanceof Error ? e.message : e))
+    }
+  }
+
   async function handleRepNameChange(caseId: string, name: string) {
     setCases((cs) => cs.map((c) => (c.id === caseId ? { ...c, representative: name } : c)))
     try {
@@ -584,8 +605,9 @@ export default function Dashboard() {
   }
 
   const logProps = {
-    callLogs, selectedCase,
+    callLogs, selectedCase, canWrite,
     onAdd: () => { setEditingCallLog(null); setModal('newCallLog') },
+    onAbsent: handleAbsent,
     onEdit: (log: CallLog) => { setEditingCallLog(log); setModal('editCallLog') },
     onChanged: loadAll,
   }
@@ -636,11 +658,11 @@ export default function Dashboard() {
 
       {showLoading ? (
         <div className="flex flex-1 gap-3 p-3">
-          <div className="hidden w-[340px] shrink-0 flex-col gap-2 md:flex">
+          <div className="hidden w-[30%] min-w-[320px] max-w-[460px] shrink-0 flex-col gap-2 md:flex">
             <SkeletonRows count={8} />
           </div>
           <div className="flex-1"><SkeletonRows count={5} /></div>
-          <div className="hidden w-[330px] shrink-0 md:block"><SkeletonRows count={5} /></div>
+          <div className="hidden w-[340px] shrink-0 md:block"><SkeletonRows count={5} /></div>
         </div>
       ) : showEmptyState ? (
         <div className="flex flex-1 items-center justify-center p-6">
@@ -677,9 +699,9 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* PC: 3カラム */}
+          {/* PC: 3カラム（左:案件一覧 / 中央:案件詳細 / 右:コール履歴） */}
           <div className="hidden flex-1 overflow-hidden md:flex">
-            <div className="flex w-[340px] shrink-0 flex-col border-r">
+            <div className="flex w-[30%] min-w-[320px] max-w-[460px] shrink-0 flex-col border-r">
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CaseList {...listProps} />
               </div>

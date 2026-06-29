@@ -45,11 +45,41 @@ export const LEGACY_STATUSES = [
   'リレ近跡',
 ] as const
 
-/** ステータス選択肢（標準＋互換のため旧も末尾に表示） */
-export const STATUSES = [...STANDARD_STATUSES, ...LEGACY_STATUSES] as const
+/**
+ * 案件ステータスの統一一覧（この順番でUIに表示）。一元管理。
+ * 「不在」「受付NG」「資料送付」等はステータスではなくコール履歴の結果として扱う。
+ */
+export const STATUSES = [
+  '新規',
+  '再コール',
+  '見込み',
+  '激アツ',
+  '特別保存',
+  '仮アポ',
+  '仮アポ流れ',
+  'アポ',
+  '契約',
+  '成約',
+  '仮失注',
+  '完失注',
+  'シャドーリスト',
+  '他社受注',
+  '対象外案件',
+  'クレーマー',
+  '留番',
+  'リピ確',
+] as const
+
+/** 旧データ互換（編集時に現在値が STATUSES に無ければ先頭に補完表示する） */
+export const ALL_KNOWN_STATUSES = [...STATUSES, ...STANDARD_STATUSES, ...LEGACY_STATUSES] as const
 
 /** 新規案件のデフォルトステータス */
-export const DEFAULT_STATUS = '未架電'
+export const DEFAULT_STATUS = '新規'
+
+/** 空/null/不明は表示上「新規」として扱う */
+export function displayStatus(status?: string | null): string {
+  return status && status.trim() ? status : '新規'
+}
 
 /** ステータスごとの表示色（バッジ・一覧背景。ダークモード対応） */
 export const STATUS_COLORS: Record<string, string> = {
@@ -64,11 +94,23 @@ export const STATUS_COLORS: Record<string, string> = {
   失注: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
   再コール: 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300',
   契約済み: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
-  // legacy
+  // 統一ステータス
   新規: 'bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-200',
+  激アツ: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300',
+  特別保存: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300',
+  仮アポ: 'bg-lime-100 text-lime-800 dark:bg-lime-500/20 dark:text-lime-300',
+  仮アポ流れ: 'bg-stone-200 text-stone-700 dark:bg-stone-700/60 dark:text-stone-200',
   アポ: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',
-  成約: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
   契約: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
+  成約: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
+  仮失注: 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300',
+  完失注: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+  シャドーリスト: 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700/60 dark:text-zinc-200',
+  他社受注: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
+  対象外案件: 'bg-gray-200 text-gray-600 dark:bg-gray-700/60 dark:text-gray-300',
+  クレーマー: 'bg-red-200 text-red-900 dark:bg-red-500/30 dark:text-red-200',
+  留番: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-300',
+  リピ確: 'bg-teal-100 text-teal-800 dark:bg-teal-500/20 dark:text-teal-300',
 }
 
 export function statusColor(status?: string | null): string {
@@ -109,7 +151,7 @@ export const LOST_STATUSES = ['失注', '完失注', '仮失注', '他社受注'
 export const DOC_SENT_STATUSES = ['資料送付'] as const
 
 /** 見込み扱い */
-export const PROSPECT_STATUSES = ['見込み', '激アツ', '特別保有'] as const
+export const PROSPECT_STATUSES = ['見込み', '激アツ', '特別保有', '特別保存'] as const
 
 /** 未架電扱い */
 export const UNCALLED_STATUSES = ['未架電', '新規'] as const

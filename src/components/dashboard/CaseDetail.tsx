@@ -13,7 +13,7 @@ import { CaseApi, CallLogApi, AuditApi, changeCaseStatus } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { SALES_REPS, STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor } from '@/lib/constants'
+import { SALES_REPS, STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } from '@/lib/constants'
 import { mapUrl, googleSearchUrl, normalizeUrl, copyToClipboard, cn, jpError } from '@/lib/utils'
 import type { Case, CallLog, Recall, Template } from '@/lib/types'
 
@@ -36,20 +36,8 @@ interface Props {
 
 const NONE = '__none__'
 
-/** ワンタップで記録できる定番アウトカム（状態変更＋コール履歴を自動記録） */
-const QUICK_OUTCOMES = ['不在', '受付NG', '担当者不在', '資料送付', '折返し待ち', 'アポ獲得'] as const
-/** アウトカム → 接触種別（KPIの接続/代表接触の判定に使用） */
-const OUTCOME_CONTACT: Record<string, '接触' | '非接触'> = {
-  不在: '非接触',
-  受付NG: '非接触',
-  担当者不在: '非接触',
-  資料送付: '接触',
-  折返し待ち: '接触',
-  アポ獲得: '接触',
-}
-
 export default function CaseDetail({
-  selectedCase, callLogs, recalls, templates, canWrite, onEdit, onAddCallLog, onAddRecall, onChanged,
+  selectedCase, callLogs, recalls, canWrite, onEdit, onChanged,
   onPrev, onNext, onNextUncalled, hasPrev, hasNext,
 }: Props) {
   const { user, displayName } = useAuth()
@@ -58,12 +46,10 @@ export default function CaseDetail({
   const [salesRep, setSalesRep] = useState('')
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
-  const [quickMemo, setQuickMemo] = useState('')
 
   useEffect(() => {
     setSalesRep(selectedCase?.sales_rep ?? '')
-    setStatus(selectedCase?.status ?? '')
-    setQuickMemo('')
+    setStatus(displayStatus(selectedCase?.status))
   }, [selectedCase])
 
   const lastCallAt = useMemo(() => {
@@ -87,7 +73,10 @@ export default function CaseDetail({
   }
 
   const c = selectedCase
-  const dirty = salesRep !== (c.sales_rep ?? '') || status !== c.status
+  const baseStatus = displayStatus(c.status)
+  const dirty = salesRep !== (c.sales_rep ?? '') || status !== baseStatus
+  // 現在値が統一一覧に無い旧ステータスは先頭に補完して選択可能にする
+  const statusOptions = (STATUSES as readonly string[]).includes(status) ? [...STATUSES] : [status, ...STATUSES]
 
   async function copy(text: string | null | undefined, label: string) {
     if (!text) return
@@ -98,7 +87,8 @@ export default function CaseDetail({
   async function handleSave() {
     setSaving(true)
     try {
-      if (status !== c.status) {
+      if (status !== (c.status ?? '')) {
+        // ステータス変更（履歴/監査は changeCaseStatus 側で処理）
         await changeCaseStatus(c, status, { sales_rep: salesRep || null, userId: user?.id ?? null, actorName: displayName })
       } else {
         await CaseApi.update(c.id, { sales_rep: salesRep || null })
@@ -109,31 +99,6 @@ export default function CaseDetail({
       toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
       setSaving(false)
-    }
-  }
-
-  async function quickStatus(s: string) {
-    try {
-      const contact = OUTCOME_CONTACT[s] ?? '非接触'
-      const changed = s !== c.status
-      // コール履歴として記録（KPIのコール数/接続/代表接触に算入）
-      await CallLogApi.create({
-        case_id: c.id,
-        case_name: c.name,
-        call_at: new Date().toISOString(),
-        contact_type: contact,
-        result: s,
-        summary: s,
-        prev_status: changed ? c.status : null,
-        next_status: changed ? s : null,
-        sales_rep: c.sales_rep ?? null,
-        created_by_id: user?.id ?? null,
-      })
-      if (changed) await CaseApi.update(c.id, { status: s })
-      toast.success(`「${s}」を記録しました`)
-      onChanged()
-    } catch (e) {
-      toast.error('記録に失敗しました: ' + jpError(e))
     }
   }
 
@@ -164,24 +129,6 @@ export default function CaseDetail({
       toast.error('削除に失敗しました: ' + jpError(e))
     }
   }
-
-  async function handleQuickMemo() {
-    if (!quickMemo.trim()) return
-    try {
-      await CallLogApi.create({
-        case_id: c.id, case_name: c.name, call_at: new Date().toISOString(),
-        contact_type: '非接触', memo: quickMemo.trim(), summary: '通話メモ',
-        sales_rep: c.sales_rep ?? null, created_by_id: user?.id ?? null,
-      })
-      setQuickMemo('')
-      toast.success('通話メモを記録しました')
-      onChanged()
-    } catch (e) {
-      toast.error('記録に失敗しました: ' + jpError(e))
-    }
-  }
-
-  const memoTemplates = templates.filter((t) => t.category === 'memo').slice(0, 8)
 
   const row = (label: string, value: React.ReactNode) => (
     <div className="flex border-b py-1.5">
@@ -227,7 +174,7 @@ export default function CaseDetail({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-base font-bold">{c.name}</span>
-            <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium', statusColor(c.status))}>{c.status}</span>
+            <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium', statusColor(displayStatus(c.status)))}>{displayStatus(c.status)}</span>
             {c.priority && (
               <span className={cn('flex items-center gap-0.5 rounded-sm border px-1.5 py-0.5 text-2xs', PRIORITY_COLORS[c.priority])}>
                 <Flag className="h-2.5 w-2.5" />優先度{c.priority}
@@ -260,76 +207,49 @@ export default function CaseDetail({
         </div>
       )}
 
-      {/* クイックアクション */}
-      <div className="flex flex-wrap gap-1.5 border-b bg-muted/30 p-2">
-        <Button size="sm" onClick={onAddCallLog} disabled={!canWrite}><PhoneCall className="h-3.5 w-3.5" />通話履歴を登録</Button>
-        <Button variant="outline" size="sm" onClick={onAddRecall} disabled={!canWrite}><CalendarClock className="h-3.5 w-3.5" />再コール予定</Button>
-        <a href={mapUrl(c.address, c.name)} target="_blank" rel="noreferrer">
-          <Button variant="outline" size="sm"><MapPin className="h-3.5 w-3.5" />地図で開く</Button>
-        </a>
-        <a href={googleSearchUrl(c.name, c.address)} target="_blank" rel="noreferrer">
-          <Button variant="outline" size="sm"><Search className="h-3.5 w-3.5" />Google検索</Button>
-        </a>
-        <a href={googleSearchUrl(c.name, c.address, 'Googleビジネスプロフィール')} target="_blank" rel="noreferrer">
-          <Button variant="outline" size="sm"><Building2 className="h-3.5 w-3.5" />ビジネスPF</Button>
-        </a>
-      </div>
+      {/* 本体（縦スクロール） */}
+      <div className="flex-1 space-y-3 overflow-y-auto p-3">
+        {/* ステータス変更カード */}
+        <section className="rounded-xl border bg-card p-3 shadow-sm">
+          <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[150px] flex-1 space-y-0.5">
+              <div className="text-2xs text-muted-foreground">ステータス</div>
+              <Select value={status} onValueChange={setStatus} disabled={!canWrite}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {statusOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="min-w-[130px] flex-1 space-y-0.5">
+              <div className="text-2xs text-muted-foreground">営業担当</div>
+              <Select value={salesRep || NONE} onValueChange={(v) => setSalesRep(v === NONE ? '' : v)} disabled={!canWrite}>
+                <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>未割当</SelectItem>
+                  {SALES_REPS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-24 space-y-0.5">
+              <div className="text-2xs text-muted-foreground">優先度</div>
+              <Select value={c.priority || NONE} onValueChange={(v) => setPriority(v === NONE ? '' : v)} disabled={!canWrite}>
+                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>未設定</SelectItem>
+                  {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button onClick={handleSave} disabled={!dirty || saving || !canWrite}><Save className="h-3.5 w-3.5" />{saving ? '...' : '保存'}</Button>
+          </div>
+          <p className="mt-2 text-[10px] text-muted-foreground">※ コール結果（不在・受付NG 等）は右の「コール履歴」から記録します。ステータスは案件の現在状態のみを表します。</p>
+        </section>
 
-      {/* ワンタップ結果記録（状態変更＋履歴自動） */}
-      {canWrite && (
-        <div className="flex flex-wrap items-center gap-1 border-b bg-card px-2 py-1.5">
-          <span className="mr-0.5 flex items-center gap-0.5 text-2xs text-muted-foreground"><Zap className="h-3 w-3" />ワンタップ:</span>
-          {QUICK_OUTCOMES.map((s) => (
-            <button
-              key={s}
-              onClick={() => quickStatus(s)}
-              className={cn(
-                'rounded-full border px-2 py-0.5 text-2xs transition-colors hover:bg-accent',
-                c.status === s ? 'border-primary bg-primary/10 text-primary' : 'border-input text-foreground',
-              )}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* 担当/ステータス/優先度 インライン編集 */}
-      <div className="flex items-end gap-2 border-b bg-muted/30 p-2">
-        <div className="flex-1 space-y-0.5">
-          <div className="text-xs text-muted-foreground">営業担当</div>
-          <Select value={salesRep || NONE} onValueChange={(v) => setSalesRep(v === NONE ? '' : v)} disabled={!canWrite}>
-            <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NONE}>未割当</SelectItem>
-              {SALES_REPS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex-1 space-y-0.5">
-          <div className="text-xs text-muted-foreground">ステータス変更</div>
-          <Select value={status} onValueChange={setStatus} disabled={!canWrite}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-24 space-y-0.5">
-          <div className="text-xs text-muted-foreground">優先度</div>
-          <Select value={c.priority || NONE} onValueChange={(v) => setPriority(v === NONE ? '' : v)} disabled={!canWrite}>
-            <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NONE}>未設定</SelectItem>
-              {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button onClick={handleSave} disabled={!dirty || saving || !canWrite}><Save className="h-3.5 w-3.5" />{saving ? '...' : '保存'}</Button>
-      </div>
-
-      {/* 詳細 */}
-      <div className="flex-1 overflow-y-auto p-3">
+        {/* 基本情報カード */}
+        <section className="rounded-xl border bg-card p-3 shadow-sm">
+          <div className="mb-1 text-xs font-bold text-muted-foreground">基本情報</div>
         {row('業種', c.industry)}
         {row('電話番号1', phoneCell(c.phone1))}
         {row('電話番号2', phoneCell(c.phone2))}
@@ -367,32 +287,7 @@ export default function CaseDetail({
             ))}
           </div>
         ))}
-
-        {/* 通話メモ クイック入力 + 定型文 */}
-        {canWrite && (
-        <div className="mt-3 space-y-1">
-          <div className="text-xs font-medium text-muted-foreground">通話メモ（即時記録）</div>
-          {memoTemplates.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {memoTemplates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setQuickMemo((m) => (m ? m + '\n' : '') + t.body)}
-                  className="rounded-full border border-input bg-card px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent"
-                  title={t.body}
-                >
-                  + {t.title}
-                </button>
-              ))}
-            </div>
-          )}
-          <Textarea value={quickMemo} onChange={(e) => setQuickMemo(e.target.value)} rows={2} placeholder="例: 代表不在、夕方かけ直し依頼" />
-          <div className="flex justify-end">
-            <Button size="sm" onClick={handleQuickMemo} disabled={!quickMemo.trim()}>メモを記録</Button>
-          </div>
-        </div>
-        )}
+        </section>
       </div>
     </div>
   )
