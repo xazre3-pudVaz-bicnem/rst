@@ -1,7 +1,7 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
-import { cn, isInteractiveOverlayTarget, realOutsideTarget } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 const Dialog = DialogPrimitive.Root
 const DialogTrigger = DialogPrimitive.Trigger
@@ -28,12 +28,12 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
-      // Select/Popover/メニュー/日付ピッカーはポータルで body 直下に描画されるため、
-      // それら内部の操作を「外側クリック」と誤検知してモーダルが閉じるのを防ぐ。
-      // 重要: これらのイベントの実ターゲットは detail.originalEvent 側にあるため、そこを見る。
-      onPointerDownOutside={(e) => { if (isInteractiveOverlayTarget(realOutsideTarget(e))) e.preventDefault() }}
-      onInteractOutside={(e) => { if (isInteractiveOverlayTarget(realOutsideTarget(e))) e.preventDefault() }}
-      onFocusOutside={(e) => { if (isInteractiveOverlayTarget(realOutsideTarget(e))) e.preventDefault() }}
+      // モーダルは「×」「キャンセル」「保存」「ESC」など明示操作でのみ閉じる。
+      // 外側クリック/フォーカス移動では閉じない（開いているSelectを閉じた際の
+      // 誤検知でモーダルごと閉じる不具合を根本的に防ぐ）。ESCは既定どおり有効。
+      onPointerDownOutside={(e) => e.preventDefault()}
+      onInteractOutside={(e) => e.preventDefault()}
+      onFocusOutside={(e) => e.preventDefault()}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 border bg-background p-4 shadow-lg rounded-lg max-h-[92vh] overflow-y-auto',
         className,
