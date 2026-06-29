@@ -63,6 +63,7 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
   }
 
   async function saveEdit(id: string) {
+    if (!editValue || !moment(editValue).isValid()) { toast.error('日時を入力してください'); return }
     try {
       await RecallApi.update(id, { target_at: moment(roundTo15(editValue)).toISOString() })
       setEditingId(null)

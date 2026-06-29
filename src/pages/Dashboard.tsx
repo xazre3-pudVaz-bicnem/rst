@@ -87,11 +87,11 @@ function loadSavedViews(): SavedView[] {
 }
 
 const SAMPLE_CASES: Partial<Case>[] = [
-  { name: 'サンプル和食 はる', address: '東京都新宿区西新宿1-1-1', phone1: '03-1000-0001', industry: '飲食', status: '未架電', representative: '春日' },
-  { name: 'Beauty Salon Lumi', address: '神奈川県横浜市西区南幸2-2-2', phone1: '045-2000-0002', industry: '美容', status: '資料送付', representative: '山本' },
-  { name: '整体院やすらぎ', address: '埼玉県さいたま市大宮区桜木町3-3-3', phone1: '048-3000-0003', industry: '健康', status: '見込み', representative: '安田' },
-  { name: 'カフェ ことり', address: '千葉県千葉市中央区富士見4-4-4', phone1: '043-4000-0004', industry: '飲食', status: '再コール', representative: '小鳥' },
-  { name: 'パーソナルジム RISE', address: '東京都渋谷区道玄坂5-5-5', phone1: '03-5000-0005', industry: '健康', status: 'アポ獲得', representative: '理瀬', sales_rep: '織田春樹' },
+  { name: 'サンプル和食 はる', address: '東京都新宿区西新宿1-1-1', phone1: '03-1000-0001', industry: '飲食', status: '新規', representative: '春日' },
+  { name: 'Beauty Salon Lumi', address: '神奈川県横浜市西区南幸2-2-2', phone1: '045-2000-0002', industry: '美容室', status: '見込み', representative: '山本' },
+  { name: '整体院やすらぎ', address: '埼玉県さいたま市大宮区桜木町3-3-3', phone1: '048-3000-0003', industry: '整体', status: '見込み', representative: '安田' },
+  { name: 'カフェ ことり', address: '千葉県千葉市中央区富士見4-4-4', phone1: '043-4000-0004', industry: 'カフェ', status: '再コール', representative: '小鳥' },
+  { name: 'パーソナルジム RISE', address: '東京都渋谷区道玄坂5-5-5', phone1: '03-5000-0005', industry: 'ジム・フィットネス', status: 'アポ', representative: '理瀬' },
 ]
 
 export default function Dashboard() {

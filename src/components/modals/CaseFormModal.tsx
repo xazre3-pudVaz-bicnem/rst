@@ -155,7 +155,8 @@ export default function CaseFormModal({
         await CaseApi.update(editingCase.id, payload)
         AuditApi.log({ action: 'update', entity: 'case', entity_id: editingCase.id, entity_name: payload.name, actor_id: user?.id ?? null })
       } else {
-        // 作成者=固定 / 投入者=手動作成者 / 営業担当=初期値は作成者（後で変更可）
+        // 作成者=固定 / 営業担当=初期値は作成者（後で変更可）。コア列のみで作成し、
+        // user_id 系（未適用環境で無い可能性）は作成後に best-effort で付与し、insert失敗を防ぐ。
         const repName = payload.sales_rep || displayName || null
         const matched = assignableUsers.find((u) => u.name === repName)
         const created = await CaseApi.create({
@@ -163,11 +164,15 @@ export default function CaseFormModal({
           sales_rep: repName,
           created_by_id: user?.id ?? null,
           created_by_name: displayName || null,
-          created_by_user_id: user?.id ?? null,
-          created_by_user_name: displayName || null,
-          assigned_user_id: matched?.id ?? user?.id ?? null,
-          assigned_user_name: repName,
         })
+        try {
+          await CaseApi.update(created.id, {
+            created_by_user_id: user?.id ?? null,
+            created_by_user_name: displayName || null,
+            assigned_user_id: matched?.id ?? user?.id ?? null,
+            assigned_user_name: repName,
+          })
+        } catch { /* 列未適用環境は無視 */ }
         AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, actor_id: user?.id ?? null })
       }
       toast.success(editingCase ? '案件を更新しました' : '案件を登録しました')

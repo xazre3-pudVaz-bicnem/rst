@@ -27,7 +27,7 @@ function CaseRow({
   index, style, cases, selectedCaseId, recallByCase, onSelect,
 }: RowComponentProps<RowData>) {
   const c = cases[index]
-  const highlight = HIGHLIGHT_STATUSES.includes(c.status as never)
+  const highlight = HIGHLIGHT_STATUSES.includes(displayStatus(c.status) as never)
   const selected = c.id === selectedCaseId
   const rc = recallByCase.get(c.id)
   return (

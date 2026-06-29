@@ -67,12 +67,19 @@ export default function Appointments() {
     load()
   }, [load])
 
-  const reps = filterRep ? [filterRep] : assignableNames
-
   const dayAppos = useMemo(
     () => appointments.filter((a) => moment(a.appo_at).isSame(currentDate, 'day')),
     [appointments, currentDate],
   )
+
+  // 担当列: ユーザー管理の候補＋当日アポの担当を統合。空でも未割当列を1つ出して操作可能に
+  const reps = useMemo(() => {
+    if (filterRep) return [filterRep]
+    const set = new Set<string>()
+    assignableNames.forEach((n) => set.add(n))
+    dayAppos.forEach((a) => { if (a.sales_rep) set.add(a.sales_rep) })
+    return set.size ? Array.from(set) : ['']
+  }, [filterRep, assignableNames, dayAppos])
 
   function openNew(rep: string, hour: number) {
     setEditing(null)
@@ -192,7 +199,7 @@ export default function Appointments() {
               <th className="w-12 border bg-muted/50 p-1">時</th>
               {reps.map((r) => (
                 <th key={r} className="border bg-muted/50 p-1 font-medium">
-                  {r}
+                  {r || '担当未設定'}
                 </th>
               ))}
             </tr>

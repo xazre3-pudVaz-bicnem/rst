@@ -16,9 +16,11 @@ function nameOf(p: Profile): string {
  * 案件やコール履歴からは拾わない＝過去案件でも常に同じ候補が出る。
  */
 let cache: AssignableUser[] | null = null
+let inflight: Promise<void> | null = null
 const listeners = new Set<() => void>()
 export function invalidateAssignableUsers() {
   cache = null
+  inflight = null
   listeners.forEach((fn) => fn())
 }
 
@@ -27,25 +29,33 @@ export function useAssignableUsers(): { users: AssignableUser[]; names: string[]
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) return
-    try {
-      const list = await ProfileApi.list()
-      const filtered = list.filter((p) => {
-        const active = p.is_active !== false
-        const fixed = (p.email || '').toLowerCase() === FIXED_ADMIN_EMAIL
-        const sales = p.is_sales_assignee !== false
-        return active && (sales || fixed || p.role === 'admin')
-      })
-      const seen = new Set<string>()
-      const result: AssignableUser[] = []
-      for (const p of filtered) {
-        const name = nameOf(p)
-        if (!name || seen.has(name)) continue
-        seen.add(name)
-        result.push({ id: p.id, name })
-      }
-      cache = result
-      setUsers(result)
-    } catch { /* RLS/未適用環境は空のまま */ }
+    // 同時マウント時の二重フェッチを抑止（共有 inflight）
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const list = await ProfileApi.list()
+          const filtered = list.filter((p) => {
+            const active = p.is_active !== false
+            const fixed = (p.email || '').toLowerCase() === FIXED_ADMIN_EMAIL
+            const sales = p.is_sales_assignee !== false
+            return active && (sales || fixed || p.role === 'admin')
+          })
+          const seen = new Set<string>()
+          const result: AssignableUser[] = []
+          for (const p of filtered) {
+            const name = nameOf(p)
+            if (!name || seen.has(name)) continue
+            seen.add(name)
+            result.push({ id: p.id, name })
+          }
+          cache = result
+          listeners.forEach((fn) => fn())
+        } catch { /* RLS/未適用環境は空のまま */ }
+        finally { inflight = null }
+      })()
+    }
+    await inflight
+    setUsers(cache ?? [])
   }, [])
 
   useEffect(() => {
