@@ -21,6 +21,8 @@ export interface Case {
   /** マルチテナント対応（任意・既存データ互換のため nullable） */
   organization_id?: string | null
   created_by_id?: string | null
+  /** リスト作成者名（作成時に固定。営業担当 sales_rep とは別管理） */
+  created_by_name?: string | null
   assigned_to?: string | null
   created_date: string
   updated_date: string

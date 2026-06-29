@@ -26,7 +26,7 @@ import { SALES_REPS } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { jpError } from '@/lib/utils'
+import { jpError, roundTo15 } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
@@ -112,7 +112,7 @@ export default function Appointments() {
         case_name: c.name,
         address: c.address,
         sales_rep: form.sales_rep || null,
-        appo_at: moment(form.appo_at).toISOString(),
+        appo_at: moment(roundTo15(form.appo_at)).toISOString(),
         memo: form.memo || null,
       }
       if (editing) {

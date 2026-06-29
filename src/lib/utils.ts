@@ -5,6 +5,21 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * datetime-local の値（YYYY-MM-DDTHH:mm）を最も近い15分単位に丸めて返す。
+ * 空文字はそのまま返す。既存の13:07などが渡っても安全に丸める。
+ */
+export function roundTo15(local: string): string {
+  if (!local) return local
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(local)
+  if (!m) return local
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), 0, 0)
+  if (Number.isNaN(d.getTime())) return local
+  d.setMinutes(Math.round(d.getMinutes() / 15) * 15, 0, 0)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 /** 全角数字・記号を半角に変換し、電話番号として整形（数字・ハイフンのみ残す） */
 export function normalizePhone(input: string): string {
   if (!input) return ''

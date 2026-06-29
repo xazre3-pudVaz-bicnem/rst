@@ -117,7 +117,15 @@ export function statusColor(status?: string | null): string {
   return (status && STATUS_COLORS[status]) || 'bg-muted text-muted-foreground'
 }
 
-export const INDUSTRIES = ['飲食', '美容', '健康', '建設', 'その他'] as const
+export const INDUSTRIES = [
+  '飲食', '美容室', '理容室', 'エステ', 'ネイル', 'まつ毛サロン', 'リラクゼーション', 'マッサージ',
+  '整体', '整骨院・接骨院', '鍼灸院', 'クリニック', '歯科', '士業', '不動産', '建設', 'リフォーム',
+  '外壁塗装', 'ハウスクリーニング', '不用品回収', 'ペット', '学習塾', 'スクール', 'ジム・フィットネス',
+  '小売', '宿泊', 'レジャー', '自動車', '介護・福祉', 'その他',
+] as const
+
+/** 旧業種（移行データ互換。表示・検索で落ちないよう保持） */
+export const LEGACY_INDUSTRIES = ['美容', '健康'] as const
 
 export const CONTACT_RESULTS = [
   'アポ',
@@ -127,7 +135,7 @@ export const CONTACT_RESULTS = [
   '金をかけたくない',
 ] as const
 
-export const NO_CONTACT_RESULTS = ['不在', '忙しい', '断られた', '代表いません'] as const
+export const NO_CONTACT_RESULTS = ['不在', '忙しい', '断られた', '今は代表いません', '代表ここに来ません'] as const
 
 export const RECEIVER_ATTRS = ['配偶者', '子供', '親', '店長', '受付'] as const
 

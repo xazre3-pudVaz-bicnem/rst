@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { RecallApi, CallLogApi, AuditApi } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
-import { cn, jpError } from '@/lib/utils'
+import { cn, jpError, roundTo15 } from '@/lib/utils'
 import { statusColor } from '@/lib/constants'
 import type { Case, Recall } from '@/lib/types'
 
@@ -64,7 +64,7 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
 
   async function saveEdit(id: string) {
     try {
-      await RecallApi.update(id, { target_at: moment(editValue).toISOString() })
+      await RecallApi.update(id, { target_at: moment(roundTo15(editValue)).toISOString() })
       setEditingId(null)
       toast.success('更新しました')
       onChanged()

@@ -56,7 +56,7 @@ export default function CaseFormModal({
   existingCases,
   onSaved,
 }: Props) {
-  const { user } = useAuth()
+  const { user, displayName } = useAuth()
   const toast = useToast()
   const [form, setForm] = useState({ ...EMPTY })
   const [priority, setPriority] = useState('')
@@ -85,12 +85,13 @@ export default function CaseFormModal({
       setPriority(editingCase.priority ?? '')
       setTags(editingCase.tags ?? [])
     } else {
-      setForm({ ...EMPTY })
+      // 新規作成時は営業担当の初期値をログイン中ユーザー（作成者）にする
+      setForm({ ...EMPTY, sales_rep: displayName || '' })
       setPriority('')
       setTags([])
     }
     setTagInput('')
-  }, [editingCase, open])
+  }, [editingCase, open, displayName])
 
   function toggleTag(t: string) {
     setTags((ts) => (ts.includes(t) ? ts.filter((x) => x !== t) : [...ts, t]))
@@ -148,10 +149,17 @@ export default function CaseFormModal({
         tags: tags.length ? tags : null,
       }
       if (editingCase) {
+        // 編集ではリスト作成者(created_by_name)は変更しない
         await CaseApi.update(editingCase.id, payload)
         AuditApi.log({ action: 'update', entity: 'case', entity_id: editingCase.id, entity_name: payload.name, actor_id: user?.id ?? null })
       } else {
-        const created = await CaseApi.create({ ...payload, created_by_id: user?.id ?? null })
+        // 作成者を固定（created_by_name）。営業担当が未選択なら作成者を初期担当に。
+        const created = await CaseApi.create({
+          ...payload,
+          sales_rep: payload.sales_rep || displayName || null,
+          created_by_id: user?.id ?? null,
+          created_by_name: displayName || null,
+        })
         AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, actor_id: user?.id ?? null })
       }
       toast.success(editingCase ? '案件を更新しました' : '案件を登録しました')
@@ -211,7 +219,8 @@ export default function CaseFormModal({
                 <SelectValue placeholder="選択" />
               </SelectTrigger>
               <SelectContent>
-                {INDUSTRIES.map((i) => (
+                {/* 旧業種など一覧に無い現在値は先頭に補完して選択維持 */}
+                {(form.industry && !(INDUSTRIES as readonly string[]).includes(form.industry) ? [form.industry, ...INDUSTRIES] : INDUSTRIES).map((i) => (
                   <SelectItem key={i} value={i}>
                     {i}
                   </SelectItem>
@@ -233,7 +242,8 @@ export default function CaseFormModal({
                 <SelectValue placeholder="選択" />
               </SelectTrigger>
               <SelectContent>
-                {SALES_REPS.map((r) => (
+                {/* ログインユーザー名が定義リストに無い場合も選択維持 */}
+                {(form.sales_rep && !(SALES_REPS as readonly string[]).includes(form.sales_rep) ? [form.sales_rep, ...SALES_REPS] : SALES_REPS).map((r) => (
                   <SelectItem key={r} value={r}>
                     {r}
                   </SelectItem>

@@ -21,7 +21,7 @@ import {
 import { RecallApi } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
-import { jpError } from '@/lib/utils'
+import { jpError, roundTo15 } from '@/lib/utils'
 import type { Case } from '@/lib/types'
 
 interface Props {
@@ -70,7 +70,7 @@ export default function RecallFormModal({
       await RecallApi.create({
         case_id: c.id,
         case_name: c.name,
-        target_at: moment(targetAt).toISOString(),
+        target_at: moment(roundTo15(targetAt)).toISOString(),
         memo: memo || null,
         created_by_id: user?.id ?? null,
       })

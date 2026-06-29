@@ -175,11 +175,6 @@ export default function CaseDetail({
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-base font-bold">{c.name}</span>
             <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium', statusColor(displayStatus(c.status)))}>{displayStatus(c.status)}</span>
-            {c.priority && (
-              <span className={cn('flex items-center gap-0.5 rounded-sm border px-1.5 py-0.5 text-2xs', PRIORITY_COLORS[c.priority])}>
-                <Flag className="h-2.5 w-2.5" />優先度{c.priority}
-              </span>
-            )}
           </div>
           <div className="truncate text-xs text-muted-foreground">{c.address}</div>
           {(c.tags ?? []).length > 0 && (
@@ -213,32 +208,23 @@ export default function CaseDetail({
         <section className="rounded-lg border bg-muted/20 p-2.5">
           <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>
           <div className="flex flex-wrap items-end gap-2">
+            {/* 左: 営業担当 → 右: ステータス（担当を確認してから状態変更する流れ） */}
+            <div className="min-w-[150px] flex-1 space-y-0.5">
+              <div className="text-2xs text-muted-foreground">営業担当</div>
+              <Select value={salesRep || NONE} onValueChange={(v) => setSalesRep(v === NONE ? '' : v)} disabled={!canWrite}>
+                <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>未割当</SelectItem>
+                  {(salesRep && !(SALES_REPS as readonly string[]).includes(salesRep) ? [salesRep, ...SALES_REPS] : SALES_REPS).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="min-w-[150px] flex-1 space-y-0.5">
               <div className="text-2xs text-muted-foreground">ステータス</div>
               <Select value={status} onValueChange={setStatus} disabled={!canWrite}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {statusOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="min-w-[130px] flex-1 space-y-0.5">
-              <div className="text-2xs text-muted-foreground">営業担当</div>
-              <Select value={salesRep || NONE} onValueChange={(v) => setSalesRep(v === NONE ? '' : v)} disabled={!canWrite}>
-                <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>未割当</SelectItem>
-                  {SALES_REPS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="w-24 space-y-0.5">
-              <div className="text-2xs text-muted-foreground">優先度</div>
-              <Select value={c.priority || NONE} onValueChange={(v) => setPriority(v === NONE ? '' : v)} disabled={!canWrite}>
-                <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>未設定</SelectItem>
-                  {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -276,7 +262,7 @@ export default function CaseDetail({
             {moment(nextRecallAt).format('YYYY/MM/DD HH:mm')}
           </span>
         ) : null)}
-        {row('担当者', c.sales_rep)}
+        {row('リスト作成者', c.created_by_name)}
         {row('作成日', moment(c.created_date).format('YYYY/MM/DD HH:mm'))}
         {row('更新日', moment(c.updated_date).format('YYYY/MM/DD HH:mm'))}
         {row('メモ', <span className="whitespace-pre-wrap">{c.memo}</span>)}

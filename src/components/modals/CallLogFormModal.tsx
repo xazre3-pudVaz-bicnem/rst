@@ -32,7 +32,7 @@ import {
 import { generateSummary } from '@/lib/summary'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
-import { jpError } from '@/lib/utils'
+import { jpError, roundTo15 } from '@/lib/utils'
 import type { Case, CallLog } from '@/lib/types'
 
 interface Props {
@@ -153,7 +153,7 @@ export default function CallLogFormModal({
       const logPayload: Partial<CallLog> = {
         case_id: selectedCase.id,
         case_name: selectedCase.name,
-        call_at: moment(callAt).toISOString(),
+        call_at: moment(roundTo15(callAt)).toISOString(),
         contact_type: contactType,
         result: result || null,
         memo: memo || null,
@@ -161,7 +161,7 @@ export default function CallLogFormModal({
         sales_rep: logRep || selectedCase.sales_rep || null,
         prev_status: statusChanged ? selectedCase.status : null,
         next_status: statusChanged ? effectiveStatus : null,
-        next_recall_at: recallAt ? moment(recallAt).toISOString() : null,
+        next_recall_at: recallAt ? moment(roundTo15(recallAt)).toISOString() : null,
         created_by_id: user?.id ?? null,
       }
       if (editingLog) {
@@ -177,7 +177,7 @@ export default function CallLogFormModal({
           case_name: selectedCase.name,
           address: selectedCase.address,
           sales_rep: appoRep || null,
-          appo_at: moment(appoAt).toISOString(),
+          appo_at: moment(roundTo15(appoAt)).toISOString(),
           memo: null,
         })
       }
@@ -199,7 +199,7 @@ export default function CallLogFormModal({
         await RecallApi.create({
           case_id: selectedCase.id,
           case_name: selectedCase.name,
-          target_at: moment(recallAt).toISOString(),
+          target_at: moment(roundTo15(recallAt)).toISOString(),
           created_by_id: user?.id ?? null,
         })
       }
@@ -251,6 +251,7 @@ export default function CallLogFormModal({
             <Label>コール日時</Label>
             <Input
               type="datetime-local"
+              step={900}
               value={callAt}
               onChange={(e) => setCallAt(e.target.value)}
             />

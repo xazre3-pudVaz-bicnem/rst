@@ -10,7 +10,8 @@
     "setup:regional-media": "tsx scripts/setup-regional-media.ts",
     "check:regional-media-api": "tsx scripts/check-regional-media-api.ts",
     "setup:instagram-web": "tsx scripts/setup-instagram-web.ts",
-    "check:instagram-web-api": "tsx scripts/check-instagram-web-api.ts"
+    "check:instagram-web-api": "tsx scripts/check-instagram-web-api.ts",
+    "db:apply": "tsx scripts/apply-migration.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
