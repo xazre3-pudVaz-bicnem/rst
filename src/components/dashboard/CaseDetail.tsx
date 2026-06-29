@@ -210,7 +210,7 @@ export default function CaseDetail({
       {/* 本体（縦スクロール） */}
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
         {/* ステータス変更カード */}
-        <section className="rounded-xl border bg-card p-3 shadow-sm">
+        <section className="rounded-lg border bg-muted/20 p-2.5">
           <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[150px] flex-1 space-y-0.5">
@@ -247,9 +247,9 @@ export default function CaseDetail({
           <p className="mt-2 text-[10px] text-muted-foreground">※ コール結果（不在・受付NG 等）は右の「コール履歴」から記録します。ステータスは案件の現在状態のみを表します。</p>
         </section>
 
-        {/* 基本情報カード */}
-        <section className="rounded-xl border bg-card p-3 shadow-sm">
-          <div className="mb-1 text-xs font-bold text-muted-foreground">基本情報</div>
+        {/* 基本情報 */}
+        <section className="rounded-lg border bg-card px-3 py-1">
+          <div className="border-b py-1.5 text-xs font-bold text-muted-foreground">基本情報</div>
         {row('業種', c.industry)}
         {row('電話番号1', phoneCell(c.phone1))}
         {row('電話番号2', phoneCell(c.phone2))}

@@ -1,6 +1,5 @@
 import { List, type RowComponentProps } from 'react-window'
-import moment from 'moment'
-import { Search, Plus, X, Flag } from 'lucide-react'
+import { Search, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -25,62 +24,39 @@ interface RowData {
 }
 
 function CaseRow({
-  index, style, cases, selectedCaseId, selectionMode, selectedIds,
-  lastCallByCase, recallByCase, onSelect, onToggleSelect,
+  index, style, cases, selectedCaseId, recallByCase, onSelect,
 }: RowComponentProps<RowData>) {
   const c = cases[index]
   const highlight = HIGHLIGHT_STATUSES.includes(c.status as never)
   const selected = c.id === selectedCaseId
-  const checked = selectedIds.has(c.id)
-  const last = lastCallByCase.get(c.id)
   const rc = recallByCase.get(c.id)
   return (
-    <div
+    <button
+      type="button"
       style={style}
+      onClick={() => onSelect(c.id)}
+      title={`${c.name}\n${c.address ?? ''}\n${displayStatus(c.status)}${c.sales_rep ? ' / ' + c.sales_rep : ''}`}
       className={cn(
-        'flex items-stretch border-b transition-colors',
+        'flex w-full items-center gap-1 border-b px-2 text-left text-xs transition-colors',
         selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/40'
           : highlight ? 'bg-green-50 dark:bg-green-500/10' : 'hover:bg-accent',
       )}
     >
-      {selectionMode && (
-        <label className="flex shrink-0 items-center px-2" onClick={(e) => e.stopPropagation()}>
-          <input type="checkbox" className="h-4 w-4" checked={checked} onChange={() => onToggleSelect(c.id)} />
-        </label>
-      )}
-      <button onClick={() => onSelect(c.id)} className="min-w-0 flex-1 overflow-hidden px-2.5 py-2 text-left">
-        <div className="flex items-center justify-between gap-1.5">
-          <div className="flex min-w-0 items-center gap-1">
-            {c.priority && (
-              <span className={cn('flex shrink-0 items-center gap-0.5 rounded-sm border px-1 text-[9px]', PRIORITY_COLORS[c.priority])}>
-                <Flag className="h-2.5 w-2.5" />{c.priority}
-              </span>
-            )}
-            <span className="truncate text-sm font-semibold">{c.name}</span>
-          </div>
-          <span className={cn('shrink-0 rounded-sm px-1.5 py-0.5 text-[9px] font-medium', statusColor(displayStatus(c.status)))}>
-            {displayStatus(c.status)}
-          </span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted-foreground">
-          {c.industry && <span className="rounded-sm bg-muted px-1">{c.industry}</span>}
-          {c.phone1 && <span>{c.phone1}</span>}
-          {c.sales_rep && <span className="ml-auto shrink-0 text-primary">{c.sales_rep}</span>}
-        </div>
-        <div className="truncate text-2xs text-muted-foreground">{c.address}</div>
-        <div className="mt-0.5 flex flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-[9px]">
-          {last && <span className="text-muted-foreground">架電: {moment(last).format('MM/DD')}</span>}
-          {rc && (
-            <span className={cn(rc.overdue ? 'font-bold text-red-600' : rc.today ? 'font-bold text-amber-700' : 'text-muted-foreground')}>
-              次回: {moment(rc.next).format('MM/DD HH:mm')}
-            </span>
-          )}
-          {(c.tags ?? []).slice(0, 3).map((t) => (
-            <span key={t} className="rounded-sm bg-sky-50 px-1 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">#{t}</span>
-          ))}
-        </div>
-      </button>
-    </div>
+      {/* 業種 */}
+      <span className="w-12 shrink-0 truncate text-[10px] text-muted-foreground">{c.industry || '—'}</span>
+      {/* 店名（優先度色のドット＋期限切れ再コール印） */}
+      <span className="flex w-[150px] shrink-0 items-center gap-1 overflow-hidden">
+        {c.priority && <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', PRIORITY_COLORS[c.priority])} />}
+        {rc?.overdue && <span className="shrink-0 text-[9px] font-bold text-red-600">●</span>}
+        <span className="truncate font-medium">{c.name}</span>
+      </span>
+      {/* 住所 */}
+      <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{c.address || '—'}</span>
+      {/* ステータス（薄色バッジ） */}
+      <span className={cn('shrink-0 rounded-sm px-1 py-0.5 text-[9px] font-medium', statusColor(displayStatus(c.status)))}>
+        {displayStatus(c.status)}
+      </span>
+    </button>
   )
 }
 
@@ -128,7 +104,7 @@ const SORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'priority', label: '優先度が高い順' },
 ]
 
-const ROW_HEIGHT = 88
+const ROW_HEIGHT = 34
 
 export default function CaseList(props: Props) {
   const {
@@ -187,7 +163,15 @@ export default function CaseList(props: Props) {
         </label>
       </div>
 
-      {/* 一覧（仮想スクロール / react-window v2） */}
+      {/* テーブル見出し */}
+      <div className="flex items-center gap-1 border-b bg-muted/50 px-2 py-1 text-[10px] font-semibold text-muted-foreground">
+        <span className="w-12 shrink-0">業種</span>
+        <span className="w-[150px] shrink-0">店名</span>
+        <span className="min-w-0 flex-1">住所</span>
+        <span className="shrink-0">状態</span>
+      </div>
+
+      {/* 一覧（仮想スクロール / react-window v2・表形式） */}
       <div className="min-h-0 flex-1">
         {cases.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground">該当する案件がありません</div>
@@ -196,7 +180,7 @@ export default function CaseList(props: Props) {
             rowComponent={CaseRow}
             rowCount={cases.length}
             rowHeight={ROW_HEIGHT}
-            overscanCount={8}
+            overscanCount={12}
             style={{ height: '100%' }}
             rowProps={{
               cases, selectedCaseId, selectionMode, selectedIds,

@@ -54,7 +54,7 @@ export const STATUSES = [
   '再コール',
   '見込み',
   '激アツ',
-  '特別保存',
+  '特別保有',
   '仮アポ',
   '仮アポ流れ',
   'アポ',
@@ -97,7 +97,7 @@ export const STATUS_COLORS: Record<string, string> = {
   // 統一ステータス
   新規: 'bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-200',
   激アツ: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300',
-  特別保存: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300',
+  特別保有: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300',
   仮アポ: 'bg-lime-100 text-lime-800 dark:bg-lime-500/20 dark:text-lime-300',
   仮アポ流れ: 'bg-stone-200 text-stone-700 dark:bg-stone-700/60 dark:text-stone-200',
   アポ: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',
