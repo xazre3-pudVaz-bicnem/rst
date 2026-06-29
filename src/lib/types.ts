@@ -273,6 +273,12 @@ export interface LeadCandidate {
   official_url?: string | null
   anthropic_judgement?: unknown
   newness_type?: string | null
+  extracted_prefecture?: string | null
+  extracted_city?: string | null
+  recommended_status?: string | null
+  rule_filter_result?: string | null
+  skipped_reason?: string | null
+  api_run_id?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -373,8 +379,11 @@ export interface LeadImportSettings {
   iwRequirePhone: boolean      // 電話番号必須（初期OFF）
   iwPlacesRequired: boolean    // Google Places照合必須（初期OFF）
   iwAnthropic: boolean         // Anthropic判定（初期ON）
-  iwMaxQueriesPerDay: number   // 1日最大検索クエリ数（既定30）
+  iwMaxQueriesPerDay: number   // 1日最大検索クエリ数（既定80）
   iwPerQuery: number           // 1クエリ取得件数（既定10）
+  iwMaxRunsPerDay: number      // 1日最大実行回数（既定4）
+  iwPerRun: number             // 1回最大クエリ数（既定20）
+  iwAnthropicDailyCap: number  // 1日最大AI判定件数（既定100）
 }
 
 /** Auto search settings stored in localStorage */

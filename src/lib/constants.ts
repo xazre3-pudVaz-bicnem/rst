@@ -332,8 +332,11 @@ export const DEFAULT_LEAD_SETTINGS = {
   iwRequirePhone: false,
   iwPlacesRequired: false,
   iwAnthropic: true,
-  iwMaxQueriesPerDay: 30,
+  iwMaxQueriesPerDay: 80,
   iwPerQuery: 10,
+  iwMaxRunsPerDay: 4,
+  iwPerRun: 20,
+  iwAnthropicDailyCap: 100,
   areas: [
     '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),

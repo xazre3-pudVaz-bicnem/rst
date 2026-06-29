@@ -29,6 +29,12 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS reservation_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS official_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS anthropic_judgement JSONB;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS newness_type TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_prefecture TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_city TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS recommended_status TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS rule_filter_result TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS skipped_reason TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS api_run_id UUID;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS instagram_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_shop_name TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_area TEXT;
@@ -67,7 +73,7 @@ ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS rst_all_authenticated ON app_config;
 CREATE POLICY rst_all_authenticated ON app_config FOR ALL TO authenticated USING (true) WITH CHECK (true);
 INSERT INTO app_config (key, value) VALUES
-  ('instagram_web_auto', '{"iwEnabled": true, "iwAutoImport": false, "iwRequirePhone": false, "iwPlacesRequired": false, "iwAnthropic": true, "iwMaxQueriesPerDay": 30, "iwPerQuery": 10}'::jsonb)
+  ('instagram_web_auto', '{"iwEnabled": true, "iwAutoImport": false, "iwRequirePhone": false, "iwPlacesRequired": false, "iwAnthropic": true, "iwMaxQueriesPerDay": 80, "iwPerQuery": 10, "iwMaxRunsPerDay": 4, "iwPerRun": 20, "iwAnthropicDailyCap": 100}'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 `
 
@@ -100,7 +106,7 @@ async function main() {
       process.exit(1)
     }
     // app_config 既定を保険でupsert（カラムが揃っている前提）
-    await admin.from('app_config').upsert({ key: 'instagram_web_auto', value: { iwEnabled: true, iwAutoImport: false, iwRequirePhone: false, iwPlacesRequired: false, iwAnthropic: true, iwMaxQueriesPerDay: 30, iwPerQuery: 10 }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
+    await admin.from('app_config').upsert({ key: 'instagram_web_auto', value: { iwEnabled: true, iwAutoImport: false, iwRequirePhone: false, iwPlacesRequired: false, iwAnthropic: true, iwMaxQueriesPerDay: 80, iwPerQuery: 10, iwMaxRunsPerDay: 4, iwPerRun: 20, iwAnthropicDailyCap: 100 }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
     console.log('✅ 既存スキーマを確認（DDLが必要な場合は SUPABASE_DB_URL を設定して再実行）')
   }
   console.log('次: npm run build → npm run check:instagram-web-api → RST「Instagram Web検索」タブ')

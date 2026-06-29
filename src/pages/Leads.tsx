@@ -203,9 +203,11 @@ export default function Leads() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           settings: {
+            // 全国検索: 地域・業種はクエリに入れない（areaPreset/industriesは送らない）
             iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
             iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
-            areaPreset: settings.areaPreset, industries: parseList(settings.industries), dailyCap: settings.dailyCap,
+            iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
+            dailyCap: settings.dailyCap,
           },
         }),
       })
@@ -432,7 +434,8 @@ export default function Leads() {
         iwEnabled: settings.iwEnabled, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
         iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
         iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
-        areaPreset: settings.areaPreset, industries: parseList(settings.industries), dailyCap: settings.dailyCap,
+        iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
+        dailyCap: settings.dailyCap,
       })
       toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram Web に反映）')
     } catch (e) {
@@ -786,20 +789,26 @@ export default function Leads() {
                 </div>
               </div>
 
-              {/* Instagram Web検索 設定 */}
+              {/* Instagram Web検索 設定（全国検索・地域/業種をクエリに入れない） */}
               <div className="mt-1 border-t pt-2 lg:col-span-4">
-                <div className="mb-1 text-xs font-bold text-fuchsia-600 dark:text-fuchsia-300">Instagram Web検索（Meta API不使用・Web検索＋Anthropic）</div>
+                <div className="mb-1 flex items-center gap-2 text-xs font-bold text-fuchsia-600 dark:text-fuchsia-300">
+                  Instagram Web検索（全国・新店ハッシュタグのみ）
+                  <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-[9px] text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">全国検索モード ON</span>
+                </div>
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwEnabled} onChange={(e) => saveSettings({ ...settings, iwEnabled: e.target.checked })} />Instagram Web検索を有効化</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
-                  <div className="space-y-1"><Label>1日最大検索クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 30) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大実行回数</Label><Input type="number" min={1} value={settings.iwMaxRunsPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxRunsPerDay: Math.max(1, Number(e.target.value) || 4) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1回最大クエリ数</Label><Input type="number" min={1} value={settings.iwPerRun} onChange={(e) => saveSettings({ ...settings, iwPerRun: Math.max(1, Number(e.target.value) || 20) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 80) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.iwPerQuery} onChange={(e) => saveSettings({ ...settings, iwPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 10)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大AI判定件数</Label><Input type="number" min={0} value={settings.iwAnthropicDailyCap} onChange={(e) => saveSettings({ ...settings, iwAnthropicDailyCap: Math.max(0, Number(e.target.value) || 100) })} className="h-8" /></div>
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
-                  ※エリアは上のエリアプリセット（一都三県＝全市区町村）、業種は上の対象業種を使用。site:instagram.com の公開検索結果のみ。Instagramログイン/スクレイピングはしません。保存はURL/タイトル/スニペット/抽出/判定理由のみ。自動実行は毎朝6:30 Cron（/api/cron/instagram-web-leads）。
+                  ※全国検索。検索クエリに<b>地域名・業種名を入れません</b>（新店系ハッシュタグ/語のみ）。地域・業種は title/snippet/url から後段で抽出（取れなければ「不明」）。Serper取得後にルールで粗選別し、新店っぽい候補のみAI判定（1日{settings.iwAnthropicDailyCap}件まで）。同一URL重複・同一クエリ7日はスキップ。HOTは初期OFFでHOLD中心に保存→画面で手動投入。自動実行は毎朝6:30 Cron。
                 </div>
               </div>
             </div>
@@ -1177,25 +1186,52 @@ export default function Leads() {
                 {iwDiag.error && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">{iwDiag.error}</span>}
               </div>
             )}
-            <div className="mt-1 text-[10px] text-muted-foreground">site:instagram.com の公開検索結果のみ。HOT自動投入は初期OFF（このタブで確認して手動投入）。同一URL/同一クエリ(7日)スキップ。</div>
+            <div className="mt-1 text-[10px] text-muted-foreground">全国・新店ハッシュタグのみ（地域/業種をクエリに入れない）。ルール粗選別→新店候補のみAI判定。HOTは初期OFFでHOLD中心保存→手動投入。同一URL重複・同一クエリ7日はスキップ。</div>
             {iwResult && (
               <div className="mt-2 space-y-1">
-                {iwResult.error ? <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{iwResult.error}</div> : (
+                {iwResult.error ? <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{iwResult.error}</div>
+                : iwResult.skipped ? <div className="rounded bg-amber-50 p-2 text-[11px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">{iwResult.reason}</div> : (
                   <>
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-muted px-1.5 py-0.5">クエリ {iwResult.queries ?? 0}</span>
-                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">取得 {iwResult.results ?? 0}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5">IG候補 {iwResult.igCandidates ?? 0}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5">判定 {iwResult.judged ?? 0}</span>
-                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話 {iwResult.phoneYes ?? 0}</span>
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">Serper取得 {iwResult.results ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">IG URL {iwResult.igUrls ?? 0}</span>
+                      <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">ルール通過 {iwResult.rulePassed ?? 0}</span>
+                      <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">AI判定 {iwResult.judged ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">ルール判定 {iwResult.heuristicUsed ?? 0}</span>
                       <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {iwResult.hot ?? 0}</span>
                       <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {iwResult.hold ?? 0}</span>
                       <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {iwResult.excluded ?? 0}</span>
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {iwResult.imported ?? 0}</span>
                       <span className="rounded bg-muted px-1.5 py-0.5">重複skip {iwResult.dup ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">事前除外 {iwResult.preExcluded ?? 0}</span>
                     </div>
-                    {Array.isArray(iwResult.debug?.queries) && (
-                      <details className="rounded border bg-muted/30 p-2 text-[10px]"><summary className="cursor-pointer text-primary">実行クエリ（{iwResult.debug.queries.length}・総数{iwResult.debug.totalQueries ?? '-'}・7日skip{iwResult.debug.recentSkipped ?? 0}）</summary><div className="mt-1 max-h-32 overflow-y-auto">{iwResult.debug.queries.map((q: string, i: number) => <div key={i} className="truncate">{i + 1}. {q}</div>)}</div></details>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">地域抽出 {iwResult.areaKnown ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">地域不明 {iwResult.areaUnknown ?? 0}</span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">業種抽出 {iwResult.industryKnown ?? 0}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5">業種不明 {iwResult.industryUnknown ?? 0}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日実行 {iwResult.debug?.runsToday ?? '-'}回</span>
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日クエリ {iwResult.debug?.queriesToday ?? 0}</span>
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">AI残枠 {iwResult.debug?.anthropicBudget ?? '-'}</span>
+                      <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">推定Serper ¥{iwResult.debug?.estSerperCost ?? 0}</span>
+                      <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">推定AI ¥{iwResult.debug?.estAnthropicCost ?? 0}</span>
+                      <span className="rounded bg-rose-200 px-1.5 py-0.5 font-bold text-rose-800 dark:bg-rose-500/30 dark:text-rose-200">推定合計 ¥{iwResult.debug?.estTotalCost ?? 0}</span>
+                    </div>
+                    {Array.isArray(iwResult.debug?.queryResults) && (
+                      <details className="rounded border bg-muted/30 p-2 text-[10px]" open>
+                        <summary className="cursor-pointer text-primary">実行クエリ別（{iwResult.debug.queryResults.length}）※地域名・業種名は入っていません</summary>
+                        <div className="mt-1 max-h-48 overflow-y-auto">
+                          {iwResult.debug.queryResults.map((q: any, i: number) => (
+                            <div key={i} className="border-b py-0.5">
+                              <div className="truncate font-mono">{q.query}</div>
+                              <div className="text-muted-foreground">取得{q.results}/IG{q.igUrls}/ルール通過{q.rulePassed}/AI{q.judged}/ルール{q.heuristic} ・ HOT{q.hot}/HOLD{q.hold}/除外{q.excluded} ・ 地域{q.areaKnown}(不明{q.areaUnknown})/業種{q.industryKnown}(不明{q.industryUnknown}){q.error ? ` ・ ${q.error}` : ''}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
                     )}
                   </>
                 )}
@@ -1405,7 +1441,10 @@ export default function Leads() {
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
                         <div className="text-[9px] text-muted-foreground">{c.extracted_industry || '—'}{c.newness_type ? ` / ${c.newness_type}` : ''}</div>
                       </td>
-                      <td className="p-2">{c.extracted_area || '—'}</td>
+                      <td className="p-2">
+                        <div>{c.extracted_area || c.extracted_prefecture || <span className="text-amber-600">不明</span>}</div>
+                        {(c.extracted_prefecture || c.extracted_city) && <div className="text-[9px] text-muted-foreground">{c.extracted_prefecture || ''}{c.extracted_city || ''}</div>}
+                      </td>
                       <td className="p-2">{c.phone_number ? <span className="inline-flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-muted-foreground" />{c.phone_number}</span> : <span className="text-red-500">なし</span>}</td>
                       <td className="max-w-[120px] p-2">
                         <div className="flex flex-col gap-0.5">

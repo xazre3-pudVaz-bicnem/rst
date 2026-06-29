@@ -49,13 +49,15 @@ export default async function handler(req: any, res: any) {
       const { data: cand } = await admin.from('lead_candidates').select('id,search_title,search_snippet,instagram_url,extracted_area').eq('id', body.rejudge.id).maybeSingle()
       if (!cand) return res.status(404).json({ ok: false, error: '候補が見つかりません' })
       const r = { title: cand.search_title || '', snippet: cand.search_snippet || '', url: cand.instagram_url || '' }
-      const j = (await anthropicJudge(r, cand.extracted_area || '')) || heuristicJudge(r, cand.extracted_area || '')
+      const j = (await anthropicJudge(r)) || heuristicJudge(r)
       const temperature = j.recommended_status || 'HOLD'
+      const area = [j.prefecture, j.city].filter(Boolean).join('') || null
       await admin.from('lead_candidates').update({
-        lead_temperature: temperature, anthropic_judgement: j, newness_type: j.newness_type || null,
+        lead_temperature: temperature, recommended_status: j.recommended_status || temperature, anthropic_judgement: j, newness_type: j.newness_type || null,
         match_confidence: j.confidence_score ?? null, should_exclude_from_call_list: temperature === 'EXCLUDED',
-        ai_comment: j.exclusion_reason ? `除外: ${j.exclusion_reason}` : `再判定(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / ${j.evidence_text || ''}`,
-        instagram_newness_reason: j.evidence_text || null, extracted_shop_name: j.shop_name || cand.extracted_shop_name || null,
+        ai_comment: j.exclusion_reason ? `除外: ${j.exclusion_reason}` : `再判定(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / ${j.evidence_text || ''}`,
+        instagram_newness_reason: j.evidence_text || null, extracted_shop_name: j.shop_name || null,
+        extracted_area: area, extracted_prefecture: j.prefecture || null, extracted_city: j.city || null,
       }).eq('id', body.rejudge.id)
       return res.status(200).json({ ok: true, rejudged: true, id: body.rejudge.id, temperature, judgement: j })
     }
