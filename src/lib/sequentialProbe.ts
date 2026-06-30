@@ -79,25 +79,91 @@ export interface JalanSpot { name: string; address: string; phone: string; categ
 export function parseJalanSpot(html: string, mojibake: boolean): JalanSpot {
   const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '' }
   if (mojibake) return { ...empty, invalidReason: '文字化けで読めない' }
-  // 「周辺のおすすめ」「周辺観光スポット」「クチコミ一覧」以降は切り捨て（おすすめ別店舗の誤抽出防止）
-  const cut = html.search(/周辺の?(おすすめ|観光|スポット|ランチ|ホテル|宿)|このスポットの.*クチコミ一覧|近くの/)
-  const main = cut > 500 ? html.slice(0, cut) : html
-  const body = stripTags(main)
-  if (INVALID_RE.test(stripTags(html))) return { ...empty, invalidReason: '不存在/エラーページ' }
-  // 名称: og:title優先 → h1（「| じゃらん」等を除去）
-  const og = main.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || ''
-  const h1 = main.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || ''
-  let name = stripTags(og || h1).replace(/[|｜].*$/, '').replace(/(の(観光情報|詳細|クチコミ|地図).*)$/,'').trim().slice(0, 50)
-  // 所在地: 「所在地」「住所」ラベル → 緩い住所抽出
-  let address = (body.match(/(?:所在地|住所)[:：\s]*([〒\d都道府県][^\n。｜|]{4,50})/)?.[1] || '').trim()
+  if (INVALID_RE.test(stripTags(html))) return { ...empty, invalidReason: 'ページ未存在/エラーページ' }
+  const body = stripTags(html)
+
+  // ===== 基本情報テーブル（th/td・dt/dd）を最優先で読む（所在地/お問い合わせ等はスポット固有なので全文走査でよい） =====
+  const rows: { label: string; htmlVal: string; textVal: string }[] = []
+  for (const m of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const th = m[1].match(/<th[^>]*>([\s\S]*?)<\/th>/i)
+    const td = m[1].match(/<td[^>]*>([\s\S]*?)<\/td>/i)
+    if (th && td) rows.push({ label: stripTags(th[1]), htmlVal: td[1], textVal: stripTags(td[1].replace(/<br\s*\/?>/gi, ' ')) })
+  }
+  for (const m of html.matchAll(/<dt[^>]*>([\s\S]*?)<\/dt>\s*(?:<dd[^>]*>([\s\S]*?)<\/dd>)/gi)) {
+    rows.push({ label: stripTags(m[1]), htmlVal: m[2] || '', textVal: stripTags((m[2] || '').replace(/<br\s*\/?>/gi, ' ')) })
+  }
+  const hasBasicTable = /class=["'][^"']*basicInfo/i.test(html) || rows.some((r) => /名称|所在地|住所|お問い?合わせ|電話|TEL/i.test(r.label))
+  const rowVal = (re: RegExp) => rows.find((r) => re.test(r.label))
+  const nameRow = rowVal(/^名称|施設名|スポット名/)
+  const addrRow = rowVal(/所在地|住所/)
+  const telRow = rowVal(/お問い?合わせ|電話|TEL|問合/i)
+  const catRow = rowVal(/ジャンル|カテゴリ|種別|分類/)
+
+  // 名称: 【施設名】表記 → 基本情報「名称」→ og:title → h1（「アクセス・営業時間・料金情報」「｜じゃらん」等の付帯語を除去）
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || ''
+  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || ''
+  const rawName = nameRow?.textVal || stripTags(og || h1)
+  const bracket = rawName.match(/[【「](.+?)[】」]/)
+  let name = (bracket ? bracket[1] : rawName)
+    .replace(/[|｜].*$/, '')
+    .replace(/(の)?(アクセス|営業時間|料金|クチコミ|観光情報|詳細|地図|基本情報|周辺).*$/, '')
+    .replace(/\s*[-–|｜]\s*じゃらん.*$/i, '').trim().slice(0, 50)
+
+  // 住所: 基本情報「所在地」を最優先 → 本文の所在地ラベル → 緩い抽出
+  let address = ''
+  if (addrRow) {
+    const t = addrRow.textVal.replace(/地図.*$/,'').replace(/MAP.*$/i,'').trim()
+    const m = t.match(/〒?\s*\d{0,3}-?\d{0,4}\s*([^\n]{4,60})/)
+    address = (m ? m[0] : t).replace(/\s+/g, '').slice(0, 70)
+  }
+  if (!address) address = (body.match(/(?:所在地|住所)[:：\s]*([〒\d都道府県][^\n。｜|]{4,50})/)?.[1] || '').trim()
   if (!address) address = extractAddressLoose(body).address
-  const phone = extractJpPhone(body)
-  const category = (body.match(/(?:ジャンル|カテゴリ|種別)[:：\s]*([^\s|｜/]{2,16})/)?.[1] || '')
-  const official = (main.match(/href=["'](https?:\/\/(?!www\.jalan\.net)[^"']+)["'][^>]*>\s*(?:公式|ホームページ|HP|Webサイト)/i)?.[1] || '')
-  const mapUrl = (main.match(/href=["'](https?:\/\/(?:maps\.google|www\.google\.[^/]*\/maps)[^"']+)["']/i)?.[1] || '')
+
+  // 電話: 基本情報「お問い合わせ/TEL」を最優先（じゃらん予約ダイヤルは除外）
+  let phone = ''
+  if (telRow) phone = extractJpPhone(telRow.textVal)
+  if (!phone) phone = extractJpPhone(body)
+  const category = catRow?.textVal?.slice(0, 16) || (body.match(/(?:ジャンル|カテゴリ|種別)[:：\s]*([^\s|｜/]{2,16})/)?.[1] || '')
+  const official = html.match(/href=["'](https?:\/\/(?!www\.jalan\.net)[^"']+)["'][^>]*>\s*(?:公式|ホームページ|HP|Webサイト)/i)?.[1] || (addrRow ? (addrRow.htmlVal.match(/href=["'](https?:\/\/(?!www\.jalan\.net)[^"']+)["']/i)?.[1] || '') : '')
+  const mapUrl = html.match(/href=["'](https?:\/\/(?:maps\.google|www\.google\.[^/]*\/maps|maps\.app\.goo\.gl)[^"']+)["']/i)?.[1] || ''
   const reviews = (body.match(/(?:クチコミ|口コミ)\s*([\d,]+)\s*件/)?.[1] || '')
-  const valid = !!name && !!address
-  return { name, address, phone, category, official, mapUrl, reviews, valid, invalidReason: valid ? '' : (!name ? '名称が取れない' : '所在地が取れない') }
+
+  // valid: 名称＋住所が必須（電話は任意）。基本情報テーブルが無く名称も無ければ未存在扱い
+  let invalidReason = ''
+  if (!hasBasicTable && !name && !address) invalidReason = '基本情報テーブルなし'
+  else if (!name) invalidReason = '名称なし'
+  else if (!address) invalidReason = '住所なし'
+  return { name, address, phone, category, official, mapUrl, reviews, valid: !invalidReason, invalidReason }
+}
+
+export interface ProbeTestItem { url: string; ok: boolean; status: number; charset: string; mojibake: boolean; valid: boolean; name: string; address: string; phone: string; category: string; parser_used: string; invalidReason: string }
+/** 既知URL（または指定ID）でじゃらん専用パーサーを単体テスト（DB保存なし） */
+export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: boolean; items: ProbeTestItem[]; summary: { addressOk: boolean; phoneOk: boolean; parserOk: boolean } }> {
+  const template: string = site.url_template || ''
+  const padding = Number(site.id_padding) || 0
+  const testIds = (ids && ids.length ? ids : [231369, 231370, 231375])
+  const items: ProbeTestItem[] = []
+  for (const id of testIds) {
+    const url = template.includes('{ID}') ? template.replace('{ID}', pad(id, padding)) : `https://www.jalan.net/kankou/spt_guide${pad(id, padding || 12)}/`
+    const r = await fetchDecoded(url)
+    await new Promise((rs) => setTimeout(rs, 400))
+    const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
+    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : null
+    const name = spot ? spot.name : ''
+    const address = spot ? spot.address : extractAddressLoose(stripTags(r.html)).address
+    const phone = spot ? spot.phone : extractJpPhone(stripTags(r.html))
+    let invalidReason = ''
+    if (!r.ok || !r.html) invalidReason = r.timedOut ? 'fetch timeout' : `取得失敗(HTTP ${r.status})`
+    else if (r.mojibake) invalidReason = '文字化け'
+    else if (spot) invalidReason = spot.valid ? '' : spot.invalidReason
+    items.push({ url, ok: r.ok, status: r.status, charset: r.charset, mojibake: r.mojibake, valid: !invalidReason, name, address, phone, category: spot?.category || '', parser_used: isJalan ? 'jalan_spot_detail' : 'generic_detail_page', invalidReason })
+  }
+  // 既知の有効URL（先頭2件＝231369/231370想定）で住所・電話が取れたか
+  const known = items.slice(0, 2)
+  const addressOk = known.some((i) => !!i.address)
+  const phoneOk = known.some((i) => !!i.phone)
+  const parserOk = known.some((i) => i.valid)
+  return { ok: true, items, summary: { addressOk, phoneOk, parserOk } }
 }
 
 function pad(id: number, padding: number): string { const s = String(id); return padding > 0 ? s.padStart(padding, '0') : s }
@@ -108,7 +174,7 @@ export interface ProbeResult {
   hot: number; hotA: number; hotB: number; hold: number; excluded: number; imported: number
   timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; consecutiveNotFound: number
   startId: number; fromId: number; toId: number; nextId: number; lastFoundId: number | null; lastValidId: number | null
-  backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string
+  backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
 }
 
 /** 1サイトの連番探索（前回の続きから＋戻り確認）。DB保存込み。 */
@@ -121,7 +187,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     ok: true, siteName: site.name, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0,
     timeouts: 0, dupSkip: 0, mojibake: 0, fetchFail: 0, consecutiveNotFound: 0,
     startId: 0, fromId: 0, toId: 0, nextId: 0, lastFoundId: site.last_found_id ?? null, lastValidId: site.last_valid_id ?? null,
-    backfillFrom: null, backfillTo: null, items: [], reason: '',
+    backfillFrom: null, backfillTo: null, items: [], reason: '', invalidTopReason: '',
   }
   const template: string = site.url_template || ''
   if (!template.includes('{ID}')) { res.ok = false; res.reason = 'url_template に {ID} がありません'; return res }
@@ -280,7 +346,11 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   const lastChecked = res.toId || (startId + forward - 1)
   const nextId = lastChecked + 1
   res.nextId = nextId; res.consecutiveNotFound = consecutiveNotFound
-  if (!res.reason) res.reason = res.valid > 0 ? `OK（valid ${res.valid}/probed ${res.probed}）` : `valid 0（probed ${res.probed}）`
+  // invalid の主理由（最多）
+  const reasonCounts: Record<string, number> = {}
+  for (const it of res.items) { if (!it.valid && it.invalidReason) reasonCounts[it.invalidReason] = (reasonCounts[it.invalidReason] || 0) + 1 }
+  res.invalidTopReason = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
+  if (!res.reason) res.reason = res.valid > 0 ? `OK（valid ${res.valid}/probed ${res.probed}）` : `valid 0（probed ${res.probed}・${res.invalidTopReason || 'ページ未存在'}）`
   await admin.from('source_sites').update({
     current_probe_id: nextId, last_checked_id: lastChecked, last_found_id: res.lastFoundId ?? site.last_found_id ?? null,
     last_valid_id: res.lastValidId ?? site.last_valid_id ?? null, last_invalid_id: res.invalid > 0 ? res.toId : (site.last_invalid_id ?? null),

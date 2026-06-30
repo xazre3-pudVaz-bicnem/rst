@@ -77,6 +77,7 @@ export default function Leads() {
   const [mainView, setMainView] = useState<'list' | 'get' | 'manage' | 'probe' | 'errors' | 'settings'>('list')
   const [devMode, setDevMode] = useState(false)
   const [drawerCand, setDrawerCand] = useState<LeadCandidate | null>(null)
+  const [probeTests, setProbeTests] = useState<Record<string, any>>({})
   const [probeResult, setProbeResult] = useState<any>(null)
   const [probeSites, setProbeSites] = useState<any[]>([])
   const [probing, setProbing] = useState(false)
@@ -232,6 +233,13 @@ export default function Leads() {
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
+  async function testProbe(id: string) {
+    setProbing(true)
+    try { const json = await regionalApi({ probeTest: { id } })
+      if (json?.ok) { setProbeTests((p) => ({ ...p, [id]: json })); toast[json.summary?.parserOk ? 'success' : 'error'](`parserテスト: ${json.summary?.parserOk ? 'OK' : 'NG'} / 住所${json.summary?.addressOk ? 'OK' : 'NG'} / 電話${json.summary?.phoneOk ? 'OK' : 'NG'}`) }
+      else toast.error(json?.error || 'テストに失敗しました')
+    } finally { setProbing(false) }
+  }
 
   // 地域メディア候補の再補完（AI再判定とは別）
   async function reenrichRegional(c: LeadCandidate) {
@@ -1822,6 +1830,8 @@ export default function Leads() {
                   <span className="rounded bg-muted px-1.5 py-0.5">探索URL {probeResult.probed ?? 0}</span>
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">有効 {probeResult.valid ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">無効 {probeResult.invalid ?? 0}</span>
+                  {probeResult.invalidTopReason && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">主理由: {probeResult.invalidTopReason}</span>}
+                  {probeResult.lastFoundId != null && <span className="rounded bg-muted px-1.5 py-0.5">最後にvalid ID {probeResult.lastFoundId}</span>}
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話 {probeResult.phoneYes ?? '-'}</span>
                   <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {probeResult.hotA ?? 0}</span>
                   <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {probeResult.hotB ?? 0}</span>
@@ -1848,7 +1858,24 @@ export default function Leads() {
                       次回開始ID <b>{st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ 最後に見つかったID {st.last_found_id ?? '-'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
                     </div>
                     {st.probe_result_summary && <div className="text-muted-foreground">最終結果: {st.probe_result_summary}</div>}
+                    {/* parser テスト結果（既知URL） */}
+                    {probeTests[st.id] && (
+                      <div className="mt-1 rounded border bg-muted/40 p-1.5">
+                        <div className="flex flex-wrap gap-1.5">
+                          <span className={cn('rounded px-1 text-[9px] font-bold', probeTests[st.id].summary?.parserOk ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300')}>parserテスト {probeTests[st.id].summary?.parserOk ? 'OK' : 'NG'}</span>
+                          <span className={cn('rounded px-1 text-[9px]', probeTests[st.id].summary?.addressOk ? 'text-green-700 dark:text-green-300' : 'text-red-600')}>既知URL住所取得 {probeTests[st.id].summary?.addressOk ? 'OK' : 'NG'}</span>
+                          <span className={cn('rounded px-1 text-[9px]', probeTests[st.id].summary?.phoneOk ? 'text-green-700 dark:text-green-300' : 'text-red-600')}>電話取得 {probeTests[st.id].summary?.phoneOk ? 'OK' : 'NG'}</span>
+                        </div>
+                        {(probeTests[st.id].items || []).map((it: any, i: number) => (
+                          <div key={i} className="mt-0.5 border-t pt-0.5 text-[9px] text-muted-foreground">
+                            <span className={cn('font-mono', it.valid ? 'text-green-600' : 'text-zinc-500')}>{it.valid ? 'valid' : 'invalid'}</span> HTTP{it.status} charset:{it.charset || '-'}{it.mojibake ? ' 文字化けあり' : ''} ・ <a href={it.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{it.url.replace('https://www.jalan.net', '')}</a>
+                            <div>名称: {it.name || '—'} / 住所: {it.address || '—'} / 電話: {it.phone || '—'} / カテゴリ: {it.category || '—'}{it.invalidReason ? ` / 理由: ${it.invalidReason}` : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <button onClick={() => testProbe(st.id)} disabled={probing} className="rounded border border-emerald-500 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-500/10">既知URLでテスト</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5 })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5 })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 0, backfillCount: 20, force: true, startId: (st.last_checked_id ?? st.current_probe_id) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回範囲を再確認</button>

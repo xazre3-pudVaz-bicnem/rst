@@ -8,7 +8,7 @@ import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
-import { runAllSequentialProbes, runSequentialProbe } from '../../../src/lib/sequentialProbe.js'
+import { runAllSequentialProbes, runSequentialProbe, testProbeSite } from '../../../src/lib/sequentialProbe.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -121,6 +121,14 @@ export default async function handler(req: any, res: any) {
     if (body.updateProbeSite.is_active != null) u.is_active = !!body.updateProbeSite.is_active
     if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', body.updateProbeSite.id) }
     return res.status(200).json({ ok: true })
+  }
+  // 連番探索: 既知URL（または指定ID）でパーサー単体テスト（DB保存なし）
+  if (body?.probeTest?.id) {
+    const { data: site } = await admin.from('source_sites').select('*').eq('id', body.probeTest.id).maybeSingle()
+    if (!site) return res.status(404).json({ ok: false, error: 'サイトが見つかりません' })
+    const ids = Array.isArray(body.probeTest.ids) ? body.probeTest.ids.map((x: any) => Number(x)).filter((x: any) => !Number.isNaN(x)) : undefined
+    const result = await testProbeSite(site, ids)
+    return res.status(200).json(result)
   }
   // 連番探索サイト一覧
   if (body?.listProbeSites) {
