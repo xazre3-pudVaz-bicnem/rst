@@ -10,7 +10,7 @@ import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from '../../../src/lib/targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -237,7 +237,7 @@ export default async function handler(req: any, res: any) {
       const titleText = `${r.name || ''} ${r.source_post_title || ''} ${r.source_article_title || ''} ${String(r.search_snippet || '').slice(0, 150)}`
       let big = detectBigOrPublic(nameAddr).exclude ? detectBigOrPublic(nameAddr) : detectBigOrPublicStrong(`${r.name || ''} ${r.source_post_title || ''} ${r.source_article_title || ''}`)
       if (!big.exclude) { const ms = detectMultiStore(titleText); if (ms.exclude) big = ms }
-      if (!big.exclude && typeof r.user_rating_count === 'number' && r.user_rating_count >= 200) big = { exclude: true, hit: 'reviews', reason: `Google口コミ${r.user_rating_count}件（200+）の確立済み大型のため営業対象外。` }
+      if (!big.exclude && typeof r.user_rating_count === 'number' && r.user_rating_count >= BIG_REVIEW_COUNT) big = { exclude: true, hit: 'reviews', reason: `Google口コミ${r.user_rating_count}件（${BIG_REVIEW_COUNT}+）で既に集客できているため営業対象外。` }
       if (big.exclude) {
         await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, name_unconfirmed_hot: false, ai_comment: big.reason }).eq('id', r.id)
         excluded++
