@@ -334,9 +334,9 @@ export default function Leads() {
     }
     else toast.error(json?.error || '保存に失敗しました')
   }
-  async function testProbe(id: string) {
+  async function testProbe(id: string, ids?: number[]) {
     setProbing(true)
-    try { const json = await regionalApi({ probeTest: { id } })
+    try { const json = await regionalApi({ probeTest: { id, ids } })
       if (json?.ok) { setProbeTests((p) => ({ ...p, [id]: json })); toast[json.summary?.parserOk ? 'success' : 'error'](`parserテスト: ${json.summary?.parserOk ? 'OK' : 'NG'} / 住所${json.summary?.addressOk ? 'OK' : 'NG'} / 電話${json.summary?.phoneOk ? 'OK' : 'NG'}`) }
       else toast.error(json?.error || 'テストに失敗しました')
     } finally { setProbing(false) }
@@ -2072,6 +2072,9 @@ export default function Leads() {
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {probeResult.excluded ?? 0}</span>
                   <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">lead保存 {probeResult.saved ?? 0}</span>
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases新規投入 {probeResult.imported ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">invalid {probeResult.invalid ?? 0}</span>
+                  {Number(probeResult.fetchFail ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">fetch失敗 {probeResult.fetchFail}（要再試行）</span>}
+                  {Number(probeResult.parserFail ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">parser失敗 {probeResult.parserFail}（要確認）</span>}
                   {Number(probeResult.alreadyImported ?? 0) > 0 && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">既存投入済 {probeResult.alreadyImported}</span>}
                   {(Number(probeResult.saveError ?? 0) > 0 || Number(probeResult.importFailed ?? 0) > 0) && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存失敗 {(probeResult.saveError ?? 0)} / 投入失敗 {(probeResult.importFailed ?? 0)}</span>}
                   {Number(probeResult.mojibake ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">文字化け {probeResult.mojibake}</span>}
@@ -2122,6 +2125,7 @@ export default function Leads() {
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       <button onClick={() => testProbe(st.id)} disabled={probing} className="rounded border border-emerald-500 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-500/10">既知URLでテスト</button>
+                      <button onClick={() => { const v = prompt('テストするIDを入力（保存なし・valid/invalid/fetch_failed/parser_failed＋抽出結果を確認）', String(st.last_valid_id != null ? Number(st.last_valid_id) + 1 : st.current_probe_id ?? st.start_probe_id ?? '')); if (v) testProbe(st.id, [Number(v)]) }} disabled={probing} className="rounded border border-emerald-500 px-1.5 py-0.5 text-[9px] text-emerald-700 dark:text-emerald-300">指定IDでテスト</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5, probeMode: 'safe' })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件（有効IDの次から）</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5, probeMode: 'safe' })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 0, probeMode: 'advance', startId: ((st.last_checked_id ?? st.current_probe_id ?? 0) + 1) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回確認の続きから（先行）</button>
@@ -2773,7 +2777,10 @@ export default function Leads() {
                     <div className="rounded border bg-muted/40 p-1.5 text-[10px]">
                       <div className={cn('font-bold', probeFormTest.summary?.parserOk ? 'text-green-600' : 'text-red-600')}>テスト: {probeFormTest.summary?.parserOk ? '保存可能（抽出OK）' : '抽出NG（parser/パターン要確認）'}</div>
                       {(probeFormTest.items || []).map((it: any, i: number) => (
-                        <div key={i} className="mt-0.5 border-t pt-0.5">{it.valid ? 'valid' : 'invalid'} HTTP{it.status} charset:{it.charset || '-'} / 名称:{it.name || '—'} / 住所:{it.address || '—'} / 電話:{it.phone || '—'} / parser:{it.parser_used}{it.invalidReason ? ` / 理由:${it.invalidReason}` : ''}</div>
+                        <div key={i} className="mt-0.5 border-t pt-0.5">
+                          <span className={cn('rounded px-1 font-bold', it.probeStatus === 'valid' ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : it.probeStatus === 'invalid' ? 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300')}>{it.probeStatus || (it.valid ? 'valid' : 'invalid')}</span>
+                          {' '}HTTP{it.status}{it.rendered ? ' [rendered]' : ''} / 名称:{it.name || '—'} / 住所:{it.address || '—'} / 電話:{it.phone || '—'} / parser:{it.parser_used} / 保存可:{it.saveable ? '✓' : '×'}{it.invalidReason ? ` / 理由:${it.invalidReason}` : ''}
+                        </div>
                       ))}
                     </div>
                   )}

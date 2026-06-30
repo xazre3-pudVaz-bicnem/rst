@@ -8,6 +8,7 @@
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
+import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
@@ -197,23 +198,36 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
   const padding = Number(site.id_padding) || 0
   const testIds = (ids && ids.length ? ids : [231369, 231370, 231375])
   const items: ProbeTestItem[] = []
+  const renderMode = String(site.rendering_mode || 'auto')
   for (const id of testIds) {
     const url = template.includes('{ID}') ? template.replace('{ID}', pad(id, padding)) : `https://www.jalan.net/kankou/spt_guide${pad(id, padding || 12)}/`
-    const r = await fetchDecoded(url)
+    let r = await fetchDecoded(url)
     await new Promise((rs) => setTimeout(rs, 400))
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : isTabelog ? parseTabelog(r.html, r.mojibake) : null
-    const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
-    const name = sn0 ? (sn0.valid ? sn0.name : '') : ''
-    const address = spot ? spot.address : extractAddressLoose(stripTags(r.html)).address
-    const phone = spot ? spot.phone : extractJpPhone(stripTags(r.html))
     const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
-    let invalidReason = ''
-    if (!r.ok || !r.html) invalidReason = r.timedOut ? 'fetch timeout' : `取得失敗(HTTP ${r.status})`
-    else if (r.mojibake) invalidReason = '文字化け'
-    else if (spot) invalidReason = spot.valid ? (name ? '' : (sn0?.reason || '店名抽出失敗')) : spot.invalidReason
-    items.push({ url, ok: r.ok, status: r.status, charset: r.charset, mojibake: r.mojibake, valid: !invalidReason, name, address, phone, category: spot?.category || '', parser_used, invalidReason })
+    const classifyTest = (resp: typeof r) => {
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : null
+      const body = resp.html ? stripTags(resp.html) : ''
+      const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
+      const nm = sn0 && sn0.valid ? sn0.name : ''
+      const addr = spot ? spot.address : extractAddressLoose(body).address
+      const ph = (spot ? spot.phone : extractJpPhone(body)) || ''
+      const cat = spot?.category || ''
+      let status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; let reason = ''
+      if (!resp.ok || !resp.html) { status = resp.status === 404 ? 'invalid' : 'fetch_failed'; reason = resp.timedOut ? 'timeout' : `取得失敗(HTTP ${resp.status || 'network'})` }
+      else if (INVALID_RE.test(body) || (spot && /未存在|掲載されていません|閉店しました|見つかりません|存在しません/.test(spot.invalidReason || ''))) { status = 'invalid'; reason = '該当ページなし' }
+      else if (resp.mojibake) { status = 'parser_failed'; reason = '文字化け' }
+      else if (nm || ph || addr || cat) { status = 'valid'; reason = '' }
+      else { status = 'parser_failed'; reason = body.length < 200 ? '本文が薄い（要レンダリング）' : '抽出できず' }
+      return { status, reason, name: nm, address: addr, phone: ph, category: cat }
+    }
+    let c = classifyTest(r); let rendered = false
+    if ((c.status === 'fetch_failed' || c.status === 'parser_failed') && renderMode !== 'static' && renderConfigured()) {
+      const rr = await renderPage(url, { waitMs: isTabelog ? 6000 : 4000 })
+      if (rr.ok && rr.html) { r = { ok: true, status: rr.status || 200, html: rr.html, charset: 'utf-8', decodeMethod: 'render', mojibake: false, mojibakeRate: 0, timedOut: false } as any; c = classifyTest(r); rendered = true }
+    }
+    items.push({ url, ok: r.ok, status: r.status, charset: r.charset, mojibake: r.mojibake, valid: c.status === 'valid', name: c.name, address: c.address, phone: c.phone, category: c.category, parser_used, invalidReason: c.status === 'valid' ? '' : `${c.status}: ${c.reason}`, probeStatus: c.status, rendered, saveable: c.status === 'valid' && (!!c.name || (!!c.phone && !!c.address)) } as any)
   }
   // 既知の有効URL（先頭2件＝231369/231370想定）で住所・電話が取れたか
   const known = items.slice(0, 2)
@@ -230,7 +244,7 @@ export interface ProbeResult {
   probed: number; valid: number; invalid: number; saved: number; saveError: number
   hot: number; hotA: number; hotB: number; hold: number; excluded: number; imported: number
   alreadyImported: number; importFailed: number
-  timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; consecutiveNotFound: number
+  timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; parserFail: number; consecutiveNotFound: number
   startId: number; fromId: number; toId: number; nextId: number; nextIdBasis: string; probeMode: string; lastFoundId: number | null; lastValidId: number | null
   backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
 }
@@ -245,7 +259,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   const probeMode: 'safe' | 'advance' = opts.probeMode || (site.probe_mode === 'advance' ? 'advance' : 'safe')
   const res: ProbeResult = {
     ok: true, siteName: site.name, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0,
-    timeouts: 0, dupSkip: 0, mojibake: 0, fetchFail: 0, consecutiveNotFound: 0,
+    timeouts: 0, dupSkip: 0, mojibake: 0, fetchFail: 0, parserFail: 0, consecutiveNotFound: 0,
     startId: 0, fromId: 0, toId: 0, nextId: 0, nextIdBasis: '', probeMode, lastFoundId: site.last_found_id ?? null, lastValidId: site.last_valid_id ?? null,
     backfillFrom: null, backfillTo: null, items: [], reason: '', invalidTopReason: '',
   }
@@ -268,6 +282,8 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   let importedThisRun = 0
   let importedCount = opts.importedToday
   let totalChecked = 0, totalValid = 0, totalInvalid = 0
+  let firstUnconfirmed: number | null = null  // 最初の fetch_failed/parser_failed ID（次回はここから再開＝確認漏れを防ぐ）
+  const renderMode = String(site.rendering_mode || 'auto')
 
   // 探索対象IDリスト: 前方20 ＋ 戻り確認(last_checked_id-backfill 〜 last_checked_id)
   const ids: number[] = []
@@ -293,64 +309,91 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     // 手動force以外はスキップ判定。validは再取得しない。invalidは再確認するが、
     // 同一IDが same_id_retry_limit 回連続invalidで invalid_retry_interval_hours 以内なら一時スキップ（無限ループ防止）。
     if (!opts.force) {
-      const { data: lg } = await admin.from('sequential_probe_results').select('valid,checked_at').eq('probed_url', url).order('checked_at', { ascending: false }).limit(10)
+      const { data: lg } = await admin.from('sequential_probe_results').select('valid_page,probe_status,invalid_reason,checked_at').eq('probed_url', url).order('checked_at', { ascending: false }).limit(10)
       const last = lg?.[0]
+      const isConfirmedInvalidRow = (x: any) => x && x.valid_page === false && (x.probe_status === 'invalid' || /^invalid/.test(String(x.invalid_reason || '')))
       if (last) {
-        if (last.valid) { res.dupSkip++; continue }            // validは再取得しない
-        const invalidStreak = (() => { let c = 0; for (const x of (lg || [])) { if (!x.valid) c++; else break } return c })()
-        const ageH = (Date.now() - Date.parse(last.checked_at)) / 3600000
-        if (invalidStreak >= sameIdRetryLimit && ageH < invalidRetryIntervalH) { res.dupSkip++; continue }
-        // それ以外（invalid回数が少ない/間隔が空いた）は再確認する＝飛ばさない
+        if (last.valid_page === true) { res.dupSkip++; continue }            // validは再取得しない
+        // 確認済みinvalid（404/不存在）が連続している時だけ一時スキップ。fetch_failed/parser_failed は常に再試行（飛ばさない）。
+        if (isConfirmedInvalidRow(last)) {
+          const invalidStreak = (() => { let c = 0; for (const x of (lg || [])) { if (isConfirmedInvalidRow(x)) c++; else break } return c })()
+          const ageH = (Date.now() - Date.parse(last.checked_at)) / 3600000
+          if (invalidStreak >= sameIdRetryLimit && ageH < invalidRetryIntervalH) { res.dupSkip++; continue }
+        }
       }
     }
 
-    const r = await fetchDecoded(url)
+    let r = await fetchDecoded(url)
     await new Promise((rs) => setTimeout(rs, Math.max(200, opts.delayMs)))
     res.probed++; totalChecked++
-    if (r.timedOut) res.timeouts++
-    if (!r.ok || !r.html) res.fetchFail++
-    if (r.mojibake) res.mojibake++
 
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : isTabelog ? parseTabelog(r.html, r.mojibake) : null
     const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
-    const bodyAll = r.html ? stripTags(r.html) : ''
-    // 店名は parser抽出値を sanitize（サイト名/カテゴリ/付帯語/「連番探索候補」は無効）
-    const rawName = spot ? spot.name : ''
-    const sn = sanitizeShopName(rawName, { placesMatched: false })
-    const name = sn.valid ? sn.name : ''
-    const address = spot ? spot.address : extractAddressLoose(bodyAll).address
-    const phone = spot ? spot.phone : extractJpPhone(bodyAll)
-    let invalidReason = ''
-    if (!r.ok || !r.html) invalidReason = r.timedOut ? 'fetch timeout' : `取得失敗(HTTP ${r.status})`
-    else if (r.mojibake) invalidReason = '文字化けで名称/住所が読めない'
-    else if (spot) invalidReason = spot.valid ? '' : spot.invalidReason
-    else if (INVALID_RE.test(bodyAll) || bodyAll.length < 200) invalidReason = '不存在/本文なし'
-    else if (!name && !address) invalidReason = '名称/所在地が取れない'
-    const valid = !invalidReason
-    // 店名が取れない（サイト名/付帯語/空）→ ページは存在するが営業リスト不可。HOLDで保存（「連番探索候補」では保存しない）
+
+    // ===== 4分類: valid / invalid(404/不存在) / fetch_failed(403,429,5xx,timeout,network) / parser_failed(200だが抽出不可・文字化け) =====
+    const classify = (resp: typeof r): { status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; reason: string; spot: any; name: string; address: string; phone: string; category: string; bodyAll: string } => {
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : null
+      const bodyAll = resp.html ? stripTags(resp.html) : ''
+      const sn = sanitizeShopName(spot ? spot.name : '', { placesMatched: false })
+      const name = sn.valid ? sn.name : ''
+      const address = spot ? spot.address : extractAddressLoose(bodyAll).address
+      const phone = (spot ? spot.phone : extractJpPhone(bodyAll)) || ''
+      const category = spot?.category || ''
+      // fetch層
+      if (!resp.ok || !resp.html) {
+        if (resp.status === 404) return { status: 'invalid', reason: 'HTTP 404（ページなし）', spot, name, address, phone, category, bodyAll }
+        return { status: 'fetch_failed', reason: resp.timedOut ? 'timeout' : `取得失敗(HTTP ${resp.status || 'network'})`, spot, name, address, phone, category, bodyAll }
+      }
+      // 明確なnot-found表記（200でも該当ページなし）→ invalid
+      if (INVALID_RE.test(bodyAll) || (spot && /未存在|掲載されていません|閉店しました|見つかりません|存在しません/.test(spot.invalidReason || ''))) {
+        return { status: 'invalid', reason: '該当ページなし（not found表記）', spot, name, address, phone, category, bodyAll }
+      }
+      // 文字化け → parser_failed（invalid扱いしない・retry/render対象）
+      if (resp.mojibake) return { status: 'parser_failed', reason: '文字化けで抽出不可', spot, name, address, phone, category, bodyAll }
+      // 抽出成功（店名 or 電話 or 住所 or カテゴリ のいずれか）→ valid
+      if (name || phone || address || category) return { status: 'valid', reason: '', spot, name, address, phone, category, bodyAll }
+      // 200だが本文薄い/抽出できず → parser_failed（invalid扱いしない）
+      return { status: 'parser_failed', reason: bodyAll.length < 200 ? '本文が薄い（要レンダリング）' : '店名/住所/電話が抽出できず', spot, name, address, phone, category, bodyAll }
+    }
+
+    let c = classify(r)
+    // ===== レンダリング fallback: fetch_failed/parser_failed かつ rendering_mode!=static かつ レンダリングAPI設定あり =====
+    let rendered = false
+    if ((c.status === 'fetch_failed' || c.status === 'parser_failed') && renderMode !== 'static' && renderConfigured()) {
+      const rr = await renderPage(url, { waitMs: isTabelog ? 6000 : 4000 })
+      if (rr.ok && rr.html) {
+        rendered = true
+        r = { ok: true, status: rr.status || 200, html: rr.html, charset: 'utf-8', decodeMethod: 'render', mojibake: false, mojibakeRate: 0, timedOut: false } as any
+        c = classify(r)
+      }
+    }
+
+    if (r.timedOut) res.timeouts++
+    if (r.mojibake) res.mojibake++
+    const { status, spot, name, address, phone, category, bodyAll } = c
     const nameValid = !!name
 
-    // 探索ログ（valid/invalid問わず記録）
     let savedCandidateId: string | null = null
     let createdCaseId: string | null = null
 
-    if (!valid) {
-      res.invalid++; totalInvalid++; consecutiveNotFound++
+    // ===== invalid / fetch_failed / parser_failed の記録（cursorは invalid だけ進める） =====
+    if (status !== 'valid') {
+      const isConfirmedInvalid = status === 'invalid'
+      if (isConfirmedInvalid) { res.invalid++; totalInvalid++; consecutiveNotFound++ }
+      else { if (status === 'fetch_failed') res.fetchFail++; else res.parserFail++; if (firstUnconfirmed == null) firstUnconfirmed = probedId }  // fetch/parser失敗は確認漏れ＝次回ここから再開
       await admin.from('sequential_probe_results').insert({
         source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status,
-        valid_page: false, invalid_reason: invalidReason, charset_detected: r.charset, decode_method: r.decodeMethod,
-        decode_success: !r.mojibake, mojibake_detected: r.mojibake, mojibake_rate: Math.round(r.mojibakeRate * 1000) / 1000,
-        extracted_name: name || null, parser_used: parserUsed, error_message: r.timedOut ? 'timeout' : null, checked_at: opts.nowIso,
+        valid_page: false, invalid_reason: `${status}: ${c.reason}`, probe_status: status, charset_detected: r.charset, decode_method: r.decodeMethod,
+        decode_success: !r.mojibake, mojibake_detected: r.mojibake, mojibake_rate: Math.round((r.mojibakeRate || 0) * 1000) / 1000,
+        extracted_name: name || null, parser_used: parserUsed, error_message: status === 'fetch_failed' ? c.reason : null, checked_at: opts.nowIso,
       }).then(() => {}, () => {})
-      if (res.items.length < 40) res.items.push({ probedId, url, valid: false, status: r.status, charset: r.charset, mojibake: r.mojibake, invalidReason })
+      if (res.items.length < 40) res.items.push({ probedId, url, valid: false, status: r.status, charset: r.charset, mojibake: r.mojibake, invalidReason: `${status}: ${c.reason}`, probeStatus: status, rendered, parserUsed, name, phone, address } as any)
       continue
     }
 
     // valid: 判定して保存
     res.valid++; totalValid++; res.lastFoundId = probedId; res.lastValidId = probedId; consecutiveNotFound = 0
-    const category = spot?.category || ''
     const official = spot?.official || ''
     const hasOpen = OPEN_RE.test(bodyAll)
     const newness_type = hasOpen ? 'possible_new_open' : 'source_new_listing'
@@ -427,37 +470,43 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
     }
     await admin.from('sequential_probe_results').insert({
-      source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status, valid_page: true, invalid_reason: null,
-      charset_detected: r.charset, decode_method: r.decodeMethod, decode_success: true, mojibake_detected: false, mojibake_rate: Math.round(r.mojibakeRate * 1000) / 1000,
+      source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status, valid_page: true, invalid_reason: null, probe_status: 'valid',
+      charset_detected: r.charset, decode_method: r.decodeMethod, decode_success: true, mojibake_detected: false, mojibake_rate: Math.round((r.mojibakeRate || 0) * 1000) / 1000,
       extracted_name: name || null, extracted_address: address || null, extracted_phone: phone || null, parser_used: parserUsed,
       saved_candidate_id: savedCandidateId, created_case_id: createdCaseId, checked_at: opts.nowIso,
     }).then(() => {}, () => {})
-    if (res.items.length < 40) res.items.push({ probedId, url, valid: true, charset: r.charset, name: finalName, phone, address, category, newness_type, temperature: hot_tier ? `HOT-${hot_tier}` : temperature })
+    if (res.items.length < 40) res.items.push({ probedId, url, valid: true, status: r.status, charset: r.charset, name: finalName, phone, address, category, newness_type, parserUsed, probeStatus: 'valid', rendered, saveResult: 'success', temperature: hot_tier ? `HOT-${hot_tier}` : temperature } as any)
   }
 
   const lastChecked = res.toId || (startId + forward - 1)
   // 最新のvalid ID（今回 or 既存）
   const newLastValid = res.lastValidId ?? site.last_valid_id ?? null
   const newLastFound = res.lastFoundId ?? site.last_found_id ?? null
-  // 次回開始ID: 安全モード=最後にvalidだったID+1（invalid範囲を飛ばさない）。先行モード=最後に確認したID+1
+  // 次回開始ID:
+  //  - fetch_failed/parser_failed が今回あれば、その最小ID（確認漏れ）から再開＝飛ばさない
+  //  - 全て確認済み(valid/invalid)なら 最後に確認したID+1
+  //  - 安全モードは「最後にvalidだったID+1」を下限に（invalid範囲も飛ばさない）
   let nextId: number; let nextIdBasis: string
-  if (probeMode === 'safe') {
-    if (newLastValid != null) { nextId = Number(newLastValid) + 1; nextIdBasis = `最後に有効だったID(${newLastValid})の次から再確認` }
+  if (firstUnconfirmed != null) {
+    nextId = firstUnconfirmed
+    nextIdBasis = `fetch/parser失敗ID(${firstUnconfirmed})が未確認のため、そこから再開（飛ばさない）`
+  } else if (probeMode === 'safe') {
+    if (newLastValid != null) { nextId = Number(newLastValid) + 1; nextIdBasis = `${lastChecked}まで確認済み・最後に有効だったID(${newLastValid})の次から` }
     else if (newLastFound != null) { nextId = Number(newLastFound) + 1; nextIdBasis = `最後に見つかったID(${newLastFound})の次から` }
-    else { nextId = lastChecked + 1; nextIdBasis = '有効IDが無いため最後に確認したIDの次から' }
-  } else { nextId = lastChecked + 1; nextIdBasis = '先行探索モード（最後に確認したID+1）' }
+    else { nextId = lastChecked + 1; nextIdBasis = `${lastChecked}まで確認済み（有効IDなし）` }
+  } else { nextId = lastChecked + 1; nextIdBasis = `先行探索モード（${lastChecked}まで確認済み・+1）` }
   res.nextId = nextId; res.nextIdBasis = nextIdBasis; res.consecutiveNotFound = consecutiveNotFound
   // invalid の主理由（最多）
   const reasonCounts: Record<string, number> = {}
   for (const it of res.items) { if (!it.valid && it.invalidReason) reasonCounts[it.invalidReason] = (reasonCounts[it.invalidReason] || 0) + 1 }
   res.invalidTopReason = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
-  if (!res.reason) res.reason = res.valid > 0 ? `OK（valid ${res.valid}/probed ${res.probed}）` : `valid 0（probed ${res.probed}・${res.invalidTopReason || 'ページ未存在'}）`
+  if (!res.reason) res.reason = res.valid > 0 ? `OK（valid ${res.valid}/probed ${res.probed}）` : `valid 0（probed ${res.probed}・invalid${res.invalid}/fetch失敗${res.fetchFail}/parser失敗${res.parserFail}・${res.invalidTopReason || (res.fetchFail > 0 ? 'fetch失敗（要レンダリング/再試行）' : 'ページ未存在')}）`
   await admin.from('source_sites').update({
     current_probe_id: nextId, last_checked_id: lastChecked, last_found_id: res.lastFoundId ?? site.last_found_id ?? null,
     last_valid_id: res.lastValidId ?? site.last_valid_id ?? null, last_invalid_id: res.invalid > 0 ? res.toId : (site.last_invalid_id ?? null),
     last_probe_started_at: startedAt, last_probe_finished_at: opts.nowIso, consecutive_not_found_count: consecutiveNotFound,
     total_checked_count: (Number(site.total_checked_count) || 0) + totalChecked, total_valid_count: (Number(site.total_valid_count) || 0) + totalValid, total_invalid_count: (Number(site.total_invalid_count) || 0) + totalInvalid,
-    probe_result_summary: `次回ID${nextId} / probed${res.probed} valid${res.valid}/invalid${res.invalid} 文字化け${res.mojibake} HOT-A${res.hotA}/B${res.hotB} 保存${res.saved}`.slice(0, 200),
+    probe_result_summary: `今回${res.fromId}〜${res.toId} / valid${res.valid} invalid${res.invalid} fetch失敗${res.fetchFail} parser失敗${res.parserFail} / lead保存${res.saved} cases${res.imported} / 次回ID${nextId}（${nextIdBasis}）`.slice(0, 200),
     last_crawled_at: opts.nowIso, updated_at: opts.nowIso,
   }).eq('id', site.id).then(() => {}, () => {})
   return res
@@ -468,7 +517,7 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
   const s = rawSettings || {}
   const mode: InjectMode = (s.aiInjectMode === 'strict' || s.aiInjectMode === 'aggressive') ? s.aiInjectMode : 'standard'
   const nowIso = new Date().toISOString()
-  const counts = { sources: 0, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0, mojibake: 0, fetchFail: 0, phoneYes: 0, addressYes: 0, dupSkip: 0, timeouts: 0 }
+  const counts = { sources: 0, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0, mojibake: 0, fetchFail: 0, parserFail: 0, phoneYes: 0, addressYes: 0, dupSkip: 0, timeouts: 0 }
   const debug: any = { siteResults: [] as any[] }
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'sequential_probe', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
@@ -493,16 +542,16 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
       counts.probed += pr.probed; counts.valid += pr.valid; counts.invalid += pr.invalid; counts.saved += pr.saved; counts.saveError += pr.saveError
       counts.hot += pr.hot; counts.hotA += pr.hotA; counts.hotB += pr.hotB; counts.hold += pr.hold; counts.excluded += pr.excluded; counts.imported += pr.imported
       counts.alreadyImported += pr.alreadyImported; counts.importFailed += pr.importFailed
-      counts.mojibake += pr.mojibake; counts.fetchFail += pr.fetchFail; counts.timeouts += pr.timeouts; counts.dupSkip += pr.dupSkip
+      counts.mojibake += pr.mojibake; counts.fetchFail += pr.fetchFail; counts.parserFail += pr.parserFail; counts.timeouts += pr.timeouts; counts.dupSkip += pr.dupSkip
       counts.phoneYes += pr.items.filter((i: any) => i.valid && i.phone).length
       counts.addressYes += pr.items.filter((i: any) => i.valid && i.address).length
       debug.siteResults.push(pr)
       // エラーがあっても自動で無効化しない。要確認(review_flag)＋last_errorに記録するだけ。
       const allInvalid = pr.probed > 0 && pr.valid === 0
-      const hadError = pr.fetchFail > 0 || pr.timeouts > 0 || pr.mojibake > 0
+      const hadError = pr.fetchFail > 0 || pr.timeouts > 0 || pr.mojibake > 0 || pr.parserFail > 0
       if (hadError || allInvalid) {
-        const errType = pr.timeouts > 0 ? 'timeout' : pr.fetchFail > 0 ? 'fetch_fail' : pr.mojibake > 0 ? 'mojibake' : 'all_invalid'
-        const errMsg = pr.timeouts > 0 ? `タイムアウト${pr.timeouts}件` : pr.fetchFail > 0 ? `fetch失敗${pr.fetchFail}件` : pr.mojibake > 0 ? `文字化け${pr.mojibake}件` : `今回validなし（${pr.probed}件中0件）`
+        const errType = pr.timeouts > 0 ? 'timeout' : pr.fetchFail > 0 ? 'fetch_fail' : pr.parserFail > 0 ? 'parser_fail' : pr.mojibake > 0 ? 'mojibake' : 'all_invalid'
+        const errMsg = pr.timeouts > 0 ? `タイムアウト${pr.timeouts}件` : pr.fetchFail > 0 ? `fetch失敗${pr.fetchFail}件（要レンダリング/再試行）` : pr.parserFail > 0 ? `parser失敗${pr.parserFail}件（要確認）` : pr.mojibake > 0 ? `文字化け${pr.mojibake}件` : `今回validなし（${pr.probed}件中0件）`
         await admin.from('source_sites').update({ review_flag: true, last_error_type: errType, last_error_message: errMsg, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {})
       } else if (pr.valid > 0) {
         await admin.from('source_sites').update({ review_flag: false, last_error_type: null, last_error_message: null }).eq('id', site.id).then(() => {}, () => {})
