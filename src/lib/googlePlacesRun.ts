@@ -655,7 +655,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       error_count: counts.error, error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, queries: picked.length, ...counts, debug }
+    return { ok: true, runId, queries: picked.length, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg, error_count: counts.error + 1 }).eq('id', runId)

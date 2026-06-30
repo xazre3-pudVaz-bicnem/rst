@@ -154,7 +154,9 @@ export default async function handler(req: any, res: any) {
     const result = await runInstagramWeb(admin, process.env.GOOGLE_MAPS_API_KEY || null, settings, auth.userId)
     return res.status(200).json(result)
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e) })
+    const msg = String(e?.message || e)
+    console.error('[instagram-web] endpoint failed', { failed_step: 'endpoint', api_endpoint: '/api/cron/instagram-web-leads', message: msg, stack: e?.stack, timestamp: new Date().toISOString() })
+    return res.status(500).json({ ok: false, error: `Instagram Web検索に失敗しました。詳細: ${msg}`, failed_step: 'endpoint', api_endpoint: '/api/cron/instagram-web-leads', error_message: msg })
   }
 }
 

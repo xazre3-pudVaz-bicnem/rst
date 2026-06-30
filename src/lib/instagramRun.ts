@@ -242,7 +242,7 @@ export async function runInstagram(admin: any, igToken: string, igUserId: string
       excluded_count: counts.excluded, imported_count: counts.imported, error_count: counts.error, error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, ...counts, debug }
+    return { ok: true, runId, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg }).eq('id', runId)

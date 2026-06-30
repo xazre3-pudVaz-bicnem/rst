@@ -527,7 +527,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
       const q: any = { query, results: 0, igUrls: 0, rulePassed: 0, judged: 0, heuristic: 0, hot: 0, hold: 0, excluded: 0, areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0, error: null }
       const { results, error } = await webSearch(query, perQuery)
-      if (error) { counts.error++; errorMessage = error; q.error = error }
+      if (error) {
+        counts.error++; q.error = error
+        const prov = searchProvider() || '検索API'
+        errorMessage = `${prov}検索の取得に失敗: ${error}（クエリ「${query}」）`
+        if (!debug.searchErrors) debug.searchErrors = []
+        if (debug.searchErrors.length < 5) debug.searchErrors.push({ failed_step: 'webSearch', provider: prov, query, detail: error })
+        console.error('[instagram-web] webSearch error', { failed_step: 'webSearch', provider: prov, query, detail: error, timestamp: new Date().toISOString() })
+      }
 
       for (const r of results) {
         q.results++; counts.results++
@@ -717,10 +724,13 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       imported_count: counts.imported, error_count: counts.error, error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, ...counts, debug }
+    // 注意: counts.error は数値（検索失敗回数）。UIの error 表示と衝突しないよう errorCount に退避し、
+    //       error は最後のエラーメッセージ（文字列 or null）にする。
+    return { ok: true, runId, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
-    await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg }).eq('id', runId)
-    throw new Error(msg)
+    console.error('[instagram-web] run failed', { failed_step: 'runInstagramWeb', message: msg, stack: e?.stack, timestamp: new Date().toISOString() })
+    await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg }).eq('id', runId).then(() => {}, () => {})
+    return { ok: false, error: `Instagram Web検索に失敗しました。詳細: ${msg}`, failed_step: 'runInstagramWeb', error_message: msg, debug }
   }
 }

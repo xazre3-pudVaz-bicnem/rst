@@ -275,8 +275,8 @@ export default function Leads() {
         }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) { toast.error(json.error || 'Instagram Web検索に失敗しました'); setIwResult({ error: json.error }); return }
       setIwResult(json)
+      if (!res.ok || json.ok === false) { toast.error(typeof json.error === 'string' ? json.error : 'Instagram Web検索に失敗しました'); return }
       toast.success(`完了: 取得${json.results ?? 0} / HOT${json.hot ?? 0} / HOLD${json.hold ?? 0}`)
       load(); loadRuns()
     } catch (e) { toast.error('実行に失敗しました: ' + jpError(e)) } finally { setIwRunning(false) }
@@ -1632,9 +1632,23 @@ export default function Leads() {
             <div className="mt-1 text-[10px] text-muted-foreground">全国・新店ハッシュタグのみ（地域/業種をクエリに入れない）。ルール粗選別→新店候補のみAI判定。HOTは初期OFFでHOLD中心保存→手動投入。同一URL重複・同一クエリ7日はスキップ。</div>
             {iwResult && (
               <div className="mt-2 space-y-1">
-                {iwResult.error ? <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{iwResult.error}</div>
+                {iwResult.ok === false ? (
+                  <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                    <div className="font-bold">Instagram Web検索でエラーが発生しました</div>
+                    <div>{String(iwResult.error || 'エラー詳細が取得できませんでした')}</div>
+                    <div className="mt-1 text-[10px] opacity-80">
+                      {iwResult.failed_step && <div>failed_step: {iwResult.failed_step}</div>}
+                      {iwResult.api_endpoint && <div>api_endpoint: {iwResult.api_endpoint}</div>}
+                      {iwResult.error_message && <div className="line-clamp-3">error_message: {iwResult.error_message}</div>}
+                      {Array.isArray(iwResult.debug?.searchErrors) && iwResult.debug.searchErrors.length > 0 && (
+                        <div>検索エラー: {iwResult.debug.searchErrors.map((s: any) => `${s.provider} ${s.detail}`).join(' / ').slice(0, 200)}</div>
+                      )}
+                    </div>
+                  </div>
+                )
                 : iwResult.skipped ? <div className="rounded bg-amber-50 p-2 text-[11px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">{iwResult.reason}</div> : (
                   <>
+                    {iwResult.error && <div className="rounded bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">一部の検索でエラー（{iwResult.errorCount ?? 0}件）: {String(iwResult.error)}</div>}
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-muted px-1.5 py-0.5">クエリ {iwResult.queries ?? 0}</span>
                       <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">Serper取得 {iwResult.results ?? 0}</span>
