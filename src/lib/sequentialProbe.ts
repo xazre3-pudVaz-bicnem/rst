@@ -487,9 +487,21 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
       counts.phoneYes += pr.items.filter((i: any) => i.valid && i.phone).length
       counts.addressYes += pr.items.filter((i: any) => i.valid && i.address).length
       debug.siteResults.push(pr)
+      // エラーがあっても自動で無効化しない。要確認(review_flag)＋last_errorに記録するだけ。
+      const allInvalid = pr.probed > 0 && pr.valid === 0
+      const hadError = pr.fetchFail > 0 || pr.timeouts > 0 || pr.mojibake > 0
+      if (hadError || allInvalid) {
+        const errType = pr.timeouts > 0 ? 'timeout' : pr.fetchFail > 0 ? 'fetch_fail' : pr.mojibake > 0 ? 'mojibake' : 'all_invalid'
+        const errMsg = pr.timeouts > 0 ? `タイムアウト${pr.timeouts}件` : pr.fetchFail > 0 ? `fetch失敗${pr.fetchFail}件` : pr.mojibake > 0 ? `文字化け${pr.mojibake}件` : `今回validなし（${pr.probed}件中0件）`
+        await admin.from('source_sites').update({ review_flag: true, last_error_type: errType, last_error_message: errMsg, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {})
+      } else if (pr.valid > 0) {
+        await admin.from('source_sites').update({ review_flag: false, last_error_type: null, last_error_message: null }).eq('id', site.id).then(() => {}, () => {})
+      }
     }
-    await admin.from('auto_lead_runs').update({ status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.sources, fetched_count: counts.valid, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
-    return { ok: true, runId, ...counts, debug }
+    // 有効ソース0件は「成功」にしない（探索対象なしを明示）
+    const noActive = counts.sources === 0
+    await admin.from('auto_lead_runs').update({ status: noActive ? 'error' : 'success', finished_at: new Date().toISOString(), error_message: noActive ? '有効な連番URL探索ソースがありません（先にソースを有効化してください）' : null, search_queries_count: counts.sources, fetched_count: counts.valid, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
+    return { ok: true, runId, noActiveSources: noActive, ...counts, debug }
   } catch (e: any) {
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: String(e?.message || e) }).eq('id', runId).then(() => {}, () => {})
     throw e

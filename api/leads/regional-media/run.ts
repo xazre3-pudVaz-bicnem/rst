@@ -138,7 +138,12 @@ export default async function handler(req: any, res: any) {
     if (b.last_checked_id != null) u.last_checked_id = Number(b.last_checked_id)
     if (b.last_valid_id != null) u.last_valid_id = Number(b.last_valid_id)
     if (b.probe_enabled != null) u.probe_enabled = !!b.probe_enabled
-    if (b.is_active != null) u.is_active = !!b.is_active
+    if (b.review_flag != null) u.review_flag = !!b.review_flag
+    if (b.is_active != null) {
+      u.is_active = !!b.is_active
+      if (b.is_active) { u.disabled_reason = null; u.disabled_at = null; u.disabled_by = null; u.review_flag = false }  // 有効化で無効理由クリア
+      else { u.disabled_reason = b.disabled_reason ? String(b.disabled_reason).slice(0, 200) : '管理者が手動で無効化'; u.disabled_at = new Date().toISOString(); u.disabled_by = 'admin' }  // 明示的な無効化のみ理由を記録
+    }
     if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', b.id) }
     return res.status(200).json({ ok: true })
   }
@@ -197,6 +202,24 @@ export default async function handler(req: any, res: any) {
   if (body?.listProbeSites) {
     const { data } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').order('name')
     return res.status(200).json({ ok: true, sites: data || [] })
+  }
+
+  // 連番探索ソースの一括有効化/無効化（全件/食べログ系/じゃらん系/選択）
+  if (body?.bulkProbeActive) {
+    const b = body.bulkProbeActive
+    const active = b.active !== false
+    let q = admin.from('source_sites').update(
+      active
+        ? { is_active: true, review_flag: false, disabled_reason: null, disabled_at: null, disabled_by: null, updated_at: new Date().toISOString() }
+        : { is_active: false, disabled_reason: '管理者が一括無効化', disabled_at: new Date().toISOString(), disabled_by: 'admin', updated_at: new Date().toISOString() },
+    ).eq('source_type', 'sequential_id_probe')
+    if (b.filter === 'tabelog') q = q.or('parser_type.eq.tabelog_detail,name.ilike.%食べログ%,url_template.ilike.%tabelog.com%')
+    else if (b.filter === 'jalan') q = q.or('parser_type.eq.jalan_spot_detail,name.ilike.%じゃらん%,url_template.ilike.%jalan.net%')
+    else if (b.filter === 'selected' && Array.isArray(b.ids) && b.ids.length) q = q.in('id', b.ids)
+    const { error } = await q
+    if (error) return res.status(400).json({ ok: false, error: error.message })
+    const { count } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('source_type', 'sequential_id_probe').eq('is_active', true)
+    return res.status(200).json({ ok: true, activeCount: count || 0 })
   }
 
   // 連番探索（食べログ/じゃらん）由来候補を source_detail_url から再取得して正式店名・電話・住所を再抽出

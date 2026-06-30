@@ -83,6 +83,7 @@ export default function Leads() {
   const [probeFormEditId, setProbeFormEditId] = useState<string | null>(null)
   const [probeFormTest, setProbeFormTest] = useState<any>(null)
   const [probeResult, setProbeResult] = useState<any>(null)
+  const [probeView, setProbeView] = useState<'all' | 'active' | 'inactive'>('all')
   const [probeSites, setProbeSites] = useState<any[]>([])
   const [probing, setProbing] = useState(false)
   const [iwConfigured, setIwConfigured] = useState<boolean | null>(null)
@@ -274,10 +275,18 @@ export default function Leads() {
   // 連番URL探索
   async function loadProbeSites() { const json = await regionalApi({ listProbeSites: true }); if (json?.ok) setProbeSites(json.sites || []) }
   async function runProbeAll() {
+    const activeCount = probeSites.filter((x: any) => x.is_active).length
+    if (activeCount === 0) { toast.error('有効な連番URL探索ソースがありません。先にソースを有効化してください。'); return }
     setProbing(true)
     try { const json = await regionalApi({ probe: {}, settings: { aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay } })
-      if (json?.ok) { setProbeResult(json); toast.success(`連番探索: valid${json.valid} / HOT-A${json.hotA}/HOT-B${json.hotB} / 投入${json.imported}`); loadProbeSites(); load() } else toast.error(json?.error || '連番探索に失敗しました')
+      if (json?.ok && !json.noActiveSources) { setProbeResult(json); toast.success(`連番探索: valid${json.valid} / HOT-A${json.hotA}/HOT-B${json.hotB} / 投入${json.imported}`); loadProbeSites(); load() }
+      else if (json?.noActiveSources) { toast.error('有効な連番URL探索ソースがありません。') }
+      else toast.error(json?.error || '連番探索に失敗しました')
     } finally { setProbing(false) }
+  }
+  async function bulkProbeActive(filter: 'all' | 'tabelog' | 'jalan' | 'selected', active = true, ids?: string[]) {
+    const json = await regionalApi({ bulkProbeActive: { filter, active, ids } })
+    if (json?.ok) { toast.success(`${active ? '有効化' : '無効化'}しました（有効ソース ${json.activeCount}件）`); loadProbeSites() } else toast.error(json?.error || '一括更新に失敗しました')
   }
   async function probeSiteAction(id: string, o: { forwardCount?: number; backfillCount?: number; startId?: number; force?: boolean; probeMode?: 'safe' | 'advance' }) {
     setProbing(true)
@@ -1970,6 +1979,29 @@ export default function Leads() {
                 <button onClick={loadProbeSites} className="text-[10px] text-primary hover:underline">再読込</button>
                 <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground"><input type="checkbox" checked={devMode} onChange={(e) => setDevMode(e.target.checked)} />開発者モード（source_id等を表示）</label>
               </div>
+              {/* 有効ソース0件の警告 */}
+              {probeSites.length > 0 && probeSites.filter((x: any) => x.is_active).length === 0 && (
+                <div className="rounded border border-red-300 bg-red-50 p-2 text-[11px] text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200">
+                  <div className="font-bold">連番URL探索の有効ソースが0件です。</div>
+                  <div>探索を実行するには、各ソースを有効化してください。</div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <button onClick={() => bulkProbeActive('all', true)} className="rounded border border-red-400 bg-white px-2 py-0.5 font-bold text-red-700 hover:bg-red-100 dark:bg-transparent dark:text-red-200">全ソースを有効化</button>
+                    <button onClick={() => setProbeView('inactive')} className="rounded border border-red-400 px-2 py-0.5">無効理由を見る</button>
+                  </div>
+                </div>
+              )}
+              {/* 一括有効化＋状態フィルタ */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                <span className="text-muted-foreground">有効 {probeSites.filter((x: any) => x.is_active && !x.review_flag).length} / 要確認 {probeSites.filter((x: any) => x.is_active && x.review_flag).length} / 無効 {probeSites.filter((x: any) => !x.is_active).length}</span>
+                <span className="ml-1">一括:</span>
+                <button onClick={() => bulkProbeActive('all', true)} className="rounded border border-green-500 px-2 py-0.5 text-green-700 hover:bg-green-50 dark:text-green-300 dark:hover:bg-green-500/10">全ソースを有効化</button>
+                <button onClick={() => bulkProbeActive('tabelog', true)} className="rounded border px-2 py-0.5 hover:bg-accent">食べログ系を有効化</button>
+                <button onClick={() => bulkProbeActive('jalan', true)} className="rounded border px-2 py-0.5 hover:bg-accent">じゃらん系を有効化</button>
+                <span className="ml-1">表示:</span>
+                {([['all', '全'], ['active', '有効のみ'], ['inactive', '無効のみ']] as const).map(([k, label]) => (
+                  <button key={k} onClick={() => setProbeView(k)} className={cn('rounded border px-2 py-0.5', probeView === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{label}</button>
+                ))}
+              </div>
               {probeResult && (
                 <div className="flex flex-wrap gap-1.5 text-[10px]">
                   {probeResult.single
@@ -1997,15 +2029,22 @@ export default function Leads() {
               {/* ソース別 */}
               <div className="space-y-1">
                 {probeSites.length === 0 && <div className="text-[10px] text-muted-foreground">連番探索ソースがありません。地域メディアの巡回サイト管理で source_type=sequential_id_probe を追加するか、じゃらん（既定OFF）を有効化してください。</div>}
-                {probeSites.map((st: any) => (
+                {probeSites.filter((st: any) => probeView === 'all' ? true : probeView === 'active' ? st.is_active : !st.is_active).map((st: any) => (
                   <div key={st.id} className="rounded border bg-muted/30 p-2 text-[10px]">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold">{st.name}</span>
                       {st.region_label && <span className="rounded bg-sky-100 px-1 text-[9px] text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">{st.region_label}</span>}
-                      <span className={cn('rounded px-1 text-[9px]', st.is_active ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700')}>{st.is_active ? '有効' : '無効'}</span>
+                      {/* 3状態: 有効 / 要確認 / 無効 */}
+                      {!st.is_active
+                        ? <span className="rounded bg-zinc-200 px-1 text-[9px] text-zinc-600 dark:bg-zinc-700">無効</span>
+                        : st.review_flag
+                        ? <span className="rounded bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要確認</span>
+                        : <span className="rounded bg-green-100 px-1 text-[9px] text-green-700 dark:bg-green-500/20 dark:text-green-300">有効</span>}
                       <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{st.parser_type || 'generic_detail_page'}</span>
                       <span className="truncate text-muted-foreground" title={st.url_template}>{st.url_template}</span>
                     </div>
+                    {!st.is_active && <div className="text-[9px] text-zinc-500">無効理由: {st.disabled_reason || '無効理由不明'}{st.disabled_at ? `（${moment(st.disabled_at).format('MM/DD HH:mm')}）` : ''}</div>}
+                    {st.is_active && st.review_flag && <div className="text-[9px] text-amber-600 dark:text-amber-300">要確認: {st.last_error_message || 'エラーあり（探索対象のまま・再試行可）'}{st.last_error_type ? `（${st.last_error_type}）` : ''}</div>}
                     <div className="mt-0.5 text-muted-foreground">
                       <b className="text-foreground">最後に有効だったID {st.last_valid_id ?? st.last_found_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ <b className="text-foreground">次回開始ID {st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ モード {st.probe_mode === 'advance' ? '先行探索' : '安全確認'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
                     </div>
