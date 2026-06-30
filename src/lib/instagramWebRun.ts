@@ -61,7 +61,7 @@ export function searchProvider(): 'serper' | 'bing' | null {
 
 interface WebResult { title: string; url: string; snippet: string }
 
-async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null }> {
+export async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null }> {
   const prov = searchProvider()
   // 504回避: 検索APIが固まっても8秒で打ち切る
   const ctrl = new AbortController()

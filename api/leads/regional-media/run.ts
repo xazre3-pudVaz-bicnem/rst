@@ -7,6 +7,7 @@ import { runRegionalMedia } from '../../../src/lib/regionalMediaRun.js'
 import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
+import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -88,6 +89,24 @@ export default async function handler(req: any, res: any) {
   if (!userData?.user) return res.status(401).json({ error: 'ログインが必要です（セッション切れの可能性）' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})
+
+  // 巡回サイト自動発見（検索→診断→候補保存→高スコア自動登録）
+  if (body?.discover) {
+    try {
+      const stats = await runSiteDiscovery(admin, { userId: userData.user.id, maxQueries: Number(body.discover.maxQueries) || 20, perQuery: Number(body.discover.perQuery) || 10, maxTests: Number(body.discover.maxTests) || 50, maxAutoRegister: Number(body.discover.maxAutoRegister) ?? 10 })
+      return res.status(200).json({ ok: true, discovered: true, ...stats })
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+  // 発見候補一覧
+  if (body?.listCandidates) {
+    const { data } = await admin.from('source_site_candidates').select('*').order('confidence_score', { ascending: false }).limit(200)
+    return res.status(200).json({ ok: true, candidates: data || [] })
+  }
+  // 候補を source_sites へ登録（手動）
+  if (body?.registerCandidate?.id) {
+    const r = await registerSiteCandidate(admin, body.registerCandidate.id)
+    return res.status(r.ok ? 200 : 400).json(r)
+  }
 
   // 1件だけ再補完（電話/住所/公式/Instagram/予約/LINEの探索。AI再判定とは別）
   if (body?.reenrich?.id) {

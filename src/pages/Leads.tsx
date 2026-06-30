@@ -81,6 +81,9 @@ export default function Leads() {
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
   const [rmResult, setRmResult] = useState<any>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryResult, setDiscoveryResult] = useState<any>(null)
+  const [siteCandidates, setSiteCandidates] = useState<any[]>([])
   // 巡回サイト管理
   const [rmSites, setRmSites] = useState<any[]>([])
   const [rmCounts, setRmCounts] = useState<{ total: number; active: number; inactive: number }>({ total: 0, active: 0, inactive: 0 })
@@ -169,6 +172,7 @@ export default function Leads() {
             maxArticlesPerSite: settings.regionalMaxArticles, periodDays: settings.regionalPeriodDays, dailyCap: settings.dailyCap,
             regionalEnrichEnabled: settings.regionalEnrichEnabled, regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
             regionalEnrichPerQuery: settings.regionalEnrichPerQuery, regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
+            aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
           },
         }),
       })
@@ -180,6 +184,31 @@ export default function Leads() {
     } catch (e) {
       toast.error('実行に失敗しました: ' + jpError(e))
     } finally { setRmRunning(false) }
+  }
+
+  // 巡回サイト自動発見
+  async function regionalApi(payload: any): Promise<any> {
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    if (!token) { toast.error('ログインが必要です'); return null }
+    const res = await fetch('/api/leads/regional-media/run', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) })
+    return res.json().catch(() => ({}))
+  }
+  async function runDiscovery() {
+    setDiscovering(true)
+    try {
+      const json = await regionalApi({ discover: { maxQueries: 20, perQuery: 10, maxTests: 50, maxAutoRegister: 10 } })
+      if (json?.ok) { setDiscoveryResult(json); toast.success(`自動発見: 診断${json.tested} / 自動登録${json.autoRegistered} / 要確認${json.review}`); loadCandidates() }
+      else toast.error(json?.error || '自動発見に失敗しました')
+    } finally { setDiscovering(false) }
+  }
+  async function loadCandidates() {
+    const json = await regionalApi({ listCandidates: true })
+    if (json?.ok) setSiteCandidates(json.candidates || [])
+  }
+  async function registerCandidate(id: string) {
+    const json = await regionalApi({ registerCandidate: { id } })
+    if (json?.ok) { toast.success('source_sitesへ登録しました'); loadCandidates() } else toast.error(json?.error || '登録に失敗しました')
   }
 
   // 地域メディア候補の再補完（AI再判定とは別）
@@ -1389,7 +1418,50 @@ export default function Leads() {
               <Button size="sm" onClick={runRegional} disabled={rmRunning || !settings.regionalEnabled}>
                 <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '地域メディア巡回・実行'}
               </Button>
+              <Button size="sm" variant="outline" onClick={runDiscovery} disabled={discovering}>{discovering ? '発見中...' : '巡回サイトを自動発見'}</Button>
+              <Button size="sm" variant="outline" onClick={loadCandidates}>発見候補を確認</Button>
             </div>
+            {/* 巡回サイト自動発見 結果＋候補 */}
+            {(discoveryResult || siteCandidates.length > 0) && (
+              <div className="mt-2 rounded-lg border bg-card p-2 text-[10px]">
+                <div className="mb-1 font-semibold">巡回サイト自動発見</div>
+                {discoveryResult && (
+                  <div className="mb-1 flex flex-wrap gap-1.5">
+                    <span className="rounded bg-muted px-1.5 py-0.5">クエリ {discoveryResult.queries}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">URL {discoveryResult.urls}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">診断 {discoveryResult.tested}</span>
+                    <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">自動登録 {discoveryResult.autoRegistered}</span>
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要確認 {discoveryResult.review}</span>
+                    <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">無視 {discoveryResult.ignore}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">登録済 {discoveryResult.alreadyRegistered}</span>
+                  </div>
+                )}
+                {siteCandidates.length > 0 && (
+                  <div className="max-h-72 space-y-1 overflow-y-auto">
+                    {siteCandidates.map((c: any) => (
+                      <div key={c.id} className="flex items-start justify-between gap-2 border-b pb-0.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className={cn('rounded px-1 text-[9px] font-bold', c.recommended_action === 'auto_register' ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : c.recommended_action === 'review' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700')}>{c.recommended_action}</span>
+                            <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{c.detected_parser_type}</span>
+                            <span className="font-medium">スコア{c.confidence_score}</span>
+                            <span className="truncate text-muted-foreground" title={c.discovered_url}>{c.domain}</span>
+                            {c.already_registered && <span className="text-[9px] text-muted-foreground">登録済</span>}
+                          </div>
+                          <div className="truncate text-muted-foreground" title={c.title}>{c.title}</div>
+                          <div className="text-muted-foreground">新店語{c.newness_keyword_count} ・ 記事{c.article_link_count} ・ カード{c.shop_card_count} ・ 電話{c.phone_found_count} ・ 住所{c.address_found_count}{c.invalid_reason ? ` ・ ${c.invalid_reason}` : ''}</div>
+                        </div>
+                        {!c.is_registered && !c.already_registered && c.recommended_action !== 'ignore' && (
+                          <button onClick={() => registerCandidate(c.id)} className="shrink-0 rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">登録</button>
+                        )}
+                        {c.is_registered && <span className="shrink-0 text-[9px] text-green-600">登録済</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-1 text-[10px] text-muted-foreground">※ 検索APIで新店情報サイトを自動発見し診断。スコア80以上は自動登録（信頼度70以上で有効化）、50〜79は要確認、49以下は無視。海外/求人/EC/ログイン必須/本文空は除外。</div>
+              </div>
+            )}
             <div className="mt-1 text-[10px] text-muted-foreground">
               号外NET・埼北つうしん等の開店記事を巡回。記事本文は保存しません（URL/タイトル/公開日/抜粋/抽出のみ）。電話が取れHOT条件を満たすものだけ自動投入、他はHOLD/EXCLUDED。
             </div>
