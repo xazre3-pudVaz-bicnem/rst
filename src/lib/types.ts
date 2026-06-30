@@ -312,6 +312,13 @@ export interface LeadCandidate {
   days_since_opening?: number | null
   google_places_checked_at?: string | null
   opening_date_checked_at?: string | null
+  // HOT未達理由（なぜHOTにしなかったか）
+  hot_reject_reasons?: string[] | null
+  hot_reject_summary?: string | null
+  hot_check_result?: Record<string, any> | null
+  hot_missing_requirements?: string[] | null
+  hot_blocking_reason?: string | null
+  hot_required_score?: number | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -372,6 +379,7 @@ export interface ClassifyOpts {
   warmMaxReviews?: number  // これ以下ならWARM/HOLD（既定15）
   exclude100?: boolean     // 口コミ100件以上は自動除外（既定true）
   unknownHold?: boolean    // 口コミ件数不明はHOLD（既定true）
+  hotRequiredScore?: number // HOT基準点（既定75）
 }
 
 /** AI投入リストの設定（localStorage） */

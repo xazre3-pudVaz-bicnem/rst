@@ -8,6 +8,38 @@
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
 import { runInstagramWeb, getDefaultIwSettings, searchProvider, anthropicJudge, heuristicJudge, enrichCandidate, usernameFromUrl } from '../../src/lib/instagramWebRun.js'
 import { authorizeAdmin } from '../../src/lib/regionalAdmin.js'
+import { isJapanPhone, isJapanAddress, isForeignAddress, isOrgNonStore } from '../../src/lib/japanFilter.js'
+import { buildHotReject, type HotCheck } from '../../src/lib/hotReject.js'
+
+// Instagram Web候補のHOT再計算＋HOT未達理由を生成（再補完/再判定で共通利用）
+function recomputeIwHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; industry?: string | null; hasOpening?: boolean; placeMatched?: boolean; newnessType?: string | null; confidence?: number }) {
+  const finalPhone = opts.phone || cand.phone_number || ''
+  const addressVal = opts.address || cand.address || null
+  const area = opts.area || cand.extracted_area || null
+  const industry = opts.industry || cand.extracted_industry || null
+  const shop = cand.extracted_shop_name || cand.name || ''
+  const hasOpening = !!(opts.hasOpening ?? cand.has_google_opening_date)
+  const placeMatched = !!(opts.placeMatched ?? (cand.matched_google_place_id || cand.google_place_id))
+  const newnessOk = !!((opts.newnessType ?? cand.newness_type) && (opts.newnessType ?? cand.newness_type) !== 'unknown') || hasOpening
+  const foreignFinal = isForeignAddress(addressVal) || (!!finalPhone && !isJapanPhone(finalPhone))
+  const japanOk = !foreignFinal && (!!opts.prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
+  let temperature = 'HOLD'
+  if (foreignFinal) temperature = 'EXCLUDED'
+  else if (!!finalPhone && isJapanPhone(finalPhone) && !!area && newnessOk && japanOk && !isOrgNonStore(shop)) temperature = 'HOT'
+  const checks: HotCheck[] = [
+    { key: 'has_japan', label: '日本国内', ok: foreignFinal ? false : (japanOk ? true : null), reasonKey: 'not_japan' },
+    { key: 'has_shop_name', label: '店名あり', ok: !!shop, reasonKey: 'shop_name_missing' },
+    { key: 'has_industry', label: '業種推定', ok: industry ? true : null, reasonKey: 'industry_unknown' },
+    { key: 'has_area', label: '住所/市区町村あり', ok: (area || addressVal) ? true : false, reasonKey: 'address_missing', value: (addressVal || area) || undefined },
+    { key: 'has_phone', label: '日本の電話番号あり', ok: (finalPhone && isJapanPhone(finalPhone)) ? true : false, reasonKey: 'phone_missing', value: finalPhone || undefined },
+    { key: 'has_newness', label: '新規オープン根拠あり', ok: newnessOk ? true : null, reasonKey: 'newness_missing' },
+    { key: 'has_opening_date', label: 'openingDate/開業予定あり', ok: hasOpening ? true : false, reasonKey: 'opening_date_missing' },
+    { key: 'has_official', label: '公式/Places裏取りあり', ok: (cand.official_url || placeMatched) ? true : null, reasonKey: 'official_unverified' },
+    { key: 'places_matched', label: 'Google Places一致', ok: placeMatched ? true : null, reasonKey: 'places_no_match' },
+  ]
+  const hr = buildHotReject({ source: 'instagram_web', temperature, confidence: opts.confidence ?? (cand.match_confidence ?? 0), checks })
+  return { temperature, hr }
+}
 
 export const config = { maxDuration: 60 }
 
@@ -58,8 +90,14 @@ export default async function handler(req: any, res: any) {
       const prefecture = cand.extracted_prefecture || e.prefecture || null
       const city = cand.extracted_city || e.city || null
       const area = [prefecture, city].filter(Boolean).join('') || cand.extracted_area || null
+      // 補完で電話/住所/openingDateが取れたらHOT判定を再計算＋未達理由を更新
+      const rc = recomputeIwHot(cand, { phone, address: cand.address || e.address || null, prefecture, area, hasOpening: e.has_opening || cand.has_google_opening_date, placeMatched: !!e.place_id, confidence: cand.match_confidence ?? e.confidence ?? 0 })
       await admin.from('lead_candidates').update({
         phone_number: phone, extracted_phone: phone, address: cand.address || e.address || null,
+        lead_temperature: rc.temperature, should_exclude_from_call_list: rc.temperature === 'EXCLUDED',
+        hot_reject_reasons: rc.hr.hot_reject_reasons, hot_reject_summary: rc.hr.hot_reject_summary,
+        hot_check_result: rc.hr.hot_check_result, hot_missing_requirements: rc.hr.hot_missing_requirements,
+        hot_blocking_reason: rc.hr.hot_blocking_reason, hot_required_score: rc.hr.hot_required_score,
         extracted_area: area, extracted_prefecture: prefecture, extracted_city: city,
         official_url: cand.official_url || e.official || null, reservation_url: cand.reservation_url || e.reservation || null, line_url: cand.line_url || e.line || null,
         enrichment_status: e.status, enrichment_sources: e.sources, enriched_phone: e.phone || null, enriched_address: e.address || null,
@@ -73,25 +111,33 @@ export default async function handler(req: any, res: any) {
         opening_date_source: e.has_opening ? 'external_enrichment' : null,
         google_places_checked_at: e.place_id ? new Date().toISOString() : null, opening_date_checked_at: e.has_opening ? new Date().toISOString() : null,
       }).eq('id', body.reenrich.id)
-      return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, enrich: e })
+      return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, temperature: rc.temperature, hot_reject_summary: rc.hr.hot_reject_summary, enrich: e })
     }
 
     // 1件だけ再判定（UIの「再判定」ボタン）
     if (body?.rejudge?.id) {
-      const { data: cand } = await admin.from('lead_candidates').select('id,search_title,search_snippet,instagram_url,extracted_area').eq('id', body.rejudge.id).maybeSingle()
+      const { data: cand } = await admin.from('lead_candidates').select('*').eq('id', body.rejudge.id).maybeSingle()
       if (!cand) return res.status(404).json({ ok: false, error: '候補が見つかりません' })
       const r = { title: cand.search_title || '', snippet: cand.search_snippet || '', url: cand.instagram_url || '' }
       const j = (await anthropicJudge(r)) || heuristicJudge(r)
-      const temperature = j.recommended_status || 'HOLD'
-      const area = [j.prefecture, j.city].filter(Boolean).join('') || null
+      const area = [j.prefecture, j.city].filter(Boolean).join('') || cand.extracted_area || null
+      // HOT再計算＋未達理由（補完済みの電話/住所/openingDateも加味）
+      const rc = recomputeIwHot(cand, {
+        prefecture: j.prefecture || cand.extracted_prefecture, area, industry: j.industry || cand.extracted_industry,
+        newnessType: j.newness_type, confidence: j.confidence_score ?? cand.match_confidence ?? 0,
+      })
+      const temperature = j.is_foreign ? 'EXCLUDED' : rc.temperature
       await admin.from('lead_candidates').update({
         lead_temperature: temperature, recommended_status: j.recommended_status || temperature, anthropic_judgement: j, newness_type: j.newness_type || null,
         match_confidence: j.confidence_score ?? null, should_exclude_from_call_list: temperature === 'EXCLUDED',
         ai_comment: j.exclusion_reason ? `除外: ${j.exclusion_reason}` : `再判定(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / ${j.evidence_text || ''}`,
-        instagram_newness_reason: j.evidence_text || null, extracted_shop_name: j.shop_name || null,
-        extracted_area: area, extracted_prefecture: j.prefecture || null, extracted_city: j.city || null,
+        instagram_newness_reason: j.evidence_text || null, extracted_shop_name: j.shop_name || cand.extracted_shop_name || null,
+        extracted_area: area, extracted_prefecture: j.prefecture || cand.extracted_prefecture || null, extracted_city: j.city || cand.extracted_city || null,
+        hot_reject_reasons: rc.hr.hot_reject_reasons, hot_reject_summary: rc.hr.hot_reject_summary,
+        hot_check_result: rc.hr.hot_check_result, hot_missing_requirements: rc.hr.hot_missing_requirements,
+        hot_blocking_reason: rc.hr.hot_blocking_reason, hot_required_score: rc.hr.hot_required_score,
       }).eq('id', body.rejudge.id)
-      return res.status(200).json({ ok: true, rejudged: true, id: body.rejudge.id, temperature, judgement: j })
+      return res.status(200).json({ ok: true, rejudged: true, id: body.rejudge.id, temperature, hot_reject_summary: rc.hr.hot_reject_summary, judgement: j })
     }
 
     // body.settings(UI手動) が無ければ app_config を参照

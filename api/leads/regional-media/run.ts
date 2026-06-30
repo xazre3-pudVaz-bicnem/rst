@@ -5,6 +5,36 @@
 import { getAdminClient } from '../../../src/lib/googlePlacesRun.js'
 import { runRegionalMedia } from '../../../src/lib/regionalMediaRun.js'
 import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
+import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
+import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
+
+// 地域メディア候補のHOT再計算＋未達理由
+function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
+  const phone = opts.phone || cand.phone_number || ''
+  const address = opts.address || cand.address || null
+  const area = opts.area || cand.extracted_area || null
+  const haveArea = !!(area || address)
+  const strongOpening = !!(opts.hasOpening ?? cand.has_google_opening_date)
+  const placeMatched = !!(opts.placeMatched ?? (cand.matched_google_place_id || cand.google_place_id))
+  const foreignFinal = isForeignAddress(address) || (!!phone && !isJapanPhone(phone))
+  const japanOk = !foreignFinal && (!!opts.prefecture || isJapanAddress(address) || isJapanPhone(phone))
+  let temperature = 'HOLD'
+  if (foreignFinal) temperature = 'EXCLUDED'
+  else if (!!phone && isJapanPhone(phone) && japanOk && (haveArea || strongOpening)) temperature = 'HOT'
+  const checks: HotCheck[] = [
+    { key: 'has_japan', label: '日本国内', ok: foreignFinal ? false : (japanOk ? true : null), reasonKey: 'not_japan' },
+    { key: 'has_shop_name', label: '店名あり', ok: !!(cand.extracted_shop_name_from_article || cand.extracted_shop_name || cand.name), reasonKey: 'shop_name_missing' },
+    { key: 'has_industry', label: '業種推定', ok: cand.extracted_industry ? true : null, reasonKey: 'industry_unknown' },
+    { key: 'has_area', label: '住所/市区町村あり', ok: haveArea ? true : false, reasonKey: 'address_missing', value: (address || area) || undefined },
+    { key: 'has_phone', label: '日本の電話番号あり', ok: (phone && isJapanPhone(phone)) ? true : false, reasonKey: 'phone_missing', value: phone || undefined },
+    { key: 'has_newness', label: '新店記事根拠あり', ok: true, reasonKey: 'newness_missing' },
+    { key: 'has_opening_date', label: 'openingDate/開業予定あり', ok: strongOpening ? true : false, reasonKey: 'opening_date_missing' },
+    { key: 'has_official', label: '公式/Places裏取りあり', ok: (cand.official_url || placeMatched) ? true : null, reasonKey: 'official_unverified' },
+    { key: 'places_matched', label: 'Google Places一致', ok: placeMatched ? true : null, reasonKey: 'places_no_match' },
+  ]
+  const hr = buildHotReject({ source: 'regional_media', temperature, confidence: opts.confidence ?? (cand.match_confidence ?? 0), checks })
+  return { temperature, hr }
+}
 
 export const config = { maxDuration: 60 }
 
@@ -72,8 +102,14 @@ export default async function handler(req: any, res: any) {
     const prefecture = cand.extracted_prefecture || e.prefecture || null
     const city = cand.extracted_city || e.city || null
     const area = cand.extracted_area || [prefecture, city].filter(Boolean).join('') || null
+    // 補完結果でHOT再計算＋未達理由を更新
+    const rc = recomputeRmHot(cand, { phone, address: cand.address || e.address || null, prefecture, area, hasOpening: e.has_opening || cand.has_google_opening_date, placeMatched: !!e.place_id, confidence: e.confidence ?? cand.match_confidence ?? 0 })
     await admin.from('lead_candidates').update({
       phone_number: phone, extracted_phone: phone, address: cand.address || e.address || null,
+      lead_temperature: rc.temperature, should_exclude_from_call_list: rc.temperature === 'EXCLUDED',
+      hot_reject_reasons: rc.hr.hot_reject_reasons, hot_reject_summary: rc.hr.hot_reject_summary,
+      hot_check_result: rc.hr.hot_check_result, hot_missing_requirements: rc.hr.hot_missing_requirements,
+      hot_blocking_reason: rc.hr.hot_blocking_reason, hot_required_score: rc.hr.hot_required_score,
       extracted_area: area, extracted_prefecture: prefecture, extracted_city: city,
       official_url: cand.official_url || e.official || null, reservation_url: cand.reservation_url || e.reservation || null,
       line_url: cand.line_url || e.line || null, instagram_url: cand.instagram_url || e.instagram || null,
@@ -89,7 +125,7 @@ export default async function handler(req: any, res: any) {
       opening_date_source: e.has_opening ? 'external_enrichment' : null,
       google_places_checked_at: e.place_id ? new Date().toISOString() : null, opening_date_checked_at: e.has_opening ? new Date().toISOString() : null,
     }).eq('id', body.reenrich.id)
-    return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, enrich: e })
+    return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, temperature: rc.temperature, hot_reject_summary: rc.hr.hot_reject_summary, enrich: e })
   }
 
   try {

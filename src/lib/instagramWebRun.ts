@@ -6,6 +6,7 @@
 // ============================================================
 import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './googlePlacesRun.js'
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
+import { buildHotReject, type HotCheck } from './hotReject.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -519,10 +520,28 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           ? `除外: ${j.exclusion_reason}`
           : `新店根拠(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / 電話:${finalPhone || 'なし'}${enrichNote} / ${j.evidence_text || r.snippet?.slice(0, 100) || ''}${j._heuristic ? '（ルール判定）' : '（AI判定）'}`
 
+        // HOT未達理由（Instagram Web向けチェックリスト）
+        const iwConf = typeof j.confidence_score === 'number' ? j.confidence_score : (enrich?.confidence ?? 0)
+        const iwChecks: HotCheck[] = [
+          { key: 'has_japan', label: '日本国内', ok: foreignFinal ? false : (japanOk ? true : null), reasonKey: 'not_japan' },
+          { key: 'has_shop_name', label: '店名あり', ok: !!name, reasonKey: 'shop_name_missing' },
+          { key: 'has_industry', label: '業種推定', ok: industry ? true : null, reasonKey: 'industry_unknown' },
+          { key: 'has_area', label: '住所/市区町村あり', ok: (area || addressVal) ? true : false, reasonKey: 'address_missing', value: (addressVal || area) || undefined },
+          { key: 'has_phone', label: '日本の電話番号あり', ok: (finalPhone && isJapanPhone(finalPhone)) ? true : false, reasonKey: 'phone_missing', value: finalPhone || undefined },
+          { key: 'has_newness', label: '新規オープン根拠あり', ok: (j.newness_type && j.newness_type !== 'unknown') ? true : null, reasonKey: 'newness_missing' },
+          { key: 'has_opening_date', label: 'openingDate/開業予定あり', ok: enrich?.has_opening ? true : false, reasonKey: 'opening_date_missing' },
+          { key: 'has_official', label: '公式/Places裏取りあり', ok: (officialVal || placeMatched) ? true : null, reasonKey: 'official_unverified' },
+          { key: 'places_matched', label: 'Google Places一致', ok: placeMatched ? true : null, reasonKey: 'places_no_match' },
+        ]
+        const hotReject = buildHotReject({ source: 'instagram_web', temperature, confidence: iwConf, hotRequiredScore: s.iwHotRequiredScore, checks: iwChecks })
+
         const payload: any = {
           name, address: addressVal, industry,
           phone_number: finalPhone || null, website_url: officialVal,
           source: 'instagram_web_search', lead_source: 'instagram_web', source_type: 'AI自動投入(Instagram Web)',
+          hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
+          hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
+          hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
           lead_temperature: temperature, recommended_status: j.recommended_status || temperature,
           is_new_instagram: true, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',

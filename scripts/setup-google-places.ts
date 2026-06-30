@@ -31,6 +31,13 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_types TEXT[];
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_website_uri TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_rating NUMERIC;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_user_rating_count INTEGER;
+-- HOT未達理由（なぜHOTにしなかったか）
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_reject_reasons JSONB;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_reject_summary TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_check_result JSONB;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_missing_requirements JSONB;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_blocking_reason TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_required_score INTEGER;
 `
 
 // 既存の海外候補を EXCLUDED に更新（日本国外は対象外）

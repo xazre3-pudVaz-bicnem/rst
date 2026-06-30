@@ -3,6 +3,7 @@ import {
 } from './constants.js'
 import { phoneDigits, normalizeAddress, normalizeUrl } from './utils.js'
 import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
+import { buildHotReject, type HotCheck } from './hotReject.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -302,6 +303,26 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     newnessReason, countZero, oldestDaysAgo, oldestRecent, fromNewOpenQuery,
   })
 
+  // HOT未達理由（なぜHOTにしなかったか）
+  const hotChecks: HotCheck[] = [
+    { key: 'has_japan', label: '日本国内', ok: isForeign ? false : (japanConfirmed ? true : null), reasonKey: 'not_japan' },
+    { key: 'has_shop_name', label: '店名あり', ok: !!name, reasonKey: 'shop_name_missing' },
+    { key: 'has_industry', label: '業種推定', ok: raw.industry ? true : null, reasonKey: 'industry_unknown' },
+    { key: 'has_area', label: '住所/市区町村あり', ok: !!address, reasonKey: 'address_missing', value: address || undefined },
+    { key: 'has_phone', label: '日本の電話番号あり', ok: hasJapanPhone, reasonKey: 'phone_missing', value: hasJapanPhone ? (raw.phone_number || undefined) : undefined },
+    { key: 'has_newness', label: '新規オープン根拠あり', ok: newnessStrong, reasonKey: 'newness_missing' },
+    { key: 'has_opening_date', label: 'openingDate/開業予定あり', ok: (hasOpeningDate || futureOpening) ? true : false, reasonKey: 'opening_date_missing' },
+    { key: 'not_chain', label: '非チェーン/大手/施設内', ok: nonReachable ? false : true, reasonKey: 'chain_or_large_store' },
+    { key: 'not_org', label: '法人/団体/研究会でない', ok: orgLike ? false : true, reasonKey: 'chain_or_large_store' },
+    { key: 'not_duplicate', label: '重複なし', ok: !isDup, reasonKey: 'duplicate' },
+    { key: 'review_not_many', label: 'Google口コミが多くない', ok: reviewKnown ? ((reviewCount as number) <= warmMax) : null, reasonKey: 'too_many_reviews' },
+    { key: 'oldest_review_recent', label: '最古口コミが新しい/openingあり', ok: (countZero || openingWithin90 || futureOpening) ? true : (oldestRecent ? true : (count1to5 ? false : null)), reasonKey: 'oldest_review_old' },
+  ]
+  const hotReject = buildHotReject({
+    source: 'google_places', temperature, confidence: score,
+    hotRequiredScore: opts?.hotRequiredScore, checks: hotChecks,
+  })
+
   return {
     name,
     address: address || null,
@@ -346,6 +367,12 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     oldest_review_is_recent: oldestRecent,
     review_dates_checked: reviewDatesChecked,
     review_newness_reason: reviewNewnessReason,
+    hot_reject_reasons: hotReject.hot_reject_reasons,
+    hot_reject_summary: hotReject.hot_reject_summary,
+    hot_check_result: hotReject.hot_check_result,
+    hot_missing_requirements: hotReject.hot_missing_requirements,
+    hot_blocking_reason: hotReject.hot_blocking_reason,
+    hot_required_score: hotReject.hot_required_score,
   }
 }
 

@@ -8,6 +8,7 @@ import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
+import { buildHotReject, type HotCheck } from './hotReject.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -316,10 +317,28 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
         const newnessReason = `${site.name}「${bestTitle}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''}${enrichNote} / ${reason}`
 
+        // HOT未達理由（地域メディア向けチェックリスト）
+        const rmConf = (phone ? 35 : 0) + (haveArea ? 25 : 0) + (strongOpening ? 20 : 0) + (placeMatched ? 15 : 0) + (officialVal ? 5 : 0)
+        const rmChecks: HotCheck[] = [
+          { key: 'has_japan', label: '日本国内', ok: isForeign ? false : (japanOk ? true : null), reasonKey: 'not_japan' },
+          { key: 'has_shop_name', label: '店名あり', ok: !!ex.shop_name, reasonKey: 'shop_name_missing' },
+          { key: 'has_industry', label: '業種推定', ok: ex.industry ? true : null, reasonKey: 'industry_unknown' },
+          { key: 'has_area', label: '住所/市区町村あり', ok: haveArea ? true : false, reasonKey: 'address_missing', value: (address || areaMerged) || undefined },
+          { key: 'has_phone', label: '日本の電話番号あり', ok: (phone && isJapanPhone(phone)) ? true : false, reasonKey: 'phone_missing', value: phone || undefined },
+          { key: 'has_newness', label: '新店記事根拠あり', ok: (recentOk || strongOpening) ? true : null, reasonKey: 'newness_missing' },
+          { key: 'has_opening_date', label: 'openingDate/開業予定あり', ok: strongOpening ? true : false, reasonKey: 'opening_date_missing' },
+          { key: 'has_official', label: '公式/Places裏取りあり', ok: (officialVal || placeMatched) ? true : null, reasonKey: 'official_unverified' },
+          { key: 'places_matched', label: 'Google Places一致', ok: placeMatched ? true : null, reasonKey: 'places_no_match' },
+        ]
+        const hotReject = buildHotReject({ source: 'regional_media', temperature, confidence: rmConf, hotRequiredScore: s.rmHotRequiredScore, checks: rmChecks })
+
         const payload: any = {
           name, address, industry: ex.industry || null,
           phone_number: phone || null, website_url: officialVal,
           lead_source: 'regional_media', source_type: 'AI自動投入(地域メディア)',
+          hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
+          hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
+          hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
           lead_temperature: temperature, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',
           owner_reachability_score: phone ? 70 : 30,

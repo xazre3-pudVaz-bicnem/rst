@@ -657,6 +657,63 @@ export default function Leads() {
   const sigBadge = (on: boolean, label: string) =>
     on ? <span className="rounded-sm bg-primary/10 px-1 text-[9px] text-primary">{label}</span> : null
 
+  // HOTチェック項目のラベル（hot_check_result のキー → 日本語）
+  const HOT_CHECK_LABELS: Record<string, string> = {
+    has_japan: '日本国内', has_shop_name: '店名', has_industry: '業種推定', has_area: '住所/市区町村',
+    has_phone: '日本の電話番号', has_newness: '新規オープン根拠', has_opening_date: 'openingDate/開業予定',
+    not_chain: '非チェーン/大手/施設内', not_org: '非法人/団体', not_duplicate: '重複なし',
+    review_not_many: 'Google口コミが多くない', oldest_review_recent: '最古口コミが新しい',
+    has_official: '公式/Places裏取り', places_matched: 'Google Places一致',
+  }
+  const triMark = (v: any) => v === true ? '✅' : v === false ? '❌' : '❓'
+
+  // HOT未達理由セル（HOLD/EXCLUDED 候補に「なぜHOTではないか」を表示）
+  function renderHotReject(c: LeadCandidate) {
+    if (c.lead_temperature === 'HOT') return null
+    const cr: any = c.hot_check_result || {}
+    const conf = cr.confidence ?? c.match_confidence ?? c.owner_reachability_score ?? null
+    const req = c.hot_required_score ?? cr.hot_required_score ?? 75
+    const missing: string[] = Array.isArray(c.hot_missing_requirements) ? c.hot_missing_requirements : []
+    const summary = c.hot_reject_summary
+    const hasData = !!summary || missing.length > 0 || Object.keys(cr).length > 0
+    if (!hasData) {
+      return <div className="mt-0.5 text-[9px] text-muted-foreground">理由未生成：再判定するとHOT未達理由を生成できます</div>
+    }
+    return (
+      <div className="mt-0.5 space-y-0.5">
+        <div className="flex flex-wrap items-center gap-0.5">
+          <span className="rounded-sm bg-amber-100 px-1 text-[9px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">HOLD理由</span>
+          {cr.has_phone === true && <span className="rounded-sm bg-green-100 px-1 text-[9px] text-green-700 dark:bg-green-500/20 dark:text-green-300">電話あり</span>}
+          {(cr.has_area === true || cr.has_address === true) && <span className="rounded-sm bg-green-100 px-1 text-[9px] text-green-700 dark:bg-green-500/20 dark:text-green-300">住所あり</span>}
+          {cr.has_opening_date === false && <span className="rounded-sm bg-rose-100 px-1 text-[9px] text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業日なし</span>}
+          {cr.confidence_ok === false && <span className="rounded-sm bg-rose-100 px-1 text-[9px] text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">確度不足</span>}
+          {cr.not_chain === null && <span className="rounded-sm bg-orange-100 px-1 text-[9px] text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">チェーン未確認</span>}
+          {cr.has_official === null && <span className="rounded-sm bg-orange-100 px-1 text-[9px] text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">裏取り不足</span>}
+          {conf != null && <span className="rounded-sm bg-muted px-1 text-[9px] text-muted-foreground">確度{conf} / HOT基準{req}</span>}
+        </div>
+        {summary && <div className="line-clamp-2 text-[10px] text-amber-700 dark:text-amber-300" title={summary}>{summary}</div>}
+        {Object.keys(cr).length > 0 && (
+          <details className="text-[10px]">
+            <summary className="cursor-pointer text-muted-foreground">HOT判定の内訳を見る</summary>
+            <div className="mt-1 grid grid-cols-1 gap-0.5 rounded border bg-muted/30 p-1.5">
+              {Object.keys(HOT_CHECK_LABELS).filter((k) => k in cr).map((k) => (
+                <div key={k} className="flex justify-between gap-2"><span>{triMark(cr[k])} {HOT_CHECK_LABELS[k]}</span></div>
+              ))}
+              <div className="mt-0.5 border-t pt-0.5 text-muted-foreground">
+                確度 {conf ?? '-'} / HOT基準 {req}（{cr.confidence_ok ? '基準以上' : '基準未満'}）・最終判定: {c.lead_temperature}
+              </div>
+              {missing.length > 0 && <div className="text-rose-600 dark:text-rose-300">不足: {missing.join(' / ')}</div>}
+              {(c.instagram_url || (c as any).source_article_url || c.official_url) && (
+                <div className="truncate text-muted-foreground">元/補完: {[c.instagram_url, (c as any).source_article_url, c.official_url].filter(Boolean)[0]}</div>
+              )}
+              {c.ai_comment && <div className="line-clamp-2 text-muted-foreground" title={c.ai_comment}>判定: {c.ai_comment}</div>}
+            </div>
+          </details>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col">
       <TopBar />
@@ -1558,6 +1615,7 @@ export default function Leads() {
                       <td className="max-w-[260px] p-2">
                         <div className="line-clamp-2 text-[9px] text-muted-foreground" title={c.search_snippet ?? ''}>{c.search_snippet}</div>
                         <div className="mt-0.5 line-clamp-2 text-fuchsia-700 dark:text-fuchsia-300" title={c.instagram_newness_reason ?? c.ai_comment ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>
+                        {renderHotReject(c)}
                       </td>
                       <td className="max-w-[160px] p-2">
                         {(() => {
@@ -1716,7 +1774,7 @@ export default function Leads() {
                             : <span className="text-amber-600">未照合{c.gbp_unregistered_candidate ? '/GBP未登録?' : ''}</span>}
                         </td>
                         <td className="p-2 text-center">{c.ig_auto_importable ? <span className="text-green-600">可</span> : <span className="text-muted-foreground">不可</span>}</td>
-                        <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.instagram_newness_reason ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div></td>
+                        <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.instagram_newness_reason ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>{renderHotReject(c)}</td>
                         <td className="p-2 text-center">{c.instagram_permalink ? <a href={c.instagram_permalink} target="_blank" rel="noreferrer" className="text-primary hover:underline">投稿</a> : '—'}{c.instagram_account_url && <> / <a href={c.instagram_account_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">アカ</a></>}</td>
                         <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
                         <td className="p-2 text-right">
@@ -1831,6 +1889,7 @@ export default function Leads() {
                         {c.review_newness_reason && <div className="text-[10px] text-sky-700 dark:text-sky-300">口コミ日付: {c.review_newness_reason}</div>}
                         {c.newness_reason && <div className="text-[10px] text-green-700 dark:text-green-300">新規理由: {c.newness_reason}</div>}
                         <div className="mt-0.5 line-clamp-3 text-[10px] text-muted-foreground" title={c.ai_comment ?? ''}>{c.ai_comment}</div>
+                        {renderHotReject(c)}
                       </td>
                       <td className="whitespace-nowrap p-2 text-center text-muted-foreground">{moment(c.first_seen_at).format('MM/DD')}</td>
                       <td className="p-2 text-center">
@@ -1849,6 +1908,9 @@ export default function Leads() {
                           <button className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10" onClick={() => handleManualImport(c)}>
                             {c.lead_temperature === 'HOT' ? 'casesへ投入' : '保留から投入'}
                           </button>
+                        )}
+                        {c.lead_temperature !== 'HOT' && c.hot_blocking_reason && !c.imported_to_cases && (
+                          <div className="mt-0.5 text-[9px] text-amber-600 dark:text-amber-300" title={c.hot_reject_summary ?? ''}>HOLD理由: {c.hot_blocking_reason}</div>
                         )}
                       </td>
                     </tr>
