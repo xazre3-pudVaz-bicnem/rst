@@ -12,6 +12,7 @@ import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { detectChain } from './chainFilter.js'
+import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 const PROBE_TIMEOUT_MS = 8000
@@ -173,6 +174,7 @@ export interface ProbeResult {
   ok: boolean; siteName: string
   probed: number; valid: number; invalid: number; saved: number; saveError: number
   hot: number; hotA: number; hotB: number; hold: number; excluded: number; imported: number
+  alreadyImported: number; importFailed: number
   timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; consecutiveNotFound: number
   startId: number; fromId: number; toId: number; nextId: number; lastFoundId: number | null; lastValidId: number | null
   backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
@@ -185,7 +187,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   dayRemaining: number; autoImportPerRun: number; autoImportPerDay: number; importedToday: number; delayMs: number
 }): Promise<ProbeResult> {
   const res: ProbeResult = {
-    ok: true, siteName: site.name, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0,
+    ok: true, siteName: site.name, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0,
     timeouts: 0, dupSkip: 0, mojibake: 0, fetchFail: 0, consecutiveNotFound: 0,
     startId: 0, fromId: 0, toId: 0, nextId: 0, lastFoundId: site.last_found_id ?? null, lastValidId: site.last_valid_id ?? null,
     backfillFrom: null, backfillTo: null, items: [], reason: '', invalidTopReason: '',
@@ -331,8 +333,10 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     else { const { data: ins, error } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: opts.nowIso, imported_to_cases: false, created_by_id: opts.userId }).select('id').single(); if (error) res.saveError++; else res.saved++; candidateId = ins?.id || null }
     savedCandidateId = candidateId
 
+    if (temperature === 'HOT' && alreadyImported) res.alreadyImported++
     if (autoImportAllowed(sc.tier, opts.mode) && phone && isJapanPhone(phone) && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
-      const { data: created } = await admin.from('cases').insert({ name: name || '連番探索候補', address: address || '', phone1: phone, industry: category || null, status: 'リスト', priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番探索 / ${sc.tier}】ID=${probedId}\nURL: ${url}`, created_by_id: opts.userId }).select('id').single()
+      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: name || '連番探索候補', address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n連番URL探索で新規存在確認`, created_by_id: opts.userId }).select('id').single()
+      if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
     }
     await admin.from('sequential_probe_results').insert({
@@ -369,7 +373,7 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
   const s = rawSettings || {}
   const mode: InjectMode = (s.aiInjectMode === 'strict' || s.aiInjectMode === 'aggressive') ? s.aiInjectMode : 'standard'
   const nowIso = new Date().toISOString()
-  const counts = { sources: 0, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, mojibake: 0, fetchFail: 0, phoneYes: 0, addressYes: 0, dupSkip: 0, timeouts: 0 }
+  const counts = { sources: 0, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0, mojibake: 0, fetchFail: 0, phoneYes: 0, addressYes: 0, dupSkip: 0, timeouts: 0 }
   const debug: any = { siteResults: [] as any[] }
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'sequential_probe', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
@@ -392,6 +396,7 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
       dayRemaining = Math.max(0, dayRemaining - pr.probed)
       counts.probed += pr.probed; counts.valid += pr.valid; counts.invalid += pr.invalid; counts.saved += pr.saved; counts.saveError += pr.saveError
       counts.hot += pr.hot; counts.hotA += pr.hotA; counts.hotB += pr.hotB; counts.hold += pr.hold; counts.excluded += pr.excluded; counts.imported += pr.imported
+      counts.alreadyImported += pr.alreadyImported; counts.importFailed += pr.importFailed
       counts.mojibake += pr.mojibake; counts.fetchFail += pr.fetchFail; counts.timeouts += pr.timeouts; counts.dupSkip += pr.dupSkip
       counts.phoneYes += pr.items.filter((i: any) => i.valid && i.phone).length
       counts.addressYes += pr.items.filter((i: any) => i.valid && i.address).length

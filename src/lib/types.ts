@@ -300,6 +300,10 @@ export interface LeadCandidate {
   enriched_google_maps_url?: string | null
   enrichment_profile_fetched?: boolean | null
   enrichment_fail_reason?: string | null
+  source_post_title?: string | null
+  shop_name_source?: string | null
+  enrichment_rejected?: { field: string; value: string; reason: string }[] | null
+  enrichment_region_conflict?: boolean | null
   // 地域メディア記事由来（元情報）
   source_article_excerpt?: string | null
   source_media_family?: string | null
@@ -438,6 +442,7 @@ export interface LeadImportSettings {
   // Instagram Web検索
   iwEnabled: boolean
   iwSearchMode: 'serper_free' | 'bing_advanced' | 'serper_paid' // 検索モード
+  iwAllowNoPhone: boolean      // 電話番号なしでもHOT許可（初期OFF）
   iwAutoImport: boolean        // HOT自動投入（初期OFF）
   iwRequirePhone: boolean      // 電話番号必須（初期OFF）
   iwPlacesRequired: boolean    // Google Places照合必須（初期OFF）

@@ -278,7 +278,7 @@ export default function Leads() {
         body: JSON.stringify({
           settings: {
             // 全国検索: 地域・業種はクエリに入れない（areaPreset/industriesは送らない）
-            iwAutoImport: settings.iwAutoImport, iwSearchMode: settings.iwSearchMode, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
+            iwAutoImport: settings.iwAutoImport, iwSearchMode: settings.iwSearchMode, iwAllowNoPhone: settings.iwAllowNoPhone, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
             iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
             iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
             iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
@@ -532,7 +532,7 @@ export default function Leads() {
         regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
       })
       await AppConfigApi.set('instagram_web_auto', {
-        iwEnabled: settings.iwEnabled, iwSearchMode: settings.iwSearchMode, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
+        iwEnabled: settings.iwEnabled, iwSearchMode: settings.iwSearchMode, iwAllowNoPhone: settings.iwAllowNoPhone, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
         iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
         iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
         iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
@@ -1118,6 +1118,7 @@ export default function Leads() {
                   </div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期OFF）</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAllowNoPhone} onChange={(e) => saveSettings({ ...settings, iwAllowNoPhone: e.target.checked })} />電話番号なしでもHOT許可（初期OFF・通常は電話番号なしはHOLD）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
                   <div className="space-y-1"><Label>1日最大実行回数</Label><Input type="number" min={1} value={settings.iwMaxRunsPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxRunsPerDay: Math.max(1, Number(e.target.value) || 4) })} className="h-8" /></div>
@@ -1852,7 +1853,10 @@ export default function Leads() {
                   <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {probeResult.hotB ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {probeResult.hold ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {probeResult.excluded ?? 0}</span>
-                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {probeResult.imported ?? 0}</span>
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">lead保存 {probeResult.saved ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases新規投入 {probeResult.imported ?? 0}</span>
+                  {Number(probeResult.alreadyImported ?? 0) > 0 && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">既存投入済 {probeResult.alreadyImported}</span>}
+                  {(Number(probeResult.saveError ?? 0) > 0 || Number(probeResult.importFailed ?? 0) > 0) && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存失敗 {(probeResult.saveError ?? 0)} / 投入失敗 {(probeResult.importFailed ?? 0)}</span>}
                   {Number(probeResult.mojibake ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">文字化け {probeResult.mojibake}</span>}
                   {Number(probeResult.fetchFail ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">fetch失敗 {probeResult.fetchFail}</span>}
                   {Number(probeResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {probeResult.dupSkip}</span>}
@@ -1894,7 +1898,7 @@ export default function Leads() {
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5 })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5 })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 0, backfillCount: 20, force: true, startId: (st.last_checked_id ?? st.current_probe_id) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回範囲を再確認</button>
-                      <button onClick={() => { const v = prompt('開始IDを入力', String(st.current_probe_id ?? st.start_probe_id ?? '')); if (v) probeSiteAction(st.id, { startId: Number(v), forwardCount: 20, backfillCount: 0 }) }} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">指定IDから探索</button>
+                      <button onClick={() => { const v = prompt('開始IDを入力（その位置から本番探索＝保存あり・強制再取得）', String(st.last_found_id ?? st.current_probe_id ?? st.start_probe_id ?? '')); if (v) probeSiteAction(st.id, { startId: Number(v), forwardCount: 20, backfillCount: 0, force: true }) }} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">指定IDから本番探索（保存）</button>
                       <button onClick={() => { const v = prompt('current_probe_id を編集', String(st.current_probe_id ?? '')); if (v) updateProbeSite(st.id, { current_probe_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">current_id編集</button>
                       <button onClick={() => { const v = prompt('last_checked_id を編集', String(st.last_checked_id ?? '')); if (v) updateProbeSite(st.id, { last_checked_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">last_checked編集</button>
                       <button onClick={() => updateProbeSite(st.id, { is_active: !st.is_active })} className="rounded border px-1.5 py-0.5 text-[9px]">{st.is_active ? '無効化' : '有効化'}</button>
@@ -2455,10 +2459,21 @@ export default function Leads() {
                   {[['電話番号', drawerCand.phone_number], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (
                     <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2 break-words">{v ? String(v) : '—'}</dd></div>
                   ))}
+                  {[['店名の取得元', (drawerCand as any).shop_name_source === 'instagram_profile' ? 'Instagramプロフィール' : (drawerCand as any).shop_name_source === 'post_title' ? '投稿タイトル（要確認）' : (drawerCand as any).shop_name_source], ['投稿タイトル', (drawerCand as any).source_post_title], ['補完信頼度', (drawerCand as any).enrichment_confidence], ['地域矛盾', (drawerCand as any).enrichment_region_conflict ? 'あり' : 'なし']].map(([k, v]) => v != null && v !== '' ? (
+                    <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2 break-words">{String(v)}</dd></div>
+                  ) : null)}
                   {[['元URL', (drawerCand as any).source_detail_url || (drawerCand as any).source_article_url], ['Instagram', drawerCand.instagram_url], ['Google Maps', (drawerCand as any).enriched_google_maps_url || (drawerCand as any).map_url], ['公式', drawerCand.official_url || drawerCand.website_url]].map(([k, v]) => v ? (
                     <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2"><a href={String(v)} target="_blank" rel="noreferrer" className="break-all text-primary hover:underline">{String(v).slice(0, 60)}</a></dd></div>
                   ) : null)}
                 </dl>
+                {Array.isArray((drawerCand as any).enrichment_rejected) && (drawerCand as any).enrichment_rejected.length > 0 && (
+                  <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                    <div className="font-bold">採用しなかった補完候補</div>
+                    {(drawerCand as any).enrichment_rejected.map((rj: any, i: number) => (
+                      <div key={i}>{rj.field === 'phone' ? '電話' : rj.field === 'address' ? '住所' : rj.field}: {rj.value} — 理由: {rj.reason}</div>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {!drawerCand.imported_to_cases && drawerCand.lead_temperature !== 'EXCLUDED' && <Button size="sm" onClick={() => { handleManualImport(drawerCand); setDrawerCand(null) }}>{drawerCand.lead_temperature === 'HOT' ? '案件投入' : '手動投入'}</Button>}
                   {drawerCand.lead_temperature === 'EXCLUDED' && <Button size="sm" variant="outline" onClick={() => { handleManualImport(drawerCand, true); setDrawerCand(null) }}>除外解除して投入</Button>}

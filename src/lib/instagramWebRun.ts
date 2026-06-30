@@ -7,7 +7,7 @@
 import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './googlePlacesRun.js'
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
-import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose } from './enrichProfile.js'
+import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
@@ -31,6 +31,7 @@ export function getDefaultIwSettings() {
     iwEnrichDailyCap: 100,      // 1日最大補完候補数
     // 検索モード: serper_free=簡易クエリのみ / bing_advanced=site:検索 / serper_paid=高度検索
     iwSearchMode: 'serper_free',
+    iwAllowNoPhone: false,      // 電話番号なしでもHOT許可（既定OFF）
   }
 }
 
@@ -216,6 +217,8 @@ export interface EnrichResult {
   phone_source: string; address_source: string; google_maps_url: string
   profile_fetched: boolean; profile_reason: string; link_count: number; links_checked: number
   places_matched: boolean; fail_reason: string
+  // 店名（プロフィール由来）・地域矛盾・不採用補完
+  profile_name: string; region_conflict: boolean; rejected: { field: string; value: string; reason: string }[]
   // Google Places openingDate / businessStatus（口コミより強い新店シグナル）
   business_status: string; opening_raw: string | null; opening_confidence: number
   opening_year: number | null; opening_month: number | null; opening_day: number | null
@@ -243,12 +246,31 @@ export async function enrichCandidate(
   let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
   let businessStatus = ''
   let profileFetched = false, profileReason = '', linkCount = 0, linksChecked = 0, placesMatched = false
+  let profileName = '', profilePref = '', regionConflict = false
+  const rejected: { field: string; value: string; reason: string }[] = []
   const sources: { url: string; got: string }[] = []
   const failReasons: string[] = []
   let queriesUsed = 0
-  // 住所/電話を取得元の信頼度つきで採用（より高信頼の元なら上書き）
-  const setPhone = (v: string, src: string, url: string) => { if (v && isJapanPhone(v) && (!phone || (SRC_CONF[src] || 0) > (SRC_CONF[phoneSource] || 0))) { phone = v.trim(); phoneSource = src; sources.push({ url, got: `phone:${src}` }) } }
-  const setAddr = (v: string, pf: string, ct: string, src: string, url: string) => { if (v && (!address || (SRC_CONF[src] || 0) > (SRC_CONF[addressSource] || 0))) { address = v; addressSource = src; if (pf) prefecture = pf; if (ct) city = ct; sources.push({ url, got: `address:${src}` }) } }
+  const HIGH_CONF = new Set(['google_places', 'google_maps_url', 'instagram_profile'])
+  // 住所の都道府県がプロフィール地域と矛盾しないか（profilePref未確定なら常にOK）
+  const regionOk = (addr: string): boolean => {
+    if (!profilePref) return true
+    const r = extractAddressLoose(addr)
+    if (r.prefecture && r.prefecture !== profilePref) return false
+    return true
+  }
+  // 住所/電話を取得元の信頼度つきで採用。低信頼(検索スニペット/公式)はプロフィール地域と矛盾したら不採用
+  const setPhone = (v: string, src: string, url: string) => {
+    if (!v || !isJapanPhone(v)) return
+    // 検索スニペット由来の電話は、地域一致した住所 or Places一致がある時だけ採用（別店舗の誤一致防止）
+    if (src === 'snippet' && !(placesMatched || (address && regionOk(address)))) { rejected.push({ field: 'phone', value: v.trim(), reason: '検索スニペット由来でプロフィール地域と一致確認できず不採用' }); regionConflict = true; return }
+    if (!phone || (SRC_CONF[src] || 0) > (SRC_CONF[phoneSource] || 0)) { phone = v.trim(); phoneSource = src; sources.push({ url, got: `phone:${src}` }) }
+  }
+  const setAddr = (v: string, pf: string, ct: string, src: string, url: string) => {
+    if (!v) return
+    if (!HIGH_CONF.has(src) && !regionOk(v)) { rejected.push({ field: 'address', value: v, reason: `補完住所がInstagramプロフィールの地域(${profilePref})と矛盾` }); regionConflict = true; return }
+    if (!address || (SRC_CONF[src] || 0) > (SRC_CONF[addressSource] || 0)) { address = v; addressSource = src; if (pf) prefecture = pf; if (ct) city = ct; sources.push({ url, got: `address:${src}` }) }
+  }
   try {
     let mapUrl = ''
     // 1) Instagramプロフィール取得（投稿スニペットより優先）
@@ -256,6 +278,10 @@ export async function enrichCandidate(
       const prof = await fetchInstagramProfile(ctx.username)
       profileFetched = prof.ok
       profileReason = prof.reason
+      profileName = prof.name || ''
+      // プロフィール地域（住所→なければユーザー名の地名）を先に確定し、以降の補完の地域整合チェックに使う
+      profilePref = prof.prefecture || regionFromUsername(ctx.username).prefecture || ''
+      if (!profilePref && prof.city) profilePref = extractAddressLoose(prof.city).prefecture
       if (!prof.ok && prof.reason) failReasons.push(prof.reason)
       const purl = `https://www.instagram.com/${ctx.username}/`
       if (prof.phone) setPhone(prof.phone, 'instagram_profile', purl)
@@ -355,6 +381,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
+      profile_name: profileName, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: (phone && address) ? '' : failReasons.slice(0, 4).join(' / '),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
@@ -365,6 +392,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
+      profile_name: profileName, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: String(e?.message || e).slice(0, 120),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
@@ -652,6 +680,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew, regionalNew: false, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
           isChain: ch.definite, chainSuspect: ch.suspect && !ch.definite, isOrg: false, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
+          allowNoPhone: !!s.iwAllowNoPhone,
         }, iwMode)
         const tt = tierToTemperature(sc.tier)
         let temperature: string = tt.temperature
@@ -662,7 +691,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         else if (temperature === 'EXCLUDED') { counts.excluded++; q.excluded++ }
         else { counts.hold++; q.hold++ }
 
-        const name = j.shop_name || shop || (area ? `${area}の新店候補` : 'Instagram新店候補')
+        // 店名は Instagramプロフィール表示名を最優先（投稿タイトル『プレオープン始まります！！』等を店名にしない）
+        const POST_TITLE_RE = /(プレ|グランド|ニュー)?オープン(しました|します|予定|のお知らせ|始まり)|開店|開業|開院|新規オープン|本日|お知らせ|キャンペーン|セール|！|!/
+        const titleish = (s: string) => !s || POST_TITLE_RE.test(s) || s.length > 28
+        const name = (enrich?.profile_name && !titleish(enrich.profile_name)) ? enrich.profile_name
+          : (j.shop_name && !titleish(j.shop_name)) ? j.shop_name
+          : (shop && !titleish(shop)) ? shop
+          : enrich?.profile_name || (usernameFromUrl(r.url) || (area ? `${area}の新店候補` : 'Instagram新店候補'))
+        const sourcePostTitle = (r.title || '').slice(0, 200)
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
         const reason = foreignFinal
           ? '除外: 日本国外の候補のため除外'
@@ -713,6 +749,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           enriched_phone_source: enrich?.phone_source || null, enriched_address_source: enrich?.address_source || null,
           enriched_google_maps_url: enrich?.google_maps_url || null,
           enrichment_profile_fetched: enrich?.profile_fetched ?? null, enrichment_fail_reason: enrich?.fail_reason || null,
+          source_post_title: sourcePostTitle, shop_name_source: enrich?.profile_name ? 'instagram_profile' : 'post_title',
+          enrichment_rejected: enrich?.rejected?.length ? enrich.rejected : null, enrichment_region_conflict: enrich?.region_conflict ?? null,
           // Google openingDate / businessStatus（補完経由）
           google_business_status: enrich?.business_status || null, google_opening_date_raw: enrich?.opening_raw || null,
           google_opening_date_year: enrich?.opening_year ?? null, google_opening_date_month: enrich?.opening_month ?? null, google_opening_date_day: enrich?.opening_day ?? null,

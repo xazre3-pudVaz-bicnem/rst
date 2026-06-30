@@ -108,11 +108,20 @@ export async function expandMapUrl(url: string, timeoutMs = 8000): Promise<MapEx
   }
 }
 
-export interface ProfileResult { ok: boolean; text: string; bio: string; phone: string; address: string; prefecture: string; city: string; externalUrl: string; mapUrl: string; links: string[]; reason: string; timedOut: boolean }
+export interface ProfileResult { ok: boolean; name: string; text: string; bio: string; phone: string; address: string; prefecture: string; city: string; externalUrl: string; mapUrl: string; links: string[]; reason: string; timedOut: boolean }
+// ユーザー名に含まれる地名（例: les_tendresse.utsunomiya → 宇都宮）を都道府県/市区町村へ
+export function regionFromUsername(username: string): { prefecture: string; city: string } {
+  const u = (username || '').toLowerCase().replace(/[._-]+/g, ' ')
+  const ROMAJI: Record<string, string> = {
+    utsunomiya: '宇都宮市', tokyo: '東京都', osaka: '大阪市', kyoto: '京都市', nagoya: '名古屋市', yokohama: '横浜市', kobe: '神戸市', sapporo: '札幌市', fukuoka: '福岡市', sendai: '仙台市', hiroshima: '広島市', niigata: '新潟市', kanazawa: '金沢市', okinawa: '沖縄県', naha: '那覇市', ishigaki: '石垣市', chiba: '千葉市', saitama: 'さいたま市', kawasaki: '川崎市', shibuya: '渋谷区', shinjuku: '新宿区', ginza: '中央区', ikebukuro: '豊島区', omiya: 'さいたま市', kumagaya: '熊谷市', takasaki: '高崎市', maebashi: '前橋市', mito: '水戸市', kofu: '甲府市', matsumoto: '松本市', hamamatsu: '浜松市', shizuoka: '静岡市', gifu: '岐阜市', tsu: '津市', otsu: '大津市', nara: '奈良市', wakayama: '和歌山市', okayama: '岡山市', kurashiki: '倉敷市', matsuyama: '松山市', kochi: '高知市', kagoshima: '鹿児島市', miyazaki: '宮崎市', oita: '大分市', kumamoto: '熊本市', nagasaki: '長崎市', saga: '佐賀市', kitakyushu: '北九州市', himeji: '姫路市', nishinomiya: '西宮市',
+  }
+  for (const [k, v] of Object.entries(ROMAJI)) { if (new RegExp(`(^| )${k}( |$)`).test(u) || u.includes(k)) { return { prefecture: prefectureFromCity(v).prefecture, city: v } } }
+  return { prefecture: '', city: '' }
+}
 
 /** Instagramプロフィールページを取得し、本文/電話/住所/外部リンク/Maps URL を抽出 */
 export async function fetchInstagramProfile(username: string, timeoutMs = 8000): Promise<ProfileResult> {
-  const empty: ProfileResult = { ok: false, text: '', bio: '', phone: '', address: '', prefecture: '', city: '', externalUrl: '', mapUrl: '', links: [], reason: '', timedOut: false }
+  const empty: ProfileResult = { ok: false, name: '', text: '', bio: '', phone: '', address: '', prefecture: '', city: '', externalUrl: '', mapUrl: '', links: [], reason: '', timedOut: false }
   if (!username) return { ...empty, reason: 'Instagramユーザー名が取得できず' }
   const r = await fetchPage(`https://www.instagram.com/${encodeURIComponent(username)}/`, timeoutMs)
   if (!r.ok || !r.html) return { ...empty, timedOut: r.timedOut, reason: r.timedOut ? 'Instagramプロフィール取得タイムアウト' : `Instagramプロフィール取得失敗(${r.error || r.status})` }
@@ -123,6 +132,14 @@ export async function fetchInstagramProfile(username: string, timeoutMs = 8000):
   const desc = html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] || ''
   const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''
   // JSON埋め込み（ビジネスアカウントは住所/電話を持つことがある）
+  // 表示名（full_name）= 正式店名。og:title「店名 (@user)」/ <title>からも抽出
+  let fullName = unesc(html.match(/"full_name":"((?:[^"\\]|\\.)*)"/)?.[1] || '')
+  if (!fullName) {
+    const ogt = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']*)["']/i)?.[1] || ''
+    const tt = title
+    fullName = (ogt || tt).replace(/\s*[(（]@[^)）]*[)）].*/, '').replace(/\s*[•·|｜].*$/, '').replace(/\s*on Instagram.*$/i, '').replace(/Instagram.*$/i, '').trim()
+  }
+  fullName = fullName.slice(0, 60)
   const bio = unesc(html.match(/"biography":"((?:[^"\\]|\\.)*)"/)?.[1] || '')
   const bphone = (html.match(/"(?:business_phone_number|public_phone_number|contact_phone_number)":"([^"]*)"/)?.[1] || '').trim()
   const extUrl = unesc(html.match(/"external_url":"((?:[^"\\]|\\.)*)"/)?.[1] || '')
@@ -152,5 +169,5 @@ export async function fetchInstagramProfile(username: string, timeoutMs = 8000):
   const mapUrl = links.find((u) => MAP_URL_RE.test(u)) || ''
   const ok = !!(bio || og || addrStreet || extUrl)
   const reason = ok ? '' : 'プロフィール本文に住所/電話/リンクなし'
-  return { ok, text, bio: bio || og, phone, address, prefecture, city, externalUrl: extUrl, mapUrl, links, reason, timedOut: false }
+  return { ok, name: fullName, text, bio: bio || og, phone, address, prefecture, city, externalUrl: extUrl, mapUrl, links, reason, timedOut: false }
 }
