@@ -192,6 +192,44 @@ export function parseTabelog(html: string, mojibake: boolean): JalanSpot {
   return { name, address, phone, category: genre, official, mapUrl, reviews: '', valid: !invalidReason, invalidReason }
 }
 
+// EPARK店舗/EPARK歯科/Caloo病院/petCaloo動物病院 の詳細ページ共通パーサー（店名h1優先・〒/都道府県住所・tel/電話・口コミ件数）
+const EPARK_CALOO_INVALID_RE = /(見つかりません|ページが存在しません|お探しのページ|該当する.*ありません|\[404\]|削除されたか|公開を終了)/
+export function parseEparkCaloo(html: string, mojibake: boolean): JalanSpot {
+  const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '' }
+  if (mojibake) return { ...empty, invalidReason: '文字化けで読めない' }
+  const body = stripTags(html)
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || ''
+  const h1 = stripTags(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '').trim()
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''
+  if (EPARK_CALOO_INVALID_RE.test(og) || EPARK_CALOO_INVALID_RE.test(title) || INVALID_RE.test(body)) return { ...empty, invalidReason: 'ページ未存在/掲載終了' }
+  // 店名/医院名: h1優先 → og:title整形（[エリア]/｜店舗情報 - EPARK / の口コミ・評判 (N件) / 【…】 を除去）
+  const cleanName = (raw: string) => stripTags(raw)
+    .replace(/の口コミ[・･].*$/, '').replace(/の評判.*$/, '').replace(/\s*[（(]\s*[\d,]+\s*件.*$/, '')
+    .replace(/\s*[\[［【][^\]］】]*[\]］】]/g, '').replace(/\s*[|｜].*$/, '').replace(/\s*-\s*EPARK.*$/i, '').replace(/【[^】]*】/g, '').trim().slice(0, 50)
+  let name = h1 ? cleanName(h1) : cleanName(og || title)
+  if (!name) name = cleanName(og || title)
+  // 住所: 〒+都道府県 を最優先（所在地/住所ラベル）→ 都道府県アンカー
+  let address = (body.match(/〒\s*\d{3}-?\d{4}\s*((?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[^\n。、）)【]{3,50})/)?.[1] || '').trim()
+  if (!address) address = (body.match(/(?:所在地|住所)[:：\s]{0,4}(〒?\s*\d{0,3}-?\d{0,4}\s*(?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[^\n。、）)【]{3,50})/)?.[1] || '').trim()
+  if (!address) address = (body.match(/(?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[一-龥ぁ-んァ-ヶ0-9０-９]{2,30}[-－0-9０-９]{1,12}/)?.[0] || '').trim()
+  address = address.replace(/(大きな地図|地図で見る|アクセス|ＭＡＰ|MAP|電話|TEL|診療).*$/i, '').replace(/\s+/g, '').slice(0, 70)
+  // 電話: tel:リンク → 電話/TEL/予約ラベル → 本文の日本の番号
+  let phone = (html.match(/href=["']tel:(\+?[\d-]{9,15})["']/i)?.[1] || '').replace(/^\+81/, '0')
+  if (!phone) phone = extractJpPhone(body.match(/(?:電話|TEL|ＴＥＬ|予約専用|お問い?合わせ)[^\d+]{0,8}(0\d[\d\-()\s]{8,15})/i)?.[1] || '')
+  if (!phone) phone = extractJpPhone(body)
+  // 口コミ件数（og:title「(N件)」/ 本文「口コミ N件」）
+  const reviews = (og.match(/[（(]\s*([\d,]+)\s*件/)?.[1] || body.match(/口コミ[・･]?\s*([\d,]+)\s*件/)?.[1] || '').replace(/,/g, '')
+  // 業種/診療科目（最初の語のみ。UI語/付帯語は除去）
+  let category = (body.match(/診療科目[:：\s、，]*([一-龥ぁ-んァ-ヶ]{2,8}科)/)?.[1] || body.match(/(?:ジャンル|業種)[:：\s]*([一-龥ぁ-んァ-ヶ]{2,12})/)?.[1] || '').trim()
+  if (/で探す|専門外来|資格|を探す|検索|ランキング|もっと見る/.test(category)) category = ''
+  category = category.slice(0, 16)
+  const official = html.match(/href=["'](https?:\/\/(?!epark\.jp|caloo\.jp|haisha-yoyaku\.jp)[^"']+)["'][^>]*>\s*(?:公式|ホームページ|オフィシャル|HP)/i)?.[1] || ''
+  const mapUrl = html.match(/href=["'](https?:\/\/(?:maps\.google|www\.google\.[^/]*\/maps|maps\.app\.goo\.gl)[^"']+)["']/i)?.[1] || ''
+  let invalidReason = ''
+  if (!name && !phone && !address) invalidReason = '店名/電話/住所が取れない'
+  return { name, address, phone, category, official, mapUrl, reviews, valid: !invalidReason, invalidReason }
+}
+
 export interface ProbeTestItem { url: string; ok: boolean; status: number; charset: string; mojibake: boolean; valid: boolean; name: string; address: string; phone: string; category: string; parser_used: string; invalidReason: string }
 /** 既知URL（または指定ID）でじゃらん専用パーサーを単体テスト（DB保存なし） */
 export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: boolean; items: ProbeTestItem[]; summary: { addressOk: boolean; phoneOk: boolean; parserOk: boolean } }> {
@@ -206,9 +244,10 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
     await new Promise((rs) => setTimeout(rs, 400))
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
+    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
+    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : 'generic_detail_page'
     const classifyTest = (resp: typeof r) => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : null
       const body = resp.html ? stripTags(resp.html) : ''
       const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
       const nm = sn0 && sn0.valid ? sn0.name : ''
@@ -330,11 +369,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
 
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
+    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
+    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : 'generic_detail_page'
 
     // ===== 4分類: valid / invalid(404/不存在) / fetch_failed(403,429,5xx,timeout,network) / parser_failed(200だが抽出不可・文字化け) =====
     const classify = (resp: typeof r): { status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; reason: string; spot: any; name: string; address: string; phone: string; category: string; bodyAll: string } => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : null
       const bodyAll = resp.html ? stripTags(resp.html) : ''
       const sn = sanitizeShopName(spot ? spot.name : '', { placesMatched: false })
       const name = sn.valid ? sn.name : ''

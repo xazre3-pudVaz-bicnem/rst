@@ -100,6 +100,7 @@ export function isValidJpPhone(raw: string): boolean {
   if (d[0] !== '0') return false
   if (/^(0120|0800|0570)\d{6}$/.test(d)) return true   // フリーダイヤル/ナビダイヤル(10桁)
   if (/^0[789]0\d{8}$/.test(d)) return true            // 携帯(11桁)
+  if (/^050\d{8}$/.test(d)) return true                // IP電話(050・11桁)
   if (/^0[1-9]\d{8}$/.test(d)) return true             // 固定(10桁・2桁目1-9)
   return false
 }
