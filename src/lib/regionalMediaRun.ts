@@ -13,7 +13,7 @@ import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirecto
 import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -452,6 +452,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
           let temperature = dc.temperature
           let dHotTier = dc.hot_tier
+          // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
+          const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 200)}`)
+          if (multiD.exclude) { temperature = 'EXCLUDED'; dHotTier = null }
           // 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B
           const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
           const cardNew = open.confidence !== 'none' || true  // 店舗ディレクトリ新着＝新規掲載根拠
@@ -692,6 +695,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
           let temperature = dc.temperature
           let dHotTier = dc.hot_tier
+          // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
+          const multiM = detectMultiStore(`${dName} ${info.shop_name || ''} ${cand.blockText || ''}`)
+          if (multiM.exclude) { temperature = 'EXCLUDED'; dHotTier = null }
           // ===== 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B =====
           const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
           const cardNew = cand.matchedKeywords.length > 0 || open.confidence !== 'none'
@@ -881,7 +887,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         // 新店根拠（店名の有無に依存させない・新方針）
         const articleNew = recentOk || strongOpening || !!ex.open_date
         const chA = detectChain(shopName || ex.shop_name || '', bestTitle || '')
-        const bigA = detectBigOrPublic(`${shopName || ex.shop_name || ''} ${address}`)
+        const bigA0 = detectBigOrPublic(`${shopName || ex.shop_name || ''} ${address}`)
+        const multiA = detectMultiStore(`${shopName || ex.shop_name || ''} ${bestTitle || ''} ${(meta.excerpt || '').slice(0, 200)}`)
+        const bigA = { exclude: bigA0.exclude || multiA.exclude, reason: bigA0.exclude ? bigA0.reason : multiA.reason }
         const sc = scoreCandidate({
           source: 'regional_media', isJapan: japanOk, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone),
           hasArea: haveArea, hasOpeningDate: strongOpening || !!ex.open_date, isFuture: enrich?.business_status === 'FUTURE_OPENING',

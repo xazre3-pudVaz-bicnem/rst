@@ -6,7 +6,7 @@ import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japan
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { scoreCandidate, tierToTemperature } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, BIG_REVIEW_COUNT } from './targetFilter.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -341,6 +341,10 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   // businessStatus 反映
   if (closedPerm) { temperature = 'EXCLUDED'; hot_tier = null }
   else if (closedTemp && temperature === 'HOT') { temperature = 'HOLD'; hot_tier = null }
+  // 確立済み大型は除外: Google口コミが極端に多い(200+) / 多店舗・フランチャイズ語（openingDateがあっても除外）
+  const bigEstablished = reviewKnown && (reviewCount as number) >= BIG_REVIEW_COUNT
+  const multiStore = detectMultiStore(name)
+  if (bigEstablished || multiStore.exclude) { temperature = 'EXCLUDED'; hot_tier = null }
   // グローバル: HOTは電話＋住所が必須
   if (temperature === 'HOT' && (!phoneOkFinal || !addrOkFinal)) { temperature = 'HOLD'; hot_tier = null }
 

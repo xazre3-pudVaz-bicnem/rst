@@ -10,7 +10,7 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -241,7 +241,7 @@ export interface EnrichResult {
   profile_fetched: boolean; profile_reason: string; link_count: number; links_checked: number
   places_matched: boolean; fail_reason: string
   // 店名（プロフィール由来）・地域矛盾・不採用補完
-  profile_name: string; place_name: string; region_conflict: boolean; rejected: { field: string; value: string; reason: string }[]
+  profile_name: string; place_name: string; profile_followers: number; profile_bio: string; region_conflict: boolean; rejected: { field: string; value: string; reason: string }[]
   // Google Places openingDate / businessStatus（口コミより強い新店シグナル）
   business_status: string; opening_raw: string | null; opening_confidence: number
   opening_year: number | null; opening_month: number | null; opening_day: number | null
@@ -269,7 +269,7 @@ export async function enrichCandidate(
   let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
   let businessStatus = ''
   let profileFetched = false, profileReason = '', linkCount = 0, linksChecked = 0, placesMatched = false
-  let profileName = '', profilePref = '', regionConflict = false, placeName = ''
+  let profileName = '', profilePref = '', regionConflict = false, placeName = '', profileFollowers = 0, profileBio = ''
   const rejected: { field: string; value: string; reason: string }[] = []
   const sources: { url: string; got: string }[] = []
   const failReasons: string[] = []
@@ -302,6 +302,8 @@ export async function enrichCandidate(
       profileFetched = prof.ok
       profileReason = prof.reason
       profileName = prof.name || ''
+      profileFollowers = prof.followers || 0
+      profileBio = prof.bio || ''
       // プロフィール地域（住所→なければユーザー名の地名）を先に確定し、以降の補完の地域整合チェックに使う
       profilePref = prof.prefecture || regionFromUsername(ctx.username).prefecture || ''
       if (!profilePref && prof.city) profilePref = extractAddressLoose(prof.city).prefecture
@@ -404,7 +406,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
-      profile_name: profileName, place_name: placeName, region_conflict: regionConflict, rejected,
+      profile_name: profileName, place_name: placeName, profile_followers: profileFollowers, profile_bio: profileBio, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: (phone && address) ? '' : failReasons.slice(0, 4).join(' / '),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
@@ -415,7 +417,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
-      profile_name: profileName, place_name: placeName, region_conflict: regionConflict, rejected,
+      profile_name: profileName, place_name: placeName, profile_followers: profileFollowers, profile_bio: profileBio, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: String(e?.message || e).slice(0, 120),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
@@ -720,6 +722,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const ch = detectChain(j.shop_name || shop || '', `${r.title} ${r.snippet}`)
         // 道の駅/産直/JA/公共/大型施設/大手 は営業対象外（ターゲット=個人事業主・小規模店）。プロフィール名/本文/タイトルから検出
         const bigIW = detectBigOrPublic(`${enrich?.profile_name || ''} ${j.shop_name || shop || ''} ${addressVal || ''}`)
+        // 確立済み大型: フォロワー数万 / 多店舗・フランチャイズ語
+        const igFollowers = enrich?.profile_followers || 0
+        const multiStoreIW = detectMultiStore(`${enrich?.profile_name || ''} ${enrich?.profile_bio || ''} ${r.title} ${r.snippet}`)
+        const bigEstablishedIW = igFollowers >= BIG_IG_FOLLOWERS || multiStoreIW.exclude
         const sc = scoreCandidate({
           source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone),
           hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
@@ -730,7 +736,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const tt = tierToTemperature(sc.tier)
         let temperature: string = tt.temperature
         let hotTier = tt.hot_tier
-        if (bigIW.exclude) { temperature = 'EXCLUDED'; hotTier = null }  // 道の駅/産直/大型施設/公共/大手 → EXCLUDED
+        if (bigIW.exclude || bigEstablishedIW) { temperature = 'EXCLUDED'; hotTier = null }  // 道の駅/大型/公共/大手/フォロワー数万/多店舗 → EXCLUDED
         // 設定: 電話必須/Places必須が有効なら未充足はHOLDに戻す
         if (temperature === 'HOT' && ((s.iwRequirePhone && !finalPhone) || (s.iwPlacesRequired && !placeMatched))) temperature = 'HOLD'
         if (temperature === 'HOT') { counts.hot++; q.hot++; if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }

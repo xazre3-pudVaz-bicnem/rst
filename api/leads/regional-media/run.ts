@@ -10,7 +10,7 @@ import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
-import { detectBigOrPublic, detectBigOrPublicStrong } from '../../../src/lib/targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from '../../../src/lib/targetFilter.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -228,14 +228,16 @@ export default async function handler(req: any, res: any) {
   // 大手/公共/大型施設/道の駅/産直/JA等の既存候補を EXCLUDED へ（ターゲット=個人事業主・小規模店に絞る）
   if (body?.excludeBigPublic) {
     const limit = Math.min(5000, Number(body.excludeBigPublic.limit) || 3000)
-    const { data: rows } = await admin.from('lead_candidates').select('id,name,address,extracted_shop_name,source_post_title,source_article_title').neq('lead_temperature', 'EXCLUDED').limit(limit)
+    const { data: rows } = await admin.from('lead_candidates').select('id,name,address,extracted_shop_name,source_post_title,source_article_title,search_snippet,user_rating_count').neq('lead_temperature', 'EXCLUDED').limit(limit)
     let scanned = 0, excluded = 0
     for (const r of (rows || [])) {
       scanned++
-      // 店名+住所は厳密フィルタ、タイトルは強語のみ（誤検出防止）
-      const big = detectBigOrPublic(`${r.name || ''} ${r.extracted_shop_name || ''} ${r.address || ''}`).exclude
-        ? detectBigOrPublic(`${r.name || ''} ${r.extracted_shop_name || ''} ${r.address || ''}`)
-        : detectBigOrPublicStrong(`${r.name || ''} ${r.source_post_title || ''} ${r.source_article_title || ''}`)
+      // 店名+住所は厳密フィルタ、タイトルは強語のみ（誤検出防止）。＋多店舗/フランチャイズ語＋口コミ極端に多い(200+)
+      const nameAddr = `${r.name || ''} ${r.extracted_shop_name || ''} ${r.address || ''}`
+      const titleText = `${r.name || ''} ${r.source_post_title || ''} ${r.source_article_title || ''} ${String(r.search_snippet || '').slice(0, 150)}`
+      let big = detectBigOrPublic(nameAddr).exclude ? detectBigOrPublic(nameAddr) : detectBigOrPublicStrong(`${r.name || ''} ${r.source_post_title || ''} ${r.source_article_title || ''}`)
+      if (!big.exclude) { const ms = detectMultiStore(titleText); if (ms.exclude) big = ms }
+      if (!big.exclude && typeof r.user_rating_count === 'number' && r.user_rating_count >= 200) big = { exclude: true, hit: 'reviews', reason: `Google口コミ${r.user_rating_count}件（200+）の確立済み大型のため営業対象外。` }
       if (big.exclude) {
         await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, name_unconfirmed_hot: false, ai_comment: big.reason }).eq('id', r.id)
         excluded++

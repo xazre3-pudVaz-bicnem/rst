@@ -108,7 +108,7 @@ export async function expandMapUrl(url: string, timeoutMs = 8000): Promise<MapEx
   }
 }
 
-export interface ProfileResult { ok: boolean; name: string; text: string; bio: string; phone: string; address: string; prefecture: string; city: string; externalUrl: string; mapUrl: string; links: string[]; reason: string; timedOut: boolean }
+export interface ProfileResult { ok: boolean; name: string; text: string; bio: string; phone: string; address: string; prefecture: string; city: string; externalUrl: string; mapUrl: string; links: string[]; followers: number; reason: string; timedOut: boolean }
 // ユーザー名に含まれる地名（例: les_tendresse.utsunomiya → 宇都宮）を都道府県/市区町村へ
 export function regionFromUsername(username: string): { prefecture: string; city: string } {
   const u = (username || '').toLowerCase().replace(/[._-]+/g, ' ')
@@ -121,7 +121,7 @@ export function regionFromUsername(username: string): { prefecture: string; city
 
 /** Instagramプロフィールページを取得し、本文/電話/住所/外部リンク/Maps URL を抽出 */
 export async function fetchInstagramProfile(username: string, timeoutMs = 8000): Promise<ProfileResult> {
-  const empty: ProfileResult = { ok: false, name: '', text: '', bio: '', phone: '', address: '', prefecture: '', city: '', externalUrl: '', mapUrl: '', links: [], reason: '', timedOut: false }
+  const empty: ProfileResult = { ok: false, name: '', text: '', bio: '', phone: '', address: '', prefecture: '', city: '', externalUrl: '', mapUrl: '', links: [], followers: 0, reason: '', timedOut: false }
   if (!username) return { ...empty, reason: 'Instagramユーザー名が取得できず' }
   const r = await fetchPage(`https://www.instagram.com/${encodeURIComponent(username)}/`, timeoutMs)
   if (!r.ok || !r.html) return { ...empty, timedOut: r.timedOut, reason: r.timedOut ? 'Instagramプロフィール取得タイムアウト' : `Instagramプロフィール取得失敗(${r.error || r.status})` }
@@ -167,7 +167,16 @@ export async function fetchInstagramProfile(username: string, timeoutMs = 8000):
   const links = Array.from(new Set([extUrl, ...Array.from((og + ' ' + desc + ' ' + bio + ' ' + html).matchAll(/https?:\/\/[^\s"'<>\\）)]+/g)).map((m) => m[0])].filter(Boolean)))
     .filter((u) => !/instagram\.com\/(?:static|rsrc|p\/|images)/i.test(u)).slice(0, 12)
   const mapUrl = links.find((u) => MAP_URL_RE.test(u)) || ''
+  // フォロワー数（数万＝確立済み大型の判定に使う）。JSON or og:description「X Followers / Xフォロワー」
+  let followers = 0
+  const fJson = html.match(/"edge_followed_by":\{"count":(\d+)\}/)?.[1] || html.match(/"follower_count":(\d+)/)?.[1] || ''
+  if (fJson) followers = Number(fJson) || 0
+  if (!followers) {
+    const fm = (og + ' ' + desc).match(/([\d,.]+)\s*(?:Followers|フォロワー|followers)/i)
+    if (fm) { let v = fm[1].replace(/,/g, ''); if (/万/.test(og + desc)) v = String(Math.round(parseFloat(v) * 10000)); followers = Math.round(Number(v)) || 0 }
+    const fmMan = (og + ' ' + desc).match(/([\d.]+)\s*万\s*(?:Followers|フォロワー)/i); if (fmMan) followers = Math.round(parseFloat(fmMan[1]) * 10000)
+  }
   const ok = !!(bio || og || addrStreet || extUrl)
   const reason = ok ? '' : 'プロフィール本文に住所/電話/リンクなし'
-  return { ok, name: fullName, text, bio: bio || og, phone, address, prefecture, city, externalUrl: extUrl, mapUrl, links, reason, timedOut: false }
+  return { ok, name: fullName, text, bio: bio || og, phone, address, prefecture, city, externalUrl: extUrl, mapUrl, links, followers, reason, timedOut: false }
 }
