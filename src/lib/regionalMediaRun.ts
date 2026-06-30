@@ -120,11 +120,13 @@ export async function renderPage(url: string, opts: { waitMs?: number; timeoutMs
 // 後方互換のエイリアス
 const renderFetch = renderPage
 
-/** HORBY: 一覧の n番目カードをクリックして店舗詳細ページ(storeDetail/{id})へ遷移し、描画後HTMLと解決URLを取得。
- *  一覧カードに詳細リンク(href)もidも無く、APIは要ログインのため、公開の詳細ページへ実クリック遷移して取得する（ScrapingBee js_scenarioのみ）。 */
-async function renderHorbyDetail(listUrl: string, cardIndex: number, opts: { waitListMs?: number; waitDetailMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; html: string; resolvedUrl: string; error: string | null }> {
-  if (!process.env.SCRAPINGBEE_API_KEY) return { ok: false, html: '', resolvedUrl: '', error: 'scrapingbee未設定' }
-  const scenario = JSON.stringify({ instructions: [{ wait: opts.waitListMs ?? 7000 }, { click: `.new_salon_list .new_salon_item:nth-child(${cardIndex}) a` }, { wait: opts.waitDetailMs ?? 9000 }] })
+/** カードに href が無くJSクリックでしか詳細へ行けないサイト用（HORBY等）。一覧の n番目カードをクリック→詳細ページへ遷移→描画後HTML＋解決URLを取得。
+ *  公開の詳細ページへ実クリック遷移するのみ（要ログインAPIや認証突破はしない）。ScrapingBee js_scenario が必要。
+ *  cardSelector/linkSelector は source_sites の card_selector / detail_click_selector で設定駆動。 */
+async function renderClickDetail(listUrl: string, cardIndex: number, cardSelector: string, linkSelector: string, opts: { waitListMs?: number; waitDetailMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; html: string; resolvedUrl: string; error: string | null }> {
+  if (!process.env.SCRAPINGBEE_API_KEY) return { ok: false, html: '', resolvedUrl: '', error: 'scrapingbee未設定（クリック遷移にはScrapingBeeが必要）' }
+  const sel = `${cardSelector}:nth-child(${cardIndex}) ${linkSelector}`.trim()
+  const scenario = JSON.stringify({ instructions: [{ wait: opts.waitListMs ?? 7000 }, { click: sel }, { wait: opts.waitDetailMs ?? 9000 }] })
   const target = `https://app.scrapingbee.com/api/v1/?api_key=${process.env.SCRAPINGBEE_API_KEY}&render_js=true&js_scenario=${encodeURIComponent(scenario)}&url=${encodeURIComponent(listUrl)}`
   const ctrl = new AbortController(); let timedOut = false
   const to = setTimeout(() => { timedOut = true; ctrl.abort() }, opts.timeoutMs ?? 30000)
@@ -136,6 +138,28 @@ async function renderHorbyDetail(listUrl: string, cardIndex: number, opts: { wai
     if (!res.ok) return { ok: false, html: '', resolvedUrl: '', error: `HTTP ${res.status}` }
     return { ok: true, html, resolvedUrl, error: null }
   } catch (e: any) { clearTimeout(to); return { ok: false, html: '', resolvedUrl: '', error: timedOut ? 'timeout' : String(e?.message || e).slice(0, 100) } }
+}
+
+// ログイン制限で非公開の情報を示す表記（電話/メール等が会員限定の場合）
+const LOGIN_GATED_RE = /(ログイン後に表示|会員のみ|会員限定|登録後に表示|予約後に表示|非公開|ログインが必要|login\s*required|members?\s*only)/i
+
+/** 詳細ページ取得（全サイト共通）。mode: static=通常fetch / browser=最初からレンダリング / auto=本文が薄い/失敗時のみレンダリングfallback。 */
+async function fetchDetailPage(url: string, mode: string, timeoutMs = DETAIL_TIMEOUT_MS): Promise<{ ok: boolean; html: string; rendered: boolean; status: number; error: string | null }> {
+  if (mode === 'browser') {
+    const r = await renderPage(url, { waitMs: 6000, timeoutMs: Math.min(28000, timeoutMs + 18000) })
+    return { ok: r.ok, html: r.html, rendered: true, status: r.status, error: r.error }
+  }
+  const stat = await fetchHtml(url, timeoutMs)
+  if (mode === 'static') return { ok: stat.ok, html: stat.html, rendered: false, status: stat.status, error: stat.error }
+  // auto: 本文が薄い/取得失敗 かつ レンダリング設定あり → fallback
+  const bodyLen = stat.ok && stat.html ? stripTags(stat.html).length : 0
+  if (stat.ok && bodyLen >= 600) return { ok: true, html: stat.html, rendered: false, status: stat.status, error: null }
+  if (renderConfigured()) {
+    const r = await renderPage(url, { waitMs: 6000, timeoutMs: 28000 })
+    if (r.ok && r.html) return { ok: true, html: r.html, rendered: true, status: r.status, error: null }
+    return { ok: stat.ok, html: stat.html, rendered: false, status: stat.status, error: r.error || stat.error }
+  }
+  return { ok: stat.ok, html: stat.html, rendered: false, status: stat.status, error: stat.error }
 }
 
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
@@ -542,29 +566,35 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             renderResultNote = `rendered(${rr.provider}) HTML${rr.length}字 カード${re.candidates.length}件`
           } else { diag.renderError = rr.error; if (!rr.configured) diag.renderNotConfigured = true; renderResultNote = `rendering失敗: ${rr.error}` }
         } else if (isHorby && renderingMode === 'static') { renderResultNote = 'rendering_mode=static のためJS取得せず（HORBYは要レンダリング）' }
-        // HORBY: 一覧カードをクリックして公開の店舗詳細ページから 店名/電話/住所/公式 を補完（要ログインAPIは使わない）
-        if (isHorby && candidates.length > 0 && !!process.env.SCRAPINGBEE_API_KEY) {
-          const horbyMax = Math.max(0, Math.min(candidates.length, Number(s.horbyMaxDetails) || 2))  // 60s制限内（1件≈18s）。既定2件/回
-          diag.horbyDetailsTried = 0; diag.horbyAddrOk = 0; diag.horbyPhoneGated = false
-          for (let i = 0; i < horbyMax; i++) {
-            if (overBudget()) { diag.reason = `HORBY詳細を${i}件で打ち切り（時間上限・次回継続）`; break }
-            diag.horbyDetailsTried++
-            const d = await renderHorbyDetail(crawlUrl, i + 1)
+        // クリック遷移（カードにhrefもidも無いJSサイト用・設定駆動）。click_required=true のソースのみ。公開詳細ページへ実クリック遷移（認証突破しない）
+        const clickRequired = site.click_required === true || (isHorby && site.click_required !== false)
+        const detailParserType = String(site.detail_parser_type || (isHorby ? 'horby_detail' : ''))
+        if (clickRequired && candidates.length > 0 && !!process.env.SCRAPINGBEE_API_KEY) {
+          const cardSelector = String(site.card_selector || '.new_salon_list .new_salon_item')
+          const linkSelector = String(site.detail_click_selector || 'a')
+          const clickMax = Math.max(0, Math.min(candidates.length, Number(site.max_detail_pages_per_run) || Number(s.horbyMaxDetails) || 2))  // 60s制限内（1件≈18s）
+          diag.clickTried = 0; diag.clickAddrOk = 0; diag.loginGated = 0
+          for (let i = 0; i < clickMax; i++) {
+            if (overBudget()) { diag.reason = `クリック詳細を${i}件で打ち切り（時間上限・次回継続）`; break }
+            diag.clickTried++
+            const d = await renderClickDetail(crawlUrl, i + 1, cardSelector, linkSelector)
             if (d.ok) {
-              const dd = parseHorbyDetail(d.html)
-              if (dd.name) candidates[i].shopName = dd.name
-              if (dd.phone) candidates[i].phone = dd.phone  // ゲストでは「ログイン後に表示」のため通常空 → 電話なし＝HOLD
-              else if (/ログイン後に表示/.test(d.html)) diag.horbyPhoneGated = true
-              if (dd.address) { candidates[i].address = dd.address; if (dd.prefecture) candidates[i].prefecture = dd.prefecture; diag.horbyAddrOk++ }
-              if (dd.official) candidates[i].official = dd.official
-              if (d.resolvedUrl) candidates[i].detailUrl = d.resolvedUrl  // 実 storeDetail URL（一意）
+              const dd = detailParserType === 'horby_detail' ? parseHorbyDetail(d.html) : null
+              if (dd) {
+                if (dd.name) candidates[i].shopName = dd.name
+                if (dd.phone) candidates[i].phone = dd.phone  // ゲストでは「ログイン後に表示」のため通常空 → 電話なし＝HOLD
+                else if (LOGIN_GATED_RE.test(d.html)) { diag.loginGated++; candidates[i].phoneGated = true }
+                if (dd.address) { candidates[i].address = dd.address; if (dd.prefecture) candidates[i].prefecture = dd.prefecture; diag.clickAddrOk++ }
+                if (dd.official) candidates[i].official = dd.official
+              }
+              if (d.resolvedUrl) candidates[i].detailUrl = d.resolvedUrl  // 実詳細URL（一意）
               candidates[i].preEnriched = true
             }
           }
           diag.phoneYes = candidates.filter((c) => c.phone).length
         }
         // レンダリング結果をソースに記録
-        await admin.from('source_sites').update({ rendering_provider: diag.renderProvider || pickRenderProvider(), last_rendering_result: (renderResultNote + (isHorby ? ` 詳細(住所/公式)${diag.horbyAddrOk || 0}/${diag.horbyDetailsTried || 0}件${diag.horbyPhoneGated ? '・電話はログイン制限のためHOLD' : ''}` : '')).slice(0, 200) || null, last_rendering_error: diag.renderError || null }).eq('id', site.id).then(() => {}, () => {})
+        await admin.from('source_sites').update({ rendering_provider: diag.renderProvider || pickRenderProvider(), last_rendering_result: (renderResultNote + (clickRequired ? ` クリック詳細(住所)${diag.clickAddrOk || 0}/${diag.clickTried || 0}件${diag.loginGated ? `・電話ログイン制限${diag.loginGated}件→HOLD` : ''}` : '')).slice(0, 200) || null, last_rendering_error: diag.renderError || null }).eq('id', site.id).then(() => {}, () => {})
         diag.totalLinks = stats.totalLinks; diag.bodyTextLen = stats.bodyTextLen; diag.blockCount = stats.blockCount
         diag.keywordBlocks = stats.keywordBlocks; diag.detailLinks = stats.detailLinks; diag.newBadge = stats.newBadge
         diag.cardCandidates = candidates.length; diag.jsLikely = stats.jsLikely
@@ -583,6 +613,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           diag.needsImprovement = true
           diag.improvementHint = diag.renderNotConfigured ? 'レンダリングAPIを設定（RENDER_API_URL等）' : stats.jsLikely ? 'rendering_mode=browser＋レンダリングAPI設定' : 'parser_type/list_url の見直し'
         }
+        // 詳細取得設定（全サイト共通）
+        const detailEnabled = site.detail_fetch_enabled !== false
+        const detailMode = String(site.detail_rendering_mode || (isHorby ? 'browser' : 'auto'))
+        const maxDetailPages = Math.max(1, Math.min(50, Number(site.max_detail_pages_per_run) || Number(s.maxDetailPagesPerRun) || 20))
+        let detailFetchedThisSite = 0
         let used = 0
         for (const cand of candidates.slice(0, maxArticles * 2)) {
           if (used >= maxArticles) break
@@ -595,14 +630,24 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (exA?.[0] && existingCand && existingCand.phone_number && existingCand.address) continue
           counts.articles++; counts.newArticles++; used++
 
-          // 詳細ページ取得（カードに詳細リンクがあれば）
+          // 詳細ページ取得（カードに詳細リンクがあれば）。detail_rendering_mode(static/auto/browser)・detail_parser_type を尊重
           let info: any = { shop_name: cand.shopName, phone: cand.phone, address: cand.address, industry: cand.industry, official_url: cand.official || '', instagram_url: '', map_url: '', open: cand.open, hours: '', holiday: '', excerpt: cand.blockText }
           let detailStatus = cand.preEnriched ? 'pre_enriched' : 'no_detail_link'
-          if (!cand.preEnriched && cand.detailUrl && !cand.detailUrl.includes('#')) {  // 補完済み(HORBY)や#付き合成URLは再fetchしない
-            const dRes = await fetchHtml(cand.detailUrl, DETAIL_TIMEOUT_MS); counts.detailFetches++
+          let phoneGated = !!cand.phoneGated
+          let detailRendered = false
+          // コスト制御: 詳細取得無効/合成URL/上限超過/既に電話+住所ありの重複 はスキップ
+          const skipDetail = !detailEnabled || cand.preEnriched || cand.detailUrl.includes('#') || detailFetchedThisSite >= maxDetailPages || (existingCand && existingCand.phone_number && existingCand.address)
+          if (!skipDetail && cand.detailUrl && !cand.detailUrl.includes('#')) {
+            const dRes = await fetchDetailPage(cand.detailUrl, detailMode); counts.detailFetches++; detailFetchedThisSite++
             await sleep(delay)
-            if (dRes.ok) { diag.detailFetched++; detailStatus = 'fetched'; const di = extractDirectoryShopInfo(dRes.html, cand.shopName); info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url, instagram_url: di.instagram_url, map_url: di.map_url, open: (di.open.confidence !== 'none' ? di.open : cand.open) } }
-            else { detailStatus = dRes.timedOut ? 'timeout' : 'failed'; if (dRes.timedOut) { counts.timeouts++; diag.timeouts++ } }
+            if (dRes.ok && dRes.html) {
+              diag.detailFetched++; detailStatus = dRes.rendered ? 'rendered' : 'fetched'; detailRendered = dRes.rendered
+              const di = String(site.detail_parser_type) === 'horby_detail'
+                ? (() => { const h = parseHorbyDetail(dRes.html); return { shop_name: h.name, phone: h.phone, address: h.address, industry: cand.industry, official_url: h.official, instagram_url: '', map_url: h.mapUrl, open: cand.open } as any })()
+                : extractDirectoryShopInfo(dRes.html, cand.shopName)
+              info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url || info.official_url, instagram_url: di.instagram_url || '', map_url: di.map_url || '', open: (di.open && di.open.confidence !== 'none' ? di.open : cand.open) }
+              if (!info.phone && LOGIN_GATED_RE.test(dRes.html)) { phoneGated = true; diag.loginGated = (diag.loginGated || 0) + 1 }
+            } else { detailStatus = dRes.error ? 'failed' : 'failed'; if (/timeout/i.test(dRes.error || '')) { counts.timeouts++; diag.timeouts++ } }
           }
           // 外部補完（電話 or 住所が無い時のみ）
           let enrich: any = null
@@ -642,7 +687,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           counts.candidates++
 
           const name = dName || '店名未確定'
-          const newnessReason = `${site.name}（${diag.parser_used}）「${name}」${open.text ? ` ${open.text}` : ''} 一致語[${cand.matchedKeywords.join('・')}]${enrich ? ` / 補完[${enrich.status}]` : ''} / ${dc.reason}`
+          const phoneSource = info.phone ? 'detail_page' : enrich?.phone ? 'enrich' : (phoneGated ? 'login_required' : null)
+          const phoneNote = phoneGated && !phone ? '・電話番号がログイン制限のため取得不可' : ''
+          const newnessReason = `${site.name}（${diag.parser_used}${detailRendered ? '/rendered' : ''}）「${name}」${open.text ? ` ${open.text}` : ''} 一致語[${cand.matchedKeywords.join('・')}]${enrich ? ` / 補完[${enrich.status}]` : ''}${phoneNote} / ${dc.reason}`
           const rmConf = (phone && isJapanPhone(phone) ? 35 : 0) + (address ? 30 : 0) + (open.confidence === 'high' ? 25 : open.confidence === 'mid' ? 15 : 0) + (matchedPlaceId ? 10 : 0)
           const rmChecks: HotCheck[] = [
             { key: 'has_japan', label: '日本国内', ok: dc.isForeign ? false : (isJapan ? true : null), reasonKey: 'not_japan' },
@@ -661,6 +708,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             phone_number: phone || null, website_url: official,
             lead_source: 'regional_media', source: 'regional_media', source_type: 'AI自動投入(地域メディア)',
             source_site_type: stype, parser_used: diag.parser_used, source_media_family: site.media_family || null, source_site_name: site.name,
+            phone_source: phoneSource, detail_rendering_mode: detailMode,
             source_list_url: crawlUrl, source_listing_url: crawlUrl, source_detail_url: detailUrl, source_article_url: detailUrl,
             search_title: name.slice(0, 300), search_snippet: cand.blockText, candidate_block_text_short: cand.blockText, detail_fetch_status: detailStatus,
             matched_keywords: cand.matchedKeywords, newness_type: stype === 'marketplace_listing' ? 'marketplace_new_listing' : 'generic_new_block',
@@ -708,7 +756,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
         diag.newArticles = used
         if (!diag.reason) diag.reason = diag.saved > 0 ? 'OK' : (diag.cardCandidates > 0 ? 'カード候補はあるが保存条件を満たさず' : '新店カード候補なし')
-        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `[${diag.parser_used}]カード${diag.cardCandidates}/詳細${diag.detailFetched} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `[${diag.parser_used}]カード${diag.cardCandidates}/詳細${diag.detailFetched} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200), last_detail_fetch_result: `一覧${diag.cardCandidates}・詳細取得${diag.detailFetched}・電話${diag.phoneYes}・住所${diag.addressYes}${diag.loginGated ? `・ログイン制限${diag.loginGated}` : ''}・HOT${diag.hot}/HOLD${diag.hold}`.slice(0, 200), last_detail_fetch_error: diag.renderError || null }).eq('id', site.id)
         debug.siteResults.push(diag)
         continue
       }

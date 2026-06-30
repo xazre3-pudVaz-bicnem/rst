@@ -39,10 +39,18 @@ export function sanitizeSitePayload(body: any): { ok: boolean; error?: string; v
   const is_active = body?.is_active === true || body?.is_active === 'true'
   const rendering_mode = ['static', 'auto', 'browser'].includes(body?.rendering_mode) ? body.rendering_mode : 'auto'
   const parser_type = typeof body?.parser_type === 'string' && body.parser_type ? String(body.parser_type).slice(0, 40) : undefined
+  // 詳細ページ取得設定
+  const detail_fetch_enabled = body?.detail_fetch_enabled !== false && body?.detail_fetch_enabled !== 'false'
+  const detail_rendering_mode = ['static', 'auto', 'browser'].includes(body?.detail_rendering_mode) ? body.detail_rendering_mode : 'auto'
+  const detail_parser_type = typeof body?.detail_parser_type === 'string' && body.detail_parser_type ? String(body.detail_parser_type).slice(0, 40) : null
+  const click_required = body?.click_required === true || body?.click_required === 'true'
+  const card_selector = typeof body?.card_selector === 'string' ? String(body.card_selector).slice(0, 200) || null : null
+  const detail_click_selector = typeof body?.detail_click_selector === 'string' ? String(body.detail_click_selector).slice(0, 100) || null : null
+  const max_detail_pages_per_run = Math.max(0, Math.min(50, Number(body?.max_detail_pages_per_run) || 20))
 
   return {
     ok: true,
-    value: { name, base_url, list_url, media_family, source_type, category_label, reliability_score, crawl_interval_hours, is_active, rendering_mode, ...(parser_type ? { parser_type } : {}) },
+    value: { name, base_url, list_url, media_family, source_type, category_label, reliability_score, crawl_interval_hours, is_active, rendering_mode, detail_fetch_enabled, detail_rendering_mode, detail_parser_type, click_required, card_selector, detail_click_selector, max_detail_pages_per_run, ...(parser_type ? { parser_type } : {}) },
   }
 }
 

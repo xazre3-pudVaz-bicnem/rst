@@ -2124,10 +2124,28 @@ export default function Leads() {
                     </select></div>
                   <div className="space-y-0.5"><Label className="text-[10px]">信頼度スコア(0-100)</Label><Input type="number" min={0} max={100} className="h-8" value={siteForm.reliability_score} onChange={(e) => setSiteForm({ ...siteForm, reliability_score: Number(e.target.value) })} /></div>
                   <div className="space-y-0.5"><Label className="text-[10px]">巡回間隔(時間)</Label><Input type="number" min={1} className="h-8" value={siteForm.crawl_interval_hours} onChange={(e) => setSiteForm({ ...siteForm, crawl_interval_hours: Number(e.target.value) })} /></div>
-                  <div className="space-y-0.5"><Label className="text-[10px]">レンダリング</Label>
+                  <div className="space-y-0.5"><Label className="text-[10px]">一覧レンダリング</Label>
                     <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.rendering_mode || 'auto'} onChange={(e) => setSiteForm({ ...siteForm, rendering_mode: e.target.value })}>
                       <option value="static">static（通常fetchのみ）</option><option value="auto">auto（候補0かつJS疑いでbrowser）</option><option value="browser">browser（最初からレンダリング）</option>
                     </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">詳細ページ取得</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.detail_fetch_enabled === false ? 'off' : 'on'} onChange={(e) => setSiteForm({ ...siteForm, detail_fetch_enabled: e.target.value === 'on' })}>
+                      <option value="on">取得する</option><option value="off">取得しない</option>
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">詳細レンダリング</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.detail_rendering_mode || 'auto'} onChange={(e) => setSiteForm({ ...siteForm, detail_rendering_mode: e.target.value })}>
+                      <option value="static">static</option><option value="auto">auto（薄い/失敗でrender）</option><option value="browser">browser</option>
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">詳細parser</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.detail_parser_type || ''} onChange={(e) => setSiteForm({ ...siteForm, detail_parser_type: e.target.value })}>
+                      <option value="">汎用（generic）</option><option value="horby_detail">horby_detail</option><option value="tabelog_detail">tabelog_detail</option><option value="mypl_detail">mypl_detail</option>
+                    </select></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">詳細最大件数/回</Label><Input type="number" min={0} max={50} className="h-8" value={siteForm.max_detail_pages_per_run ?? 20} onChange={(e) => setSiteForm({ ...siteForm, max_detail_pages_per_run: Number(e.target.value) })} /></div>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!siteForm.click_required} onChange={(e) => setSiteForm({ ...siteForm, click_required: e.target.checked })} />クリック遷移必須（href無しJSサイト）</label>
+                  {siteForm.click_required && <>
+                    <div className="space-y-0.5"><Label className="text-[10px]">card_selector</Label><Input className="h-8 font-mono text-2xs" value={siteForm.card_selector || ''} onChange={(e) => setSiteForm({ ...siteForm, card_selector: e.target.value })} placeholder=".new_salon_list .new_salon_item" /></div>
+                    <div className="space-y-0.5"><Label className="text-[10px]">detail_click_selector</Label><Input className="h-8 font-mono text-2xs" value={siteForm.detail_click_selector || ''} onChange={(e) => setSiteForm({ ...siteForm, detail_click_selector: e.target.value })} placeholder="a" /></div>
+                  </>}
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={siteForm.is_active} onChange={(e) => setSiteForm({ ...siteForm, is_active: e.target.checked })} />有効化する</label>
                   <div className="flex items-end gap-1.5 lg:col-span-2">
                     <Button size="sm" onClick={saveSite} disabled={rmBusy}>{siteForm.id ? '更新' : '登録'}</Button>
@@ -2184,7 +2202,7 @@ export default function Leads() {
                         </td>
                         <td className="p-1.5 text-right">
                           <div className="flex justify-end gap-1">
-                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setSiteForm({ id: s.id, name: s.name, base_url: s.base_url, list_url: s.list_url || '', media_family: s.media_family || 'other', source_type: s.source_type || 'html_list', category_label: s.category_label || '開店閉店', is_active: s.is_active, reliability_score: s.reliability_score ?? 50, crawl_interval_hours: s.crawl_interval_hours ?? 24, rendering_mode: s.rendering_mode || 'auto', parser_type: s.parser_type || '' })}>編集</Button>
+                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setSiteForm({ id: s.id, name: s.name, base_url: s.base_url, list_url: s.list_url || '', media_family: s.media_family || 'other', source_type: s.source_type || 'html_list', category_label: s.category_label || '開店閉店', is_active: s.is_active, reliability_score: s.reliability_score ?? 50, crawl_interval_hours: s.crawl_interval_hours ?? 24, rendering_mode: s.rendering_mode || 'auto', parser_type: s.parser_type || '', detail_fetch_enabled: s.detail_fetch_enabled !== false, detail_rendering_mode: s.detail_rendering_mode || 'auto', detail_parser_type: s.detail_parser_type || '', click_required: !!s.click_required, card_selector: s.card_selector || '', detail_click_selector: s.detail_click_selector || '', max_detail_pages_per_run: s.max_detail_pages_per_run ?? 20 })}>編集</Button>
                             <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => testSite(s)}>テスト</Button>
                           </div>
                           {siteTests[s.id] && (
@@ -2726,7 +2744,7 @@ export default function Leads() {
                 <div className="text-base font-bold">{drawerCand.name}</div>
                 <div className="mb-2 text-muted-foreground">{drawerCand.industry || '業種不明'}{drawerCand.extracted_area ? ` ・ ${drawerCand.extracted_area}` : ''}</div>
                 <dl className="space-y-1">
-                  {[['電話番号', drawerCand.phone_number], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (
+                  {[['電話番号', drawerCand.phone_number], ['電話番号取得元', (drawerCand as any).phone_source === 'login_required' ? 'ログイン制限のため取得不可' : (drawerCand as any).phone_source === 'detail_page' ? '詳細ページ' : (drawerCand as any).phone_source === 'enrich' ? '検索補完(Places/公式)' : (drawerCand as any).phone_source], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['詳細取得モード', (drawerCand as any).detail_rendering_mode], ['parser_used', (drawerCand as any).parser_used], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (
                     <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2 break-words">{v ? String(v) : '—'}</dd></div>
                   ))}
                   {[['店名の取得元', (drawerCand as any).shop_name_source === 'instagram_profile' ? 'Instagramプロフィール' : (drawerCand as any).shop_name_source === 'post_title' ? '投稿タイトル（要確認）' : (drawerCand as any).shop_name_source], ['投稿タイトル', (drawerCand as any).source_post_title], ['補完信頼度', (drawerCand as any).enrichment_confidence], ['地域矛盾', (drawerCand as any).enrichment_region_conflict ? 'あり' : 'なし']].map(([k, v]) => v != null && v !== '' ? (

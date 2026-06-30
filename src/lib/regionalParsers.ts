@@ -82,7 +82,7 @@ export function detectParserType(site: any, html: string, url: string): ParserTy
 export interface BlockCandidate {
   shopName: string; address: string; prefecture: string; city: string; phone: string; industry: string
   open: OpenDate; detailUrl: string; matchedKeywords: string[]; blockText: string; isNew: boolean
-  category: string; reviewish: string; preEnriched?: boolean; official?: string
+  category: string; reviewish: string; preEnriched?: boolean; official?: string; phoneGated?: boolean
 }
 
 // 共通: 日本の電話番号抽出

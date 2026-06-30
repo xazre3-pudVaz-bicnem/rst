@@ -32,6 +32,16 @@ export default async function handler(req: any, res: any) {
   if (MEDIA_FAMILIES.includes(body.media_family)) patch.media_family = body.media_family
   if (SOURCE_TYPES.includes(body.source_type)) patch.source_type = body.source_type
   if (CATEGORY_LABELS.includes(body.category_label)) patch.category_label = body.category_label
+  // 一覧/詳細レンダリング・詳細取得設定
+  if (['static', 'auto', 'browser'].includes(body.rendering_mode)) patch.rendering_mode = body.rendering_mode
+  if (typeof body.parser_type === 'string' && body.parser_type) patch.parser_type = String(body.parser_type).slice(0, 40)
+  if (typeof body.detail_fetch_enabled === 'boolean') patch.detail_fetch_enabled = body.detail_fetch_enabled
+  if (['static', 'auto', 'browser'].includes(body.detail_rendering_mode)) patch.detail_rendering_mode = body.detail_rendering_mode
+  if (typeof body.detail_parser_type === 'string') patch.detail_parser_type = body.detail_parser_type ? String(body.detail_parser_type).slice(0, 40) : null
+  if (typeof body.click_required === 'boolean') patch.click_required = body.click_required
+  if (typeof body.card_selector === 'string') patch.card_selector = body.card_selector ? String(body.card_selector).slice(0, 200) : null
+  if (typeof body.detail_click_selector === 'string') patch.detail_click_selector = body.detail_click_selector ? String(body.detail_click_selector).slice(0, 100) : null
+  if (body.max_detail_pages_per_run != null) patch.max_detail_pages_per_run = Math.max(0, Math.min(50, Number(body.max_detail_pages_per_run) || 20))
 
   const { error } = await admin.from('source_sites').update(patch).eq('id', id)
   if (error) return res.status(200).json({ ok: false, error: error.message })
