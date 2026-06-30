@@ -349,6 +349,25 @@ export default function Leads() {
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
+  async function retryFailed(id: string, kind: 'fetch' | 'parser' | 'all') {
+    setProbing(true)
+    try { const json = await regionalApi({ retryProbeFailed: { id, kind }, settings: { aiInjectMode: settings.aiInjectMode, probeDailyCap: settings.probeDailyCap ?? 500 } })
+      if (json?.ok) { if (json.retried === 0) toast.info(json.reason || '再試行対象なし'); else { setProbeResult({ ...json, single: true }); toast.success(`${kind}再試行(${json.retriedRange}): valid${json.valid}/fetch失敗${json.fetchFail}/parser失敗${json.parserFail} lead保存${json.saved}`) } loadProbeSites(); load() } else toast.error(json?.error || '再試行に失敗しました')
+    } finally { setProbing(false) }
+  }
+  // 地域メディア: 差分巡回カーソルのリセット（既読URL or 前回最新記事）
+  async function resetCrawlCursor(id: string, mode: 'latest' | 'seen') {
+    if (mode === 'seen' && !window.confirm('このサイトの既読URL履歴をリセットします（次回、過去記事も再度読みに行きます）。よろしいですか？')) return
+    const json = await regionalApi({ resetCrawlCursor: { id, mode } })
+    if (json?.ok) { toast.success(mode === 'latest' ? '前回最新記事をリセットしました' : `既読URLをリセットしました（${json.deleted ?? 0}件）`); loadSites() } else toast.error(json?.error || 'リセットに失敗しました')
+  }
+  async function runRegionalOne(id: string, recrawlAll: boolean) {
+    setRmRunning(true)
+    try {
+      const j = await callRegional({ runMode: 'selected', selectedSiteIds: [id], recrawlAll, differential: true })
+      if (j && !j.error) { toast.success(`${recrawlAll ? '過去分も再' : '差分'}巡回: 新規${j.newArticles ?? 0}/既読skip${j.seenSkipped ?? 0}/古記事skip${j.oldSkipped ?? 0} HOT${j.hot ?? 0}/HOLD${j.hold ?? 0}`); loadSites(); load() }
+    } finally { setRmRunning(false) }
+  }
   const [ekitenRunning, setEkitenRunning] = useState(false)
   const [ekitenResult, setEkitenResult] = useState<any>(null)
   async function runEkiten() {
@@ -2466,6 +2485,8 @@ export default function Leads() {
                       <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 0, probeMode: 'advance', startId: ((st.last_checked_id ?? st.current_probe_id ?? 0) + 1) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回確認の続きから（先行）</button>
                       <button onClick={() => { const from = (st.last_valid_id != null ? Number(st.last_valid_id) + 1 : st.current_probe_id); probeSiteAction(st.id, { startId: from, forwardCount: Math.max(1, (st.last_checked_id ?? from) - from + 1), backfillCount: 0, force: true, probeMode: 'safe' }) }} disabled={probing} className="rounded border border-amber-500 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">invalid範囲を再確認</button>
                       <button onClick={() => { const v = prompt('開始IDを入力（その位置から本番探索＝保存あり・強制再取得）', String(st.last_found_id ?? st.current_probe_id ?? st.start_probe_id ?? '')); if (v) probeSiteAction(st.id, { startId: Number(v), forwardCount: 20, backfillCount: 0, force: true }) }} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">指定IDから本番探索（保存）</button>
+                      {Array.isArray(st.fetch_failed_ids) && st.fetch_failed_ids.length > 0 && <button onClick={() => retryFailed(st.id, 'fetch')} disabled={probing} className="rounded border border-amber-500 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">fetch失敗だけ再試行（{st.fetch_failed_ids.length}）</button>}
+                      {Array.isArray(st.parser_failed_ids) && st.parser_failed_ids.length > 0 && <button onClick={() => retryFailed(st.id, 'parser')} disabled={probing} className="rounded border border-amber-500 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">parser失敗だけ再試行（{st.parser_failed_ids.length}）</button>}
                       <button onClick={() => { const v = prompt('current_probe_id を編集', String(st.current_probe_id ?? '')); if (v) updateProbeSite(st.id, { current_probe_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">current_id編集</button>
                       <button onClick={() => openEditProbe(st)} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary">編集</button>
                       <button onClick={() => updateProbeSite(st.id, { is_active: !st.is_active })} className="rounded border px-1.5 py-0.5 text-[9px]">{st.is_active ? '無効化' : '有効化'}</button>
@@ -2584,8 +2605,17 @@ export default function Leads() {
                         <td className="p-1.5">{s.media_family} / {s.source_type}<div className="text-muted-foreground">{s.parser_type || s.category_label}</div></td>
                         <td className="p-1.5 text-center">{s.reliability_score}</td>
                         <td className="p-1.5 text-center">{s.crawl_interval_hours}h</td>
-                        <td className="p-1.5 text-center">{s.last_crawled_at ? moment(s.last_crawled_at).format('MM/DD HH:mm') : '—'}</td>
-                        <td className="max-w-[140px] p-1.5 text-muted-foreground">{s.last_crawl_result || '—'}</td>
+                        <td className="p-1.5 text-center">{s.last_crawled_at ? moment(s.last_crawled_at).format('MM/DD HH:mm') : '—'}{(s.last_new_count != null || s.last_seen_skipped != null) && <div className="text-[8px] text-muted-foreground">新規{s.last_new_count ?? 0}/既読skip{s.last_seen_skipped ?? 0}</div>}{s.latest_item_url && <div className="max-w-[120px] truncate text-[8px] text-muted-foreground" title={s.latest_item_url}>前回最新: {s.latest_item_url}</div>}</td>
+                        <td className="max-w-[140px] p-1.5 text-muted-foreground">{s.last_crawl_result || '—'}
+                          {s.source_type !== 'sequential_id_probe' && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              <button onClick={() => runRegionalOne(s.id, false)} disabled={rmRunning} className="rounded border border-primary px-1 py-0.5 text-[8px] text-primary hover:bg-primary/10">差分巡回</button>
+                              <button onClick={() => runRegionalOne(s.id, true)} disabled={rmRunning} className="rounded border px-1 py-0.5 text-[8px]">過去分も再巡回</button>
+                              <button onClick={() => resetCrawlCursor(s.id, 'latest')} className="rounded border px-1 py-0.5 text-[8px]">前回最新をリセット</button>
+                              <button onClick={() => resetCrawlCursor(s.id, 'seen')} className="rounded border border-amber-500 px-1 py-0.5 text-[8px] text-amber-700 dark:text-amber-300">既読URLリセット</button>
+                            </div>
+                          )}
+                        </td>
                         <td className="p-1.5 text-center">
                           <button onClick={() => toggleSiteActive(s)} className={cn('rounded px-1.5 py-0.5 font-bold', s.is_active ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-slate-200 text-slate-600 dark:bg-slate-700')}>{s.is_active ? 'ON' : 'OFF'}</button>
                         </td>

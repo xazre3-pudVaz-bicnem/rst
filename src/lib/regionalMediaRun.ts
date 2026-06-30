@@ -288,7 +288,21 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
   const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
   let importedThisRun = 0
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0, dupImportSkip: 0, alreadyImported: 0, manualPending: 0, importFailed: 0 }
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0, dupImportSkip: 0, alreadyImported: 0, manualPending: 0, importFailed: 0, seenSkipped: 0, oldSkipped: 0, reachedPrev: 0 }
+  // ===== 差分巡回（増分巡回）=====
+  // 既定: 前回巡回済み（source_articles / lead_candidates に既出）のURLは詳細を読み直さない。
+  // recrawlAll=過去分も再巡回 / recrawlIncomplete=電話or住所が欠けている既出のみ再補完（情報不足の再取得）。
+  const differential = s.differential !== false
+  const recrawlAll = s.recrawlAll === true
+  const recrawlIncomplete = s.recrawlIncomplete === true
+  // 既読URLをスキップすべきか（true=スキップ）
+  const skipSeen = (exA: any, cand: any): boolean => {
+    if (recrawlAll) return false
+    const seen = !!exA || !!cand
+    if (!seen) return false
+    if (recrawlIncomplete && cand && !(cand.phone_number && cand.address)) return false // 情報不足は再補完
+    return differential
+  }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const enrichQueriesToLog = new Set<string>()
@@ -360,6 +374,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       // 504回避: 時間予算を超えたら残りサイトは次回実行に回す（全体は失敗扱いにしない）
       if (overBudget()) { counts.deferredSites++; debug.siteResults.push({ site: site.name, deferred: true, reason: `実行時間上限(${Math.round(runBudgetMs / 1000)}s)のため次回に継続` }); continue }
       counts.sites++
+      // 差分巡回カーソル: 前回巡回時の最新アイテムURL。一覧（新着順）でここに到達したら以降（古い記事）は読まない。
+      const prevLatest: string | null = recrawlAll ? null : (site.latest_item_url || null)
+      let siteNewest: string | null = null   // 今回一覧の先頭（最新）アイテムURL → 次回の prevLatest
+      let siteSeenSkipped = 0, siteOldSkipped = 0, siteNewArticles = 0
       const crawlUrl = site.list_url || site.base_url
       let base: URL
       try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正' }).eq('id', site.id).then(() => {}, () => {}); continue }
@@ -398,8 +416,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         diag.detailFetched = 0; diag.phoneYes = 0; diag.addressYes = 0; diag.openYes = 0
         if (dr.links.length === 0) diag.reason = `店舗詳細リンク0（全リンク${dr.totalLinks}）。list_url/detailPattern を確認`
         let used = 0
-        for (const item of dr.links.slice(0, maxArticles * 2)) {
+        for (const item of dr.links.slice(0, recrawlAll ? maxArticles * 4 : 60)) {
           if (used >= maxArticles) break
+          // 差分巡回: 前回処理した最新カードに到達したら、以降（既読の古いカード）は読み進めない
+          if (prevLatest && item.url === prevLatest) { counts.reachedPrev++; diag.reachedPrev = true; diag.reason = diag.reason || '前回最新カードに到達したため停止（差分巡回）'; break }
           // 504回避: 時間/件数の上限に達したら次回に継続
           if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `詳細取得を${used}件で打ち切り（時間/件数上限・次回継続）`; break }
           const dhash = urlHash(item.url)
@@ -407,7 +427,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           // 既存lead候補（source_detail_url）も確認（HOLD→電話/住所が取れたら補完更新）
           const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases,phone_number,address').eq('source_detail_url', item.url).limit(1)
           const existingCand = exC?.[0] || null
-          if (exA?.[0] && existingCand && existingCand.phone_number && existingCand.address) continue // 既に十分取得済み
+          if (skipSeen(exA?.[0], existingCand)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読URLは読み直さない
+          if (siteNewest === null) siteNewest = item.url  // 今回処理する最初の新規＝次回の停止カーソル
+          siteNewArticles++
           counts.articles++; counts.newArticles++; used++
 
           const dRes = await fetchHtml(item.url, DETAIL_TIMEOUT_MS)
@@ -553,7 +575,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
         diag.newArticles = used
         if (!diag.reason) diag.reason = diag.saved > 0 ? 'OK' : (diag.detailLinks > 0 ? '詳細は取得したが保存条件を満たさず' : '店舗詳細リンクなし')
-        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `[店舗新着]詳細${diag.detailLinks}/取得${diag.detailFetched} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_success_at: nowIso, latest_item_url: siteNewest || site.latest_item_url, last_seen_shop_url: siteNewest || site.last_seen_shop_url, last_new_count: siteNewArticles, last_seen_skipped: siteSeenSkipped, last_old_skipped: siteOldSkipped, last_crawl_result: `[店舗新着]詳細${diag.detailLinks}/取得${diag.detailFetched} 新規${siteNewArticles}/既読skip${siteSeenSkipped} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
         debug.siteResults.push(diag)
         continue
       }
@@ -634,15 +656,20 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const maxDetailPages = Math.max(1, Math.min(50, Number(site.max_detail_pages_per_run) || Number(s.maxDetailPagesPerRun) || 20))
         let detailFetchedThisSite = 0
         let used = 0
-        for (const cand of candidates.slice(0, maxArticles * 2)) {
+        for (const cand of candidates.slice(0, recrawlAll ? maxArticles * 4 : 60)) {
           if (used >= maxArticles) break
           if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `カード${used}件で打ち切り（時間/件数上限・次回継続）`; break }
           const detailUrl = cand.detailUrl || crawlUrl
+          const cardKey = (cand.detailUrl && cand.detailUrl !== crawlUrl) ? cand.detailUrl : `${crawlUrl}#${cand.shopName || ''}`
+          // 差分巡回: 前回処理した最新カードに到達したら以降（既読カード）は読まない
+          if (prevLatest && cardKey === prevLatest) { counts.reachedPrev++; diag.reachedPrev = true; diag.reason = diag.reason || '前回最新カードに到達したため停止（差分巡回）'; break }
           const dhash = urlHash(detailUrl + '|' + cand.shopName)
           const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', dhash).limit(1)
           const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases,phone_number,address').eq('source_detail_url', detailUrl).limit(1)
           const existingCand = exC?.[0] || null
-          if (exA?.[0] && existingCand && existingCand.phone_number && existingCand.address) continue
+          if (skipSeen(exA?.[0], existingCand)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読カードはスキップ
+          if (siteNewest === null) siteNewest = cardKey  // 今回処理する最初の新規カード＝次回の停止カーソル
+          siteNewArticles++
           counts.articles++; counts.newArticles++; used++
 
           // 詳細ページ取得（カードに詳細リンクがあれば）。detail_rendering_mode(static/auto/browser)・detail_parser_type を尊重
@@ -785,7 +812,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
         diag.newArticles = used
         if (!diag.reason) diag.reason = diag.saved > 0 ? 'OK' : (diag.cardCandidates > 0 ? 'カード候補はあるが保存条件を満たさず' : '新店カード候補なし')
-        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `[${diag.parser_used}]カード${diag.cardCandidates}/詳細${diag.detailFetched} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200), last_detail_fetch_result: `一覧${diag.cardCandidates}・詳細取得${diag.detailFetched}・電話${diag.phoneYes}・住所${diag.addressYes}${diag.loginGated ? `・ログイン制限${diag.loginGated}` : ''}・HOT${diag.hot}/HOLD${diag.hold}`.slice(0, 200), last_detail_fetch_error: diag.renderError || null }).eq('id', site.id)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_success_at: nowIso, latest_item_url: siteNewest || site.latest_item_url, last_seen_shop_url: siteNewest || site.last_seen_shop_url, last_new_count: siteNewArticles, last_seen_skipped: siteSeenSkipped, last_old_skipped: siteOldSkipped, last_crawl_result: `[${diag.parser_used}]カード${diag.cardCandidates}/詳細${diag.detailFetched} 新規${siteNewArticles}/既読skip${siteSeenSkipped} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200), last_detail_fetch_result: `一覧${diag.cardCandidates}・詳細取得${diag.detailFetched}・電話${diag.phoneYes}・住所${diag.addressYes}${diag.loginGated ? `・ログイン制限${diag.loginGated}` : ''}・HOT${diag.hot}/HOLD${diag.hold}`.slice(0, 200), last_detail_fetch_error: diag.renderError || null }).eq('id', site.id)
         debug.siteResults.push(diag)
         continue
       }
@@ -793,18 +820,22 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       diag.parser_used = 'article_link_parser'
       const extracted = extractArticleLinks(idx.html, base, linkOpts)
       diag.totalLinks = extracted.totalLinks; diag.candidateLinks = extracted.candidateLinks; diag.keywordHits = extracted.keywordHits
-      const links = extracted.links.slice(0, maxArticles * 2)
+      // 差分巡回: 前回最新記事に到達したら以降は読まないので、一覧は広めに見て新着のみ拾う
+      const links = extracted.links.slice(0, recrawlAll ? maxArticles * 4 : 30)
       if (links.length === 0) diag.reason = `記事候補リンク0（全リンク${extracted.totalLinks}・新店語一致${extracted.keywordHits}）。list_url/パーサーを確認`
 
       let used = 0
       for (const link of links) {
         if (used >= maxArticles) break
+        // 差分巡回: 前回処理した最新記事URLに到達したら、それ以降（古い記事）は読み進めない
+        if (prevLatest && link.url === prevLatest) { counts.reachedPrev++; diag.reachedPrev = true; diag.reason = diag.reason || `前回最新記事に到達したため停止（差分巡回）`; break }
         // 504回避: 時間/件数の上限に達したら次回に継続
         if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `記事取得を${used}件で打ち切り（時間/件数上限・次回継続）`; break }
         counts.articles++
         const hash = urlHash(link.url)
         const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', hash).limit(1)
-        if (exA && exA[0]) continue // 同一URLは再取得しない
+        if (skipSeen(exA?.[0], null)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読記事は再取得しない
+        if (siteNewest === null) siteNewest = link.url  // 今回処理する最初の新規記事＝次回の停止カーソル
         counts.newArticles++; used++
 
         const aRes = await fetchHtml(link.url, DETAIL_TIMEOUT_MS)
@@ -1010,7 +1041,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         else diag.reason = 'OK'
       }
       diag.newArticles = used
-      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `リンク${diag.candidateLinks}/新着${used} HOT${diag.hot}/HOLD${diag.hold}/除外${diag.excluded} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
+      await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_success_at: nowIso, latest_item_url: siteNewest || site.latest_item_url, last_seen_article_url: siteNewest || site.last_seen_article_url, last_new_count: siteNewArticles, last_seen_skipped: siteSeenSkipped, last_old_skipped: siteOldSkipped, last_crawl_result: `記事リンク${diag.candidateLinks}/新規${used}/既読skip${siteSeenSkipped} HOT${diag.hot}/HOLD${diag.hold}/除外${diag.excluded} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
       debug.siteResults.push(diag)
     }
 

@@ -608,9 +608,17 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   for (const it of res.items) { if (!it.valid && it.invalidReason) reasonCounts[it.invalidReason] = (reasonCounts[it.invalidReason] || 0) + 1 }
   res.invalidTopReason = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
   if (!res.reason) res.reason = res.valid > 0 ? `OK（valid ${res.valid}/probed ${res.probed}）` : `valid 0（probed ${res.probed}・invalid${res.invalid}/fetch失敗${res.fetchFail}/parser失敗${res.parserFail}・${res.invalidTopReason || (res.fetchFail > 0 ? 'fetch失敗（要レンダリング/再試行）' : 'ページ未存在')}）`
+  // 差分巡回: fetch_failed / parser_failed は invalid扱いせず retry_ids に蓄積（再試行対象）。validになったIDは除去。
+  const fetchFailedIds: number[] = res.items.filter((i: any) => i.probeStatus === 'fetch_failed').map((i: any) => Number(i.probedId)).filter((n: number) => !Number.isNaN(n))
+  const parserFailedIds: number[] = res.items.filter((i: any) => i.probeStatus === 'parser_failed').map((i: any) => Number(i.probedId)).filter((n: number) => !Number.isNaN(n))
+  const validIdSet = new Set(res.items.filter((i: any) => i.valid).map((i: any) => Number(i.probedId)))
+  const prevRetry: number[] = Array.isArray(site.retry_ids) ? site.retry_ids.map(Number).filter((n: number) => !Number.isNaN(n)) : []
+  const retryIds = Array.from(new Set([...prevRetry, ...fetchFailedIds, ...parserFailedIds])).filter((id) => !validIdSet.has(id)).slice(-200)
   await admin.from('source_sites').update({
-    current_probe_id: nextId, last_checked_id: lastChecked, last_found_id: res.lastFoundId ?? site.last_found_id ?? null,
+    current_probe_id: nextId, next_start_id: nextId, last_checked_id: lastChecked, last_found_id: res.lastFoundId ?? site.last_found_id ?? null,
     last_valid_id: res.lastValidId ?? site.last_valid_id ?? null, last_invalid_id: res.invalid > 0 ? res.toId : (site.last_invalid_id ?? null),
+    fetch_failed_ids: fetchFailedIds.slice(0, 100), parser_failed_ids: parserFailedIds.slice(0, 100), retry_ids: retryIds,
+    last_success_at: res.valid > 0 ? opts.nowIso : (site.last_success_at ?? null), last_error_at: (res.fetchFail > 0 || res.parserFail > 0) ? opts.nowIso : (site.last_error_at ?? null),
     last_probe_started_at: startedAt, last_probe_finished_at: opts.nowIso, consecutive_not_found_count: consecutiveNotFound,
     total_checked_count: (Number(site.total_checked_count) || 0) + totalChecked, total_valid_count: (Number(site.total_valid_count) || 0) + totalValid, total_invalid_count: (Number(site.total_invalid_count) || 0) + totalInvalid,
     probe_result_summary: `今回${res.fromId}〜${res.toId} / valid${res.valid} invalid${res.invalid} fetch失敗${res.fetchFail} parser失敗${res.parserFail} / lead保存${res.saved} cases${res.imported} / 次回ID${nextId}（${nextIdBasis}）`.slice(0, 200),

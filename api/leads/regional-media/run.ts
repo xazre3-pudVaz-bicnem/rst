@@ -118,6 +118,38 @@ export default async function handler(req: any, res: any) {
     })
     return res.status(200).json({ ok: true, ...pr })
   }
+  // 差分巡回カーソルのリセット（地域メディア）: latest=前回最新記事 / seen=既読URL履歴（source_articles削除）
+  if (body?.resetCrawlCursor?.id) {
+    const id = body.resetCrawlCursor.id
+    const mode = body.resetCrawlCursor.mode === 'seen' ? 'seen' : 'latest'
+    if (mode === 'latest') {
+      await admin.from('source_sites').update({ latest_item_url: null, latest_item_published_at: null, last_seen_article_url: null, last_seen_article_title: null, last_seen_article_date: null, last_seen_shop_url: null, last_seen_shop_name: null }).eq('id', id)
+      return res.status(200).json({ ok: true, mode })
+    }
+    const { count } = await admin.from('source_articles').delete({ count: 'exact' }).eq('source_site_id', id)
+    await admin.from('source_sites').update({ latest_item_url: null, last_seen_article_url: null, last_seen_shop_url: null }).eq('id', id)
+    return res.status(200).json({ ok: true, mode, deleted: count || 0 })
+  }
+  // fetch_failed / parser_failed の再試行（差分巡回: 失敗IDだけ再確認・invalid扱いしない）
+  if (body?.retryProbeFailed?.id) {
+    const { data: site } = await admin.from('source_sites').select('*').eq('id', body.retryProbeFailed.id).maybeSingle()
+    if (!site) return res.status(404).json({ ok: false, error: 'サイトが見つかりません' })
+    const kind = body.retryProbeFailed.kind === 'fetch' ? 'fetch' : body.retryProbeFailed.kind === 'parser' ? 'parser' : 'all'
+    const pool: number[] = (kind === 'fetch' ? site.fetch_failed_ids : kind === 'parser' ? site.parser_failed_ids : site.retry_ids) || []
+    const ids = pool.map(Number).filter((n: number) => !Number.isNaN(n))
+    if (!ids.length) return res.status(200).json({ ok: true, retried: 0, reason: `${kind}の再試行対象IDがありません` })
+    const minId = Math.min(...ids), maxId = Math.max(...ids)
+    const span = Math.min(40, maxId - minId + 1)  // 失敗IDの範囲をforceで再確認（最大40件）
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    const { count: probedToday } = await admin.from('sequential_probe_results').select('id', { count: 'exact', head: true }).gte('checked_at', startToday.toISOString())
+    const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
+    const pr = await runSequentialProbe(admin, process.env.GOOGLE_MAPS_API_KEY || null, site, {
+      userId: userData.user.id, runId: null, nowIso: new Date().toISOString(), mode: (body.settings?.aiInjectMode) || 'standard',
+      forwardCount: span, backfillCount: 0, startIdOverride: minId, force: true, probeMode: 'safe',
+      dayRemaining: Math.max(0, (Number(body.settings?.probeDailyCap) || 500) - (probedToday || 0)), autoImportPerRun: 50, autoImportPerDay: 200, importedToday: importedToday || 0, delayMs: 800,
+    })
+    return res.status(200).json({ ok: true, retriedKind: kind, retriedRange: `${minId}〜${minId + span - 1}`, retried: span, ...pr })
+  }
   // 連番探索サイトの編集（位置＋設定）
   if (body?.updateProbeSite?.id) {
     const b = body.updateProbeSite
