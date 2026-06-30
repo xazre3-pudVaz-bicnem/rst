@@ -82,7 +82,7 @@ export function detectParserType(site: any, html: string, url: string): ParserTy
 export interface BlockCandidate {
   shopName: string; address: string; prefecture: string; city: string; phone: string; industry: string
   open: OpenDate; detailUrl: string; matchedKeywords: string[]; blockText: string; isNew: boolean
-  category: string; reviewish: string
+  category: string; reviewish: string; preEnriched?: boolean; official?: string
 }
 
 // 共通: 日本の電話番号抽出
@@ -178,6 +178,27 @@ export function parseHorbyCards(html: string, base: URL): BlockExtractResult {
     })
   }
   return { candidates, stats: { totalLinks: 0, blockCount: items.length, keywordBlocks: candidates.length, detailLinks: candidates.filter((c) => c.detailUrl).length, bodyTextLen: stripTags(html).length, newBadge: candidates.length, jsLikely: false } }
+}
+
+/** HORBY 店舗詳細ページ（/horby/store/storeDetail/{id}・JS描画後HTML）から ショップデータ を抽出。
+ *  dl.shop_data_row の dt(ラベル)/dd(値) を読む。メールは「ログイン後に表示」のため取得しない。 */
+export function parseHorbyDetail(html: string): { name: string; address: string; prefecture: string; phone: string; official: string; mapUrl: string; hours: string } {
+  const rows: Record<string, string> = {}
+  for (const m of html.matchAll(/<dl[^>]*class="[^"]*shop_data_row[^"]*"[^>]*>([\s\S]*?)<\/dl>/gi)) {
+    const label = stripTags(m[1].match(/<dt[^>]*>([\s\S]*?)<\/dt>/i)?.[1] || '').trim()
+    const ddHtml = m[1].match(/<dd[^>]*>([\s\S]*?)<\/dd>/i)?.[1] || ''
+    if (label) rows[label] = ddHtml
+  }
+  const txt = (h: string) => stripTags((h || '').replace(/<br\s*\/?>/gi, ' ')).replace(/\s+/g, ' ').trim()
+  const name = txt(rows['店舗名'] || rows['店名'] || '').slice(0, 60)
+  const addrRaw = txt(rows['住所'] || '').replace(/地図を見る.*$/, '').trim()
+  const address = addrRaw.replace(/\s+/g, '').slice(0, 70)
+  const prefecture = (addrRaw.match(/(北海道|東京都|大阪府|京都府|[^\s]{2,3}県)/)?.[1] || '')
+  const phone = (txt(rows['電話番号'] || rows['TEL'] || '').match(/0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}/)?.[0] || '').trim()
+  const official = ((rows['オフィシャルサイト'] || '').match(/href=["'](https?:\/\/[^"']+|[a-z0-9.-]+\.[a-z]{2,}[^"']*)["']/i)?.[1] || '')
+  const mapUrl = ((rows['住所'] || '').match(/href=["'](https?:\/\/[^"']*maps[^"']+)["']/i)?.[1] || '')
+  const hours = txt(rows['営業時間'] || '').slice(0, 40)
+  return { name, address, prefecture, phone, official: official && !/^https?:/.test(official) ? `https://${official}` : official, mapUrl, hours }
 }
 
 /** カード/リスト/記事ブロック単位で新店候補を抽出（マーケットプレイス/汎用本文スキャン共通） */

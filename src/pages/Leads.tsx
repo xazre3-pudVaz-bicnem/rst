@@ -187,7 +187,7 @@ export default function Leads() {
           regionalEnrichEnabled: settings.regionalEnrichEnabled, regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
           regionalEnrichPerQuery: settings.regionalEnrichPerQuery, regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
           aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
-          batchSites: settings.regionalBatchSites || 8,
+          batchSites: settings.regionalBatchSites || 8, horbyMaxDetails: settings.horbyMaxDetails ?? 2,
           ...extra,
         },
       }),

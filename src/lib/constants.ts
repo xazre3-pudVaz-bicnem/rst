@@ -333,6 +333,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   regionalEnabled: true,
   regionalMaxSites: 3,
   regionalBatchSites: 8,
+  horbyMaxDetails: 2,
   regionalMaxArticles: 5,
   regionalPeriodDays: 30,
   regionalEnrichEnabled: true,

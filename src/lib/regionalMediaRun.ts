@@ -10,7 +10,7 @@ import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
-import { detectParserType, extractNewnessBlocks, parseHorbyCards, sanitizeShopName } from './regionalParsers.js'
+import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
@@ -119,6 +119,24 @@ export async function renderPage(url: string, opts: { waitMs?: number; timeoutMs
 }
 // 後方互換のエイリアス
 const renderFetch = renderPage
+
+/** HORBY: 一覧の n番目カードをクリックして店舗詳細ページ(storeDetail/{id})へ遷移し、描画後HTMLと解決URLを取得。
+ *  一覧カードに詳細リンク(href)もidも無く、APIは要ログインのため、公開の詳細ページへ実クリック遷移して取得する（ScrapingBee js_scenarioのみ）。 */
+async function renderHorbyDetail(listUrl: string, cardIndex: number, opts: { waitListMs?: number; waitDetailMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; html: string; resolvedUrl: string; error: string | null }> {
+  if (!process.env.SCRAPINGBEE_API_KEY) return { ok: false, html: '', resolvedUrl: '', error: 'scrapingbee未設定' }
+  const scenario = JSON.stringify({ instructions: [{ wait: opts.waitListMs ?? 7000 }, { click: `.new_salon_list .new_salon_item:nth-child(${cardIndex}) a` }, { wait: opts.waitDetailMs ?? 9000 }] })
+  const target = `https://app.scrapingbee.com/api/v1/?api_key=${process.env.SCRAPINGBEE_API_KEY}&render_js=true&js_scenario=${encodeURIComponent(scenario)}&url=${encodeURIComponent(listUrl)}`
+  const ctrl = new AbortController(); let timedOut = false
+  const to = setTimeout(() => { timedOut = true; ctrl.abort() }, opts.timeoutMs ?? 30000)
+  try {
+    const res = await fetch(target, { headers: { Accept: 'text/html' }, signal: ctrl.signal })
+    clearTimeout(to)
+    const html = await res.text()
+    const resolvedUrl = res.headers.get('spb-resolved-url') || res.headers.get('Spb-Resolved-Url') || ''
+    if (!res.ok) return { ok: false, html: '', resolvedUrl: '', error: `HTTP ${res.status}` }
+    return { ok: true, html, resolvedUrl, error: null }
+  } catch (e: any) { clearTimeout(to); return { ok: false, html: '', resolvedUrl: '', error: timedOut ? 'timeout' : String(e?.message || e).slice(0, 100) } }
+}
 
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
 async function robotsAllows(origin: string, path: string): Promise<boolean> {
@@ -524,8 +542,29 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             renderResultNote = `rendered(${rr.provider}) HTML${rr.length}字 カード${re.candidates.length}件`
           } else { diag.renderError = rr.error; if (!rr.configured) diag.renderNotConfigured = true; renderResultNote = `rendering失敗: ${rr.error}` }
         } else if (isHorby && renderingMode === 'static') { renderResultNote = 'rendering_mode=static のためJS取得せず（HORBYは要レンダリング）' }
+        // HORBY: 一覧カードをクリックして公開の店舗詳細ページから 店名/電話/住所/公式 を補完（要ログインAPIは使わない）
+        if (isHorby && candidates.length > 0 && !!process.env.SCRAPINGBEE_API_KEY) {
+          const horbyMax = Math.max(0, Math.min(candidates.length, Number(s.horbyMaxDetails) || 2))  // 60s制限内（1件≈18s）。既定2件/回
+          diag.horbyDetailsTried = 0; diag.horbyAddrOk = 0; diag.horbyPhoneGated = false
+          for (let i = 0; i < horbyMax; i++) {
+            if (overBudget()) { diag.reason = `HORBY詳細を${i}件で打ち切り（時間上限・次回継続）`; break }
+            diag.horbyDetailsTried++
+            const d = await renderHorbyDetail(crawlUrl, i + 1)
+            if (d.ok) {
+              const dd = parseHorbyDetail(d.html)
+              if (dd.name) candidates[i].shopName = dd.name
+              if (dd.phone) candidates[i].phone = dd.phone  // ゲストでは「ログイン後に表示」のため通常空 → 電話なし＝HOLD
+              else if (/ログイン後に表示/.test(d.html)) diag.horbyPhoneGated = true
+              if (dd.address) { candidates[i].address = dd.address; if (dd.prefecture) candidates[i].prefecture = dd.prefecture; diag.horbyAddrOk++ }
+              if (dd.official) candidates[i].official = dd.official
+              if (d.resolvedUrl) candidates[i].detailUrl = d.resolvedUrl  // 実 storeDetail URL（一意）
+              candidates[i].preEnriched = true
+            }
+          }
+          diag.phoneYes = candidates.filter((c) => c.phone).length
+        }
         // レンダリング結果をソースに記録
-        await admin.from('source_sites').update({ rendering_provider: diag.renderProvider || pickRenderProvider(), last_rendering_result: renderResultNote.slice(0, 200) || null, last_rendering_error: diag.renderError || null }).eq('id', site.id).then(() => {}, () => {})
+        await admin.from('source_sites').update({ rendering_provider: diag.renderProvider || pickRenderProvider(), last_rendering_result: (renderResultNote + (isHorby ? ` 詳細(住所/公式)${diag.horbyAddrOk || 0}/${diag.horbyDetailsTried || 0}件${diag.horbyPhoneGated ? '・電話はログイン制限のためHOLD' : ''}` : '')).slice(0, 200) || null, last_rendering_error: diag.renderError || null }).eq('id', site.id).then(() => {}, () => {})
         diag.totalLinks = stats.totalLinks; diag.bodyTextLen = stats.bodyTextLen; diag.blockCount = stats.blockCount
         diag.keywordBlocks = stats.keywordBlocks; diag.detailLinks = stats.detailLinks; diag.newBadge = stats.newBadge
         diag.cardCandidates = candidates.length; diag.jsLikely = stats.jsLikely
@@ -557,9 +596,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           counts.articles++; counts.newArticles++; used++
 
           // 詳細ページ取得（カードに詳細リンクがあれば）
-          let info: any = { shop_name: cand.shopName, phone: cand.phone, address: cand.address, industry: cand.industry, official_url: '', instagram_url: '', map_url: '', open: cand.open, hours: '', holiday: '', excerpt: cand.blockText }
-          let detailStatus = 'no_detail_link'
-          if (cand.detailUrl && !cand.detailUrl.includes('#')) {  // #付き合成URL（HORBY等・詳細リンク無し）はfetchしない
+          let info: any = { shop_name: cand.shopName, phone: cand.phone, address: cand.address, industry: cand.industry, official_url: cand.official || '', instagram_url: '', map_url: '', open: cand.open, hours: '', holiday: '', excerpt: cand.blockText }
+          let detailStatus = cand.preEnriched ? 'pre_enriched' : 'no_detail_link'
+          if (!cand.preEnriched && cand.detailUrl && !cand.detailUrl.includes('#')) {  // 補完済み(HORBY)や#付き合成URLは再fetchしない
             const dRes = await fetchHtml(cand.detailUrl, DETAIL_TIMEOUT_MS); counts.detailFetches++
             await sleep(delay)
             if (dRes.ok) { diag.detailFetched++; detailStatus = 'fetched'; const di = extractDirectoryShopInfo(dRes.html, cand.shopName); info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url, instagram_url: di.instagram_url, map_url: di.map_url, open: (di.open.confidence !== 'none' ? di.open : cand.open) } }
