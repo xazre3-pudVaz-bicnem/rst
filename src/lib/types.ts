@@ -290,9 +290,16 @@ export interface LeadCandidate {
   enriched_reservation_url?: string | null
   enriched_line_url?: string | null
   enriched_google_place_id?: string | null
+  enriched_instagram_url?: string | null
   enrichment_reason?: string | null
   enrichment_confidence?: number | null
   last_enriched_at?: string | null
+  // 地域メディア記事由来（元情報）
+  source_article_excerpt?: string | null
+  source_media_family?: string | null
+  extracted_shop_name_from_article?: string | null
+  extracted_area_from_article?: string | null
+  extracted_open_date_from_article?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -387,6 +394,10 @@ export interface LeadImportSettings {
   regionalMaxSites: number     // 1日の巡回サイト数（既定3）
   regionalMaxArticles: number  // 1サイトの最大記事数（既定5）
   regionalPeriodDays: number   // 記事公開の対象期間（既定30日）
+  regionalEnrichEnabled: boolean   // 地域メディアの外部情報補完ON/OFF
+  regionalEnrichMaxQueries: number // 1候補の補完検索数（既定3）
+  regionalEnrichPerQuery: number   // 補完1クエリ取得件数（既定5）
+  regionalEnrichDailyCap: number   // 1日最大補完候補数（既定100）
   // Instagram Web検索
   iwEnabled: boolean
   iwAutoImport: boolean        // HOT自動投入（初期OFF）

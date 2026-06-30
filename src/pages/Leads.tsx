@@ -167,6 +167,8 @@ export default function Leads() {
           settings: {
             regionalEnabled: settings.regionalEnabled, maxSitesPerDay: settings.regionalMaxSites,
             maxArticlesPerSite: settings.regionalMaxArticles, periodDays: settings.regionalPeriodDays, dailyCap: settings.dailyCap,
+            regionalEnrichEnabled: settings.regionalEnrichEnabled, regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
+            regionalEnrichPerQuery: settings.regionalEnrichPerQuery, regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
           },
         }),
       })
@@ -178,6 +180,19 @@ export default function Leads() {
     } catch (e) {
       toast.error('実行に失敗しました: ' + jpError(e))
     } finally { setRmRunning(false) }
+  }
+
+  // 地域メディア候補の再補完（AI再判定とは別）
+  async function reenrichRegional(c: LeadCandidate) {
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      toast.info('外部情報を補完中…')
+      const res = await fetch('/api/leads/regional-media/run', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ reenrich: { id: c.id } }) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok || j.ok === false) throw new Error(j.error || 'failed')
+      toast.success(`再補完: 電話${j.phone || 'なし'} / ${j.area || '地域不明'}`); load()
+    } catch (e) { toast.error('再補完に失敗: ' + jpError(e)) }
   }
 
   // Instagram Web検索
@@ -443,6 +458,10 @@ export default function Leads() {
         maxArticlesPerSite: settings.regionalMaxArticles,
         periodDays: settings.regionalPeriodDays,
         dailyCap: settings.dailyCap,
+        regionalEnrichEnabled: settings.regionalEnrichEnabled,
+        regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
+        regionalEnrichPerQuery: settings.regionalEnrichPerQuery,
+        regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
       })
       await AppConfigApi.set('instagram_web_auto', {
         iwEnabled: settings.iwEnabled, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
@@ -798,9 +817,13 @@ export default function Leads() {
                     <Label>記事の対象期間（日）</Label>
                     <Input type="number" min={1} value={settings.regionalPeriodDays} onChange={(e) => saveSettings({ ...settings, regionalPeriodDays: Math.max(1, Number(e.target.value) || 30) })} className="h-8" />
                   </div>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.regionalEnrichEnabled} onChange={(e) => saveSettings({ ...settings, regionalEnrichEnabled: e.target.checked })} />外部情報補完（電話/住所探索）</label>
+                  <div className="space-y-1"><Label>1候補の補完検索数</Label><Input type="number" min={0} value={settings.regionalEnrichMaxQueries} onChange={(e) => saveSettings({ ...settings, regionalEnrichMaxQueries: Math.max(0, Number(e.target.value) || 3) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>補完1クエリ取得件数</Label><Input type="number" min={1} max={10} value={settings.regionalEnrichPerQuery} onChange={(e) => saveSettings({ ...settings, regionalEnrichPerQuery: Math.max(1, Math.min(10, Number(e.target.value) || 5)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大補完候補数</Label><Input type="number" min={0} value={settings.regionalEnrichDailyCap} onChange={(e) => saveSettings({ ...settings, regionalEnrichDailyCap: Math.max(0, Number(e.target.value) || 100) })} className="h-8" /></div>
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
-                  ※記事本文は保存せず、URL・タイトル・公開日・短い抜粋・抽出結果のみ保存。robots.txt尊重・レート制限・同一URL再取得回避。電話が取れないものはHOLD。巡回対象は <code>source_sites</code> テーブルで管理（base_urlは実URLに合わせて編集・is_activeで有効化）。自動実行は毎朝のCron（auto-leads内で順次・/api/cron/regional-media-leads でも手動可）。
+                  ※記事本文は保存せず、URL・タイトル・公開日・短い抜粋・抽出結果のみ保存。記事だけで電話なし/エリア不明を確定せず、店名・エリアで外部サイト/予約/公式/Instagram/Google Placesを追加調査して電話・住所を補完（IW検索と共通ロジック・1候補最大{settings.regionalEnrichMaxQueries}クエリ・1日{settings.regionalEnrichDailyCap}件）。robots.txt尊重・同一URL再取得回避。巡回対象は <code>source_sites</code> で管理。自動実行は毎朝のCron。
                 </div>
               </div>
 
@@ -1152,6 +1175,15 @@ export default function Leads() {
                       <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {rmResult.excluded ?? 0}</span>
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {rmResult.imported ?? 0}</span>
                       {Number(rmResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {rmResult.saveError}</span>}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完検索 {rmResult.enrichQueries ?? 0}回</span>
+                      <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完実行 {rmResult.enrichTried ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">補完成功 {rmResult.enrichSucceeded ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話取得 {rmResult.enrichPhone ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">住所取得 {rmResult.enrichAddress ?? 0}</span>
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">補完残枠 {rmResult.debug?.enrichBudget ?? '-'}</span>
+                      <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">推定Serper ¥{rmResult.debug?.estSerperCost ?? 0}</span>
                     </div>
                     {Array.isArray(rmResult.debug?.siteResults) && (
                       <details className="rounded border bg-muted/30 p-2 text-[10px]" open>
@@ -1534,6 +1566,7 @@ export default function Leads() {
                     <th className="p-2 text-left">ソース / 記事</th>
                     <th className="p-2 text-center">公開日</th>
                     <th className="p-2 text-center">Places照合</th>
+                    <th className="p-2 text-left">補完</th>
                     <th className="p-2 text-left">判定理由</th>
                     <th className="p-2 text-center">状態</th>
                     <th className="p-2 text-right">操作</th>
@@ -1559,10 +1592,30 @@ export default function Leads() {
                       </td>
                       <td className="p-2 text-center">{fmtDate(c.regional_media_detected_at)}</td>
                       <td className="p-2 text-center">{c.matched_google_place_id ? <span className="text-green-600">一致{c.match_confidence ? `(${c.match_confidence})` : ''}</span> : <span className="text-amber-600">未照合</span>}</td>
+                      <td className="max-w-[150px] p-2">
+                        {(() => {
+                          const st = c.enrichment_status
+                          const cls = st === 'enriched' ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : st === 'searched' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : st === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300' : 'bg-muted'
+                          const srcCount = Array.isArray(c.enrichment_sources) ? (c.enrichment_sources as any[]).length : 0
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span className={cn('w-fit rounded px-1 text-[9px]', cls)}>{st || '未補完'}{c.enrichment_confidence != null ? ` ${c.enrichment_confidence}` : ''}</span>
+                              {c.enriched_phone && <span className="text-[9px] text-green-700 dark:text-green-300">📞{c.enriched_phone}</span>}
+                              {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
+                              {c.enriched_instagram_url && <a href={c.enriched_instagram_url} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">IG</a>}
+                              {c.enriched_google_place_id && <a href={`https://www.google.com/maps/place/?q=place_id:${c.enriched_google_place_id}`} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">Places</a>}
+                              {srcCount > 0 && <span className="text-[9px] text-muted-foreground">補完元 {srcCount}件</span>}
+                            </div>
+                          )
+                        })()}
+                      </td>
                       <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.regional_media_newness_reason ?? ''}>{c.regional_media_newness_reason || c.ai_comment}</div></td>
                       <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
                       <td className="p-2 text-right">
-                        {!c.imported_to_cases && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>}
+                        <div className="flex flex-col items-end gap-1">
+                          {!c.imported_to_cases && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>}
+                          <Button size="sm" variant="ghost" className="h-6 text-2xs text-fuchsia-700 dark:text-fuchsia-300" onClick={() => reenrichRegional(c)}>再補完</Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

@@ -7,6 +7,8 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
+// Instagram Web検索と共通の外部情報補完ロジックを再利用
+import { enrichCandidate } from './instagramWebRun.js'
 
 export function getDefaultRegionalSettings() {
   return {
@@ -18,6 +20,11 @@ export function getDefaultRegionalSettings() {
     requirePhone: true,
     dailyCap: 30,
     fetchDelayMs: 800,
+    // 外部情報補完（IWと共通）
+    regionalEnrichEnabled: true,
+    regionalEnrichMaxQueries: 3,
+    regionalEnrichPerQuery: 5,
+    regionalEnrichDailyCap: 100,
   }
 }
 
@@ -154,10 +161,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const maxArticles = Math.max(1, Number(s.maxArticlesPerSite) || 5)
   const dailyCap = Math.max(1, Number(s.dailyCap) || 30)
   const delay = Math.max(200, Number(s.fetchDelayMs) || 800)
+  const enrichEnabled = s.regionalEnrichEnabled !== false
+  const enrichMaxQueries = Math.max(0, Number(s.regionalEnrichMaxQueries) || 3)
+  const enrichPerQuery = Math.max(1, Math.min(10, Number(s.regionalEnrichPerQuery) || 5))
+  const enrichDailyCap = Math.max(0, Number(s.regionalEnrichDailyCap) || 100)
 
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0 }
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0 }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
+  const enrichQueriesToLog = new Set<string>()
 
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'regional_media', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
@@ -172,6 +184,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     let importedCount = importedToday || 0
+
+    // 外部補完: 1日上限と7日以内の補完クエリ
+    const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
+      .eq('lead_source', 'regional_media').not('last_enriched_at', 'is', null).gte('last_enriched_at', startToday.toISOString())
+    let enrichBudget = Math.max(0, enrichDailyCap - (enrichedTodayCount || 0))
+    const since7e = new Date(Date.now() - 7 * 86400000).toISOString()
+    const { data: enrichRecentRows } = await admin.from('ig_enrich_log').select('query').gte('last_run_at', since7e).limit(8000)
+    const enrichRecent = new Set<string>((enrichRecentRows || []).map((r: any) => String(r.query)))
+    debug.enrichBudget = enrichBudget
 
     for (const site of list) {
       counts.sites++
@@ -237,63 +258,80 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         // 保存条件: 公開日が判明していて3日(=saveDays)より古いものは lead_candidates に保存しない
         if (tooOld) { diag.tooOld = (diag.tooOld || 0) + 1; continue }
 
-        // 任意: Google Places照合（必須にしない）
-        let placeMatched = false, placeHot = false, confidence = 0
-        let matchedPlaceId: string | null = null, placeFields: any = {}
-        if (mapsKey && ex.shop_name && ex.area) {
-          const r = await searchLight(mapsKey, `${ex.shop_name} ${ex.area}`, 3)
-          const top = r.places?.[0]
-          if (top) {
-            confidence = matchConfidence(ex.shop_name, top.displayName?.text || '')
-            if (confidence >= 80) {
-              placeMatched = true; matchedPlaceId = top.id || null; counts.placeMatched++
-              const detail = matchedPlaceId ? await placeDetails(mapsKey, matchedPlaceId) : null
-              const p = detail || top; placeFields = p
-              const { oldest, latest } = reviewDates(p)
-              const classified: any = classifyLead({
-                name: ex.shop_name, address: ex.address || top.formattedAddress || '', industry: ex.industry || undefined,
-                phone_number: phoneOf(p), website_url: p.websiteUri || '', place_id: matchedPlaceId || undefined,
-                is_new_gbp: true, review_count: typeof p.userRatingCount === 'number' ? p.userRatingCount : undefined,
-                business_status: p.businessStatus || undefined, opening_date: parseOpeningDate(p.openingDate) || undefined,
-                from_new_open_query: true, oldest_review_publish_time: oldest || undefined, latest_review_publish_time: latest || undefined,
-              }, [], { hotMaxReviews: 5, warmMaxReviews: 15, exclude100: true, unknownHold: true })
-              placeHot = classified.lead_temperature === 'HOT'
-            }
-          }
+        // 外部情報補完（記事だけで電話なし/エリア不明を確定しない）。電話or住所が無ければ実行
+        let enrich: any = null
+        const needEnrich = enrichEnabled && enrichBudget > 0 && !!ex.shop_name && (!ex.phone || !ex.address) && !ex.is_chain && !ex.is_mall
+        if (needEnrich) {
+          enrich = await enrichCandidate(mapsKey, { shop: ex.shop_name, username: '', areaHint: ex.area || '', industry: ex.industry || '', havePhone: ex.phone || '', haveAddress: ex.address || '' }, {
+            maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,
+            onQuery: (qq: string) => { counts.enrichQueries++; diag.enrichQueries = (diag.enrichQueries || 0) + 1; enrichQueriesToLog.add(qq) },
+          })
+          enrichBudget--; counts.enrichTried++
+          if (enrich.status === 'enriched') counts.enrichSucceeded++
+          if (enrich.phone) counts.enrichPhone++
+          if (enrich.address) counts.enrichAddress++
         }
+        const matchedPlaceId: string | null = enrich?.place_id || null
+        const placeMatched = !!matchedPlaceId
+        if (placeMatched) counts.placeMatched++
 
-        const phone = placeMatched ? (phoneOf(placeFields) || ex.phone) : ex.phone
+        // マージ（記事 → 補完）。記事の都道府県とPlaces住所の都道府県が食い違う場合はHOLD寄りに
+        const phone = ex.phone || enrich?.phone || ''
+        const address = ex.address || enrich?.address || null
+        const prefecture = enrich?.prefecture || null
+        const city = enrich?.city || null
+        const areaMerged = ex.area || [prefecture, city].filter(Boolean).join('') || null
+        const officialVal = enrich?.official || null
+        const reservationVal = enrich?.reservation || null
+        const lineVal = enrich?.line || null
+        const instagramVal = enrich?.instagram || null
         if (phone) counts.phoneYes++
 
-        // 判定（量より質）
+        // 判定: HOTは店名＋電話＋（住所/市区町村）必須（甘くしない）
         let temperature: string = 'HOLD'
         let reason = ''
         const recentOk = Number.isNaN(publishedMs) ? true : !tooOld
-        if (!ex.shop_name || !ex.area) { temperature = 'HOLD'; reason = '店名またはエリアの抽出精度が低いためHOLD。' }
+        const haveArea = !!(areaMerged || address)
+        if (!ex.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
         else if (!recentOk) { temperature = 'HOLD'; reason = `記事公開が${Math.round((now - publishedMs) / 86400000)}日前で対象期間外のためHOLD。` }
-        else if (placeMatched && placeHot && phone) { temperature = 'HOT'; reason = `地域メディア新店記事＋Google Placesで同一店舗確認、電話・口コミ日付が厳格条件を満たすためHOT。` }
-        else if (phone) { temperature = 'HOLD'; reason = placeMatched ? '電話は取れたがGBPの口コミ条件未達のためHOLD（要確認）。' : 'Google Places未照合のためHOLD（電話は取得済み・要確認）。' }
-        else { temperature = 'HOLD'; reason = '電話番号が取得できないためHOLD（自動投入しない）。' }
+        else if (phone && haveArea) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話・住所を確認したためHOT。` }
+        else if (phone || reservationVal || lineVal || officialVal || instagramVal) { temperature = 'HOLD'; reason = `新店記事。${phone ? '電話は取得' : '予約/公式/LINE/Instagramのみ取得'}・住所/エリアが弱いためHOLD（要確認）。` }
+        else { temperature = 'HOLD'; reason = '外部補完でも電話・住所が取得できずHOLD（自動投入しない）。' }
 
         if (temperature === 'HOT') { counts.hot++; diag.hot++ } else { counts.hold++; diag.hold++ }
         counts.candidates++
 
-        const name = ex.shop_name || `${ex.area}${ex.industry}`.trim() || '地域メディア候補'
-        const newnessReason = `${site.name}「${bestTitle}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''} / ${reason}`
+        const name = ex.shop_name || `${ex.area || ''}${ex.industry || ''}`.trim() || '地域メディア候補'
+        const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
+        const newnessReason = `${site.name}「${bestTitle}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''}${enrichNote} / ${reason}`
 
         const payload: any = {
-          name, address: ex.address || (placeMatched ? placeFields.formattedAddress : '') || null, industry: ex.industry || null,
-          phone_number: phone || null, website_url: placeFields.websiteUri || null,
+          name, address, industry: ex.industry || null,
+          phone_number: phone || null, website_url: officialVal,
           lead_source: 'regional_media', source_type: 'AI自動投入(地域メディア)',
           lead_temperature: temperature, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',
           owner_reachability_score: phone ? 70 : 30,
           auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason,
+          // 記事由来（元情報）
           source_article_url: link.url, source_article_title: bestTitle, source_site_name: site.name,
+          source_article_excerpt: (meta.excerpt || '').slice(0, 300), source_media_family: site.media_family || null,
+          extracted_shop_name_from_article: ex.shop_name || null, extracted_area_from_article: ex.area || null, extracted_open_date_from_article: ex.open_date || null,
           regional_media_detected_at: nowIso, extracted_open_date: ex.open_date || null,
-          extracted_shop_name: ex.shop_name || null, extracted_area: ex.area || null, extracted_address: ex.address || null,
-          extracted_industry: ex.industry || null, regional_media_newness_reason: newnessReason,
-          google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId, match_confidence: confidence || null,
+          // 最終値（補完反映）
+          extracted_shop_name: name, extracted_area: areaMerged, extracted_prefecture: prefecture, extracted_city: city,
+          extracted_address: address, extracted_industry: ex.industry || null, extracted_phone: phone || ex.phone || null,
+          line_url: lineVal, reservation_url: reservationVal, official_url: officialVal, instagram_url: instagramVal,
+          regional_media_newness_reason: newnessReason,
+          // 補完結果
+          enrichment_status: enrich?.status || 'not_started', enrichment_sources: enrich?.sources || null,
+          enriched_phone: enrich?.phone || null, enriched_address: enrich?.address || null,
+          enriched_prefecture: enrich?.prefecture || null, enriched_city: enrich?.city || null,
+          enriched_official_url: enrich?.official || null, enriched_instagram_url: enrich?.instagram || null,
+          enriched_reservation_url: enrich?.reservation || null, enriched_line_url: enrich?.line || null,
+          enriched_google_place_id: enrich?.place_id || null, enrichment_reason: enrich?.reason || null,
+          enrichment_confidence: enrich?.confidence ?? null, last_enriched_at: enrich ? nowIso : null,
+          google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId, match_confidence: enrich?.confidence ?? null,
           last_seen_at: nowIso, source_run_id: runId,
         }
 
@@ -323,7 +361,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           }
         }
 
-        if (!debug.sample) debug.sample = { site: site.name, title: bestTitle, url: link.url, published_at: meta.published_at, extracted: ex, temperature, reason, confidence, matchedPlaceId }
+        if (!debug.sample) debug.sample = { site: site.name, title: bestTitle, url: link.url, published_at: meta.published_at, extracted: ex, enrich, temperature, reason, matchedPlaceId }
       }
 
       if (!diag.reason) {
@@ -335,6 +373,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `リンク${diag.candidateLinks}/新着${used} HOT${diag.hot}/HOLD${diag.hold}/除外${diag.excluded} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
       debug.siteResults.push(diag)
     }
+
+    // 補完検索クエリの履歴を記録（7日スキップ用・IWと共通テーブル）
+    for (const eq of enrichQueriesToLog) {
+      await admin.from('ig_enrich_log').upsert({ query: eq, last_run_at: nowIso, runs: 1 }, { onConflict: 'query' }).then(() => {}, () => {})
+    }
+    // 概算コスト（補完検索のSerper回数）
+    debug.estSerperCost = Math.round(counts.enrichQueries * 0.5 * 10) / 10
 
     await admin.from('auto_lead_runs').update({
       status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.sites,

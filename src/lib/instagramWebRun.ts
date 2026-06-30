@@ -133,12 +133,13 @@ function extractPhone(text: string): string {
   if (d.length < 10 || d.length > 11) return ''
   return m[0].trim()
 }
-function classifyUrls(text: string): { line: string; reservation: string; official: string; all: string[] } {
+function classifyUrls(text: string): { line: string; reservation: string; official: string; instagram: string; all: string[] } {
   const urls = Array.from(text.matchAll(/https?:\/\/[^\s　"'<>]+/g)).map((m) => m[0])
   const line = urls.find((u) => /lin\.ee|line\.me/i.test(u)) || ''
   const reservation = urls.find((u) => /(stores\.jp|reserva\.be|tol-app\.jp|select-type\.com|airrsv\.net|hotpepper\.jp|coubic|epark|reserve|yoyaku|booking)/i.test(u)) || ''
+  const instagram = urls.find((u) => /instagram\.com/i.test(u)) || ''
   const official = urls.find((u) => !/instagram\.com/i.test(u) && u !== line && u !== reservation && !/lit\.link|linktr\.ee|instabio\.cc/i.test(u)) || ''
-  return { line, reservation, official, all: urls }
+  return { line, reservation, official, instagram, all: urls }
 }
 function extractContacts(text: string) {
   const phone = extractPhone(text)
@@ -146,7 +147,7 @@ function extractContacts(text: string) {
   const address = am ? am[0].trim().slice(0, 60) : ''
   const region = extractRegion(text)
   const u = classifyUrls(text)
-  return { phone, address, prefecture: region.prefecture, city: region.city, line: u.line, reservation: u.reservation, official: u.official }
+  return { phone, address, prefecture: region.prefecture, city: region.city, line: u.line, reservation: u.reservation, official: u.official, instagram: u.instagram }
 }
 export function usernameFromUrl(url: string): string {
   const m = url.match(/instagram\.com\/([A-Za-z0-9_.]+)/i)
@@ -160,17 +161,21 @@ function nameMatch(a: string, b: string): boolean {
   return y.includes(x.slice(0, 4)) || x.includes(y.slice(0, 4))
 }
 // 優先予約/外部サイト
-const ENRICH_SITES = ['stores.jp', 'reserva.be', 'tol-app.jp', 'select-type.com']
-function buildEnrichQueries(shop: string, username: string, max: number): string[] {
+const ENRICH_SITES = ['instagram.com', 'google.com/maps', 'hotpepper.jp', 'beauty.hotpepper.jp', 'stores.jp', 'reserva.be', 'tol-app.jp', 'select-type.com', 'ekiten.jp', 'line.me']
+function buildEnrichQueries(shop: string, username: string, area: string, max: number): string[] {
   const qs: string[] = []
-  if (shop) { qs.push(`"${shop}" 電話番号`, `"${shop}" 住所`, `"${shop}" 予約`, `"${shop}" 公式`, `"${shop}" LINE`, ...ENRICH_SITES.map((s) => `"${shop}" site:${s}`)) }
-  if (username && username !== shop) { qs.push(`"${username}" 電話番号`, `"${username}" 住所`, `"${username}" 予約`, ...ENRICH_SITES.map((s) => `"${username}" site:${s}`)) }
+  const a = area ? ` "${area}"` : ''
+  if (shop) {
+    qs.push(`"${shop}"${a} 電話番号`, `"${shop}"${a} 住所`, `"${shop}"${a} 公式`, `"${shop}"${a} Instagram`, `"${shop}"${a} 予約`, `"${shop}"${a} LINE`)
+    qs.push(...ENRICH_SITES.map((s) => `"${shop}"${a} site:${s}`))
+  }
+  if (username && username !== shop) { qs.push(`"${username}" 電話番号`, `"${username}" 住所`, `"${username}" 予約`, ...ENRICH_SITES.slice(4).map((s) => `"${username}" site:${s}`)) }
   return qs.slice(0, Math.max(0, max))
 }
 
 export interface EnrichResult {
   phone: string; address: string; prefecture: string; city: string
-  official: string; reservation: string; line: string; place_id: string
+  official: string; reservation: string; line: string; instagram: string; place_id: string
   sources: { url: string; got: string }[]; status: 'not_started' | 'searched' | 'enriched' | 'failed'
   confidence: number; reason: string; queriesUsed: number
 }
@@ -182,11 +187,11 @@ export async function enrichCandidate(
   opts: { maxQueries: number; perQuery: number; skipQuery?: Set<string>; onQuery?: (q: string) => void },
 ): Promise<EnrichResult> {
   let phone = ctx.havePhone || '', address = ctx.haveAddress || '', prefecture = '', city = ''
-  let official = '', reservation = '', line = '', place_id = ''
+  let official = '', reservation = '', line = '', instagram = '', place_id = ''
   const sources: { url: string; got: string }[] = []
   let queriesUsed = 0
   try {
-    const queries = buildEnrichQueries(ctx.shop, ctx.username, opts.maxQueries)
+    const queries = buildEnrichQueries(ctx.shop, ctx.username, ctx.areaHint || '', opts.maxQueries)
     for (const q of queries) {
       if (phone && address) break
       if (opts.skipQuery?.has(q)) continue
@@ -200,6 +205,7 @@ export async function enrichCandidate(
         if (c.reservation && !reservation) { reservation = c.reservation; sources.push({ url: c.reservation, got: 'reservation' }) }
         if (c.official && !official) official = c.official
         if (c.line && !line) line = c.line
+        if (c.instagram && !instagram) { instagram = c.instagram; sources.push({ url: c.instagram, got: 'instagram' }) }
       }
     }
     // Google Places 照合（店名＋エリア/業種）
@@ -221,9 +227,9 @@ export async function enrichCandidate(
     const reason = status === 'enriched'
       ? `補完: ${phone ? '電話' : ''}${phone && address ? '＋' : ''}${address ? '住所' : ''}${place_id ? '（Places含む）' : ''} / ${queriesUsed}クエリ`
       : `補完未取得（${queriesUsed}クエリ実行）`
-    return { phone, address, prefecture, city, official, reservation, line, place_id, sources, status, confidence, reason, queriesUsed }
+    return { phone, address, prefecture, city, official, reservation, line, instagram, place_id, sources, status, confidence, reason, queriesUsed }
   } catch (e: any) {
-    return { phone, address, prefecture, city, official, reservation, line, place_id, sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed }
+    return { phone, address, prefecture, city, official, reservation, line, instagram, place_id, sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed }
   }
 }
 
