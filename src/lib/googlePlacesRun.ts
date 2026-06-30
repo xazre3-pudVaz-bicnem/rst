@@ -8,7 +8,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
-import { isForeignAddress, isOrgNonStore } from './japanFilter.js'
+import { isForeignAddress, isOrgNonStore, isJapanAddress } from './japanFilter.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -283,6 +283,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
     dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
+    detailFailed: 0, judged: 0, skipped: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
   }
@@ -297,9 +298,16 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     queryResults: [] as any[],
     sample: null,
     saveErrors: [] as string[],
+    skipReasons: {} as Record<string, number>,
+    saveErrorDetails: [] as any[],
   }
   let errorMessage = ''
-  const recordSaveError = (msg: string) => { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(String(msg).slice(0, 300)) }
+  const recordSaveError = (msg: string, ctx?: any) => {
+    counts.saveError++
+    if (debug.saveErrors.length < 5) debug.saveErrors.push(String(msg).slice(0, 300))
+    if (debug.saveErrorDetails.length < 20) debug.saveErrorDetails.push({ message: String(msg).slice(0, 300), ...(ctx || {}) })
+  }
+  const addSkipReason = (k: string) => { debug.skipReasons[k] = (debug.skipReasons[k] || 0) + 1 }
 
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'google_places', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
@@ -321,9 +329,16 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
     for (const gq of picked) {
       const query = gq.query
-      const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
       const r = await searchLight(apiKey, query, perQuery)
       if (r.error) { counts.error++; errorMessage = r.error }
+      // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
+      const qstat: any = {
+        query, isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, error: r.error,
+        detail: 0, judged: 0, hot: 0, hold: 0, excluded: 0, skipped: 0, saved: 0, saveError: 0,
+        reasons: {} as Record<string, number>, items: [] as any[],
+      }
+      const qReason = (k: string) => { qstat.reasons[k] = (qstat.reasons[k] || 0) + 1; addSkipReason(k) }
+      const logItem = (it: any) => { if (qstat.items.length < 30) qstat.items.push(it) }
 
       for (const lp of r.places) {
         counts.fetched++
@@ -332,6 +347,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         const address: string = lp.formattedAddress || ''
         const hay = `${name} ${address}`
         const reviewCount: number | null = typeof lp.userRatingCount === 'number' ? lp.userRatingCount : null
+        const businessStatusLight: string = lp.businessStatus || ''
 
         // 口コミ件数の内訳
         if (reviewCount === null) counts.reviewUnknown++
@@ -340,28 +356,42 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (reviewCount < 100) counts.review16_99++
         else counts.review100++
 
-        // 日本国外は詳細を取らずスキップ（コスト削減・海外候補を作らない）
-        if (isForeignAddress(address)) { counts.foreignSkipped++; continue }
-        // 足切り: チェーン/施設内/支店、口コミ6件以上は深掘りしない（API節約）
-        const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
-        if (chainish) { counts.chainExcluded++; continue }
-        // 6件以上は対象外。ただし FUTURE_OPENING（開業予定）は口コミより優先して必ず詳細取得
-        if (reviewCount !== null && reviewCount > opts.hotMaxReviews && lp.businessStatus !== 'FUTURE_OPENING') continue
-
-        // 既存(place_id)を先に確認 → 30日以内にチェック済みなら詳細を再取得しない（コスト削減）
+        // 既存(place_id)を先に確認
         let existing: any = null
         if (placeId) {
           const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
           existing = data && data[0] ? data[0] : null
         }
-        if (existing?.google_places_checked_at && (Date.now() - Date.parse(existing.google_places_checked_at)) < 30 * 86400000) { counts.dupSkip++; continue }
-        // Place Details の1日上限（コスト制御）
-        if (detailsToday + counts.detailCalls >= maxDetailsPerDay) { counts.detailCapped++; continue }
+        // === SKIPPED: 30日以内にDetails取得済み（保存しない明確な理由）===
+        if (existing?.google_places_checked_at && (Date.now() - Date.parse(existing.google_places_checked_at)) < 30 * 86400000) {
+          counts.dupSkip++; counts.skipped++; qstat.skipped++; qReason('place_id_30日以内取得済み')
+          logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '30日以内place_id', saved: false }); continue
+        }
 
-        // 第2段階: 詳細取得（電話・レビュー日・開店日・businessStatus）
-        const detail = await placeDetails(apiKey, placeId)
-        counts.detailCalls++
-        const p = detail || lp
+        // 明確な除外（Detailsを取らずEXCLUDED保存＝APIコスト削減・記録は残す）
+        const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
+        const orgLike = isOrgNonStore(name)
+        const foreignLight = isForeignAddress(address)
+        const closedPermLight = businessStatusLight === 'CLOSED_PERMANENTLY'
+        // 口コミ多数(>warmMax)かつ FUTURE_OPENING でない＝既存店。openingDateはlightで分からないため詳細は取らずEXCLUDED保存
+        const tooManyReviewsLight = reviewCount !== null && reviewCount > opts.warmMaxReviews && businessStatusLight !== 'FUTURE_OPENING'
+        const hardExclude = foreignLight || chainish || orgLike || closedPermLight || tooManyReviewsLight
+
+        // === Details取得（hardExcludeでなければ）===
+        let p: any = lp
+        const fromNewOpen = gq.isNewOpen
+        if (!hardExclude) {
+          // Place Details の1日上限（コスト制御）→ SKIPPED（保存しない）
+          if (detailsToday + counts.detailCalls >= maxDetailsPerDay) {
+            counts.detailCapped++; counts.skipped++; qstat.skipped++; qReason('Details1日上限超過')
+            logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: 'Details1日上限', saved: false }); continue
+          }
+          const detail = await placeDetails(apiKey, placeId)
+          counts.detailCalls++; qstat.detail++
+          if (detail) p = detail
+          else { counts.detailFailed++; qReason('Details取得失敗'); p = lp } // 取得失敗でもlight情報で判定・保存（握りつぶさない）
+        }
+
         const phone = phoneOf(p)
         if (phone) counts.phoneYes++
         const openingDate = parseOpeningDate(p.openingDate)
@@ -369,11 +399,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         if (og.has) counts.openingDateCount = (counts.openingDateCount || 0) + 1
         if (p.businessStatus === 'FUTURE_OPENING') counts.futureOpeningCount = (counts.futureOpeningCount || 0) + 1
         const { latest: latestPub, oldest: oldestPub } = reviewDates(p)
-        const fromNewOpen = gq.isNewOpen
         const firstSeenDays = existing?.first_seen_at ? Math.max(0, Math.floor((Date.now() - Date.parse(existing.first_seen_at)) / 86400000)) : 0
-        // 詳細住所で海外と判明したら保存しない
-        if (isForeignAddress(p.formattedAddress || address)) { counts.foreignSkipped++; continue }
-        // 全国モード: 住所から都道府県/市区町村、primaryType/types/店名から業種を抽出
         const region = regionFromAddress(p.formattedAddress || address)
         const industryGuess = industryFromPlace(p.primaryType || '', Array.isArray(p.types) ? p.types : [], name) || gq.industry || null
 
@@ -392,14 +418,36 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           latest_review_publish_time: latestPub || undefined,
           oldest_review_publish_time: oldestPub || undefined,
         }, cases, opts)
+        counts.judged++; qstat.judged++
+
+        // === HOLDフォールバック ===
+        // 取得できた日本の新店候補は、明確な除外理由が無ければ最低HOLDで保存（電話/openingDateが無くても確認余地ありとして残す）
+        const fullAddress = p.formattedAddress || address
+        const hasJapanAddr = isJapanAddress(fullAddress)
+        const dupHit = !!classified.duplicate_of_case_id
+        const hardExcludeReason = foreignLight || isForeignAddress(fullAddress) || chainish || orgLike || closedPermLight || tooManyReviewsLight || dupHit
+        if (classified.lead_temperature === 'EXCLUDED' && !hardExcludeReason && !!name && hasJapanAddr) {
+          classified.lead_temperature = 'HOLD'
+          classified.should_exclude_from_call_list = false
+          classified.exclusion_reason = '電話/openingDate等は不足だが、日本国内・店名・Google Places取得済みのため保留（要確認）。'
+          if (classified.hot_reject_summary) classified.hot_reject_summary = classified.hot_reject_summary
+        }
+        const temp = classified.lead_temperature as string
 
         if (classified.oldest_review_is_recent) counts.oldestRecent++
-        if (isOrgNonStore(name) && classified.lead_temperature === 'EXCLUDED') counts.orgFiltered++
-        if (classified.lead_temperature === 'HOT') counts.hot++
-        else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
-        else counts.hold++
-        if (classified.duplicate_of_case_id) counts.duplicate++
-        if (!classified.phone_normalized) counts.noPhone++
+        if (orgLike && temp === 'EXCLUDED') counts.orgFiltered++
+        if ((foreignLight || isForeignAddress(fullAddress)) && temp === 'EXCLUDED') counts.foreignSkipped++
+        if (chainish && temp === 'EXCLUDED') counts.chainExcluded++
+        if (temp === 'HOT') { counts.hot++; qstat.hot++ }
+        else if (temp === 'EXCLUDED') { counts.excluded++; qstat.excluded++ }
+        else { counts.hold++; qstat.hold++ }
+        if (dupHit) { counts.duplicate++; qReason('既存案件と重複') }
+        if (!classified.phone_normalized) { counts.noPhone++; qReason('電話番号なし') }
+        if (!og.has) qReason('openingDateなし')
+        if (foreignLight || isForeignAddress(fullAddress)) qReason('日本国外')
+        if (chainish) qReason('チェーン/施設内/支店')
+        if (orgLike) qReason('法人/団体/研究会')
+        if (tooManyReviewsLight) qReason('口コミ多数(既存店)')
 
         const payload: any = {
           ...classified,
@@ -457,20 +505,30 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           }
         }
 
-        // 保存
+        // 保存（成功/失敗を必ず記録。握りつぶさない）
         let candidateId: string | null = existing?.id || null
         const alreadyImported = !!existing?.imported_to_cases
+        let savedOk = false
+        let saveErrMsg = ''
         if (existing) {
           const { error: upErr } = await admin.from('lead_candidates').update(payload).eq('id', existing.id)
-          if (upErr) recordSaveError('lead update: ' + upErr.message); else counts.saved++
+          if (upErr) { saveErrMsg = upErr.message; recordSaveError('lead update: ' + upErr.message, { placeId, name }) } else { counts.saved++; qstat.saved++; savedOk = true }
         } else {
           const { data: ins, error: insErr } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single()
-          if (insErr) recordSaveError('lead insert: ' + insErr.message); else counts.saved++
+          if (insErr) { saveErrMsg = insErr.message; recordSaveError('lead insert: ' + insErr.message, { placeId, name }) } else { counts.saved++; qstat.saved++; savedOk = true }
           candidateId = ins?.id || null
         }
+        if (saveErrMsg) qstat.saveError++
+        // place単位のログ（42件がどこで消えたか追跡できるように）
+        logItem({
+          placeId, name, address: p.formattedAddress || address, phone: phone || null,
+          businessStatus: p.businessStatus || null, openingDate: og.raw || null,
+          userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : reviewCount,
+          result: temp, saved: savedOk, exclusion: classified.exclusion_reason || null, saveError: saveErrMsg || null,
+        })
 
         // HOT自動投入
-        if (autoImport && classified.lead_temperature === 'HOT' && !classified.duplicate_of_case_id && !alreadyImported && importedCount < dailyCap && candidateId) {
+        if (autoImport && temp === 'HOT' && !classified.duplicate_of_case_id && !alreadyImported && importedCount < dailyCap && candidateId) {
           const memo = [
             `【AI自動投入 / GBP】`,
             `投入理由: ${classified.auto_import_reason || ''}`,
@@ -495,15 +553,26 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       // クエリ実行履歴を記録（ローテーション用）
       await admin.from('lead_query_log').upsert({
         query, source: 'google_places', last_run_at: nowIso,
-        places_count: r.places.length, hot_count: counts.hot - before.hot, runs: 1,
+        places_count: r.places.length, hot_count: qstat.hot, runs: 1,
         prefecture: prefectureOfArea(gq.area), area: gq.area,
       }, { onConflict: 'query' }).then(() => {}, () => {})
 
-      debug.queryResults.push({
-        query, isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, error: r.error,
-        hot: counts.hot - before.hot, hold: counts.hold - before.hold, excluded: counts.excluded - before.excluded,
-      })
+      // クエリ別の主なスキップ理由（上位3件）
+      qstat.topReasons = Object.entries(qstat.reasons).sort((a: any, b: any) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k}${v}`)
+      debug.queryResults.push(qstat)
     }
+
+    // 集計整合性（places数 = SKIPPED + 判定対象 / 判定対象 = HOT+HOLD+EXCLUDED）
+    debug.reconcile = {
+      places: counts.fetched, skipped: counts.skipped, judged: counts.judged,
+      hot: counts.hot, hold: counts.hold, excluded: counts.excluded, saved: counts.saved, saveError: counts.saveError,
+      detailThisRun: counts.detailCalls, detailToday: detailsToday + counts.detailCalls, detailFailed: counts.detailFailed,
+      ok: counts.fetched === (counts.skipped + counts.judged) && counts.judged === (counts.hot + counts.hold + counts.excluded),
+    }
+    // 自動投入0件の理由分類（A〜E）
+    debug.autoImportDiag = counts.imported > 0 ? '投入あり'
+      : counts.hot === 0 ? (counts.judged === 0 ? (counts.fetched === 0 ? '取得0件' : 'E: 全件スキップ（判定に進まず）') : 'A: HOT0件のため投入0')
+        : (counts.saveError > 0 ? 'B: HOTありだがDB保存失敗' : 'C: HOTありだがcases投入失敗/上限')
 
     debug.estApiCalls = picked.length + counts.detailCalls
     await admin.from('auto_lead_runs').update({

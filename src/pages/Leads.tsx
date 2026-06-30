@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import moment from 'moment'
 import {
   Sparkles, Play, Settings2, CheckCircle2, Flame, PhoneOff, Copy as CopyIcon,
@@ -1000,7 +1000,8 @@ export default function Leads() {
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {gpResult.phoneYes ?? 0}</span>
-                  <span className="rounded bg-muted px-1.5 py-0.5">Place Details {gpResult.detailCalls ?? 0}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5">Place Details 今回{gpResult.detailCalls ?? 0} / 本日{gpResult.debug?.reconcile?.detailToday ?? gpResult.debug?.detailsToday ?? 0}</span>
+                  {Number(gpResult.skipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">SKIPPED {gpResult.skipped}</span>}
                   <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {gpResult.openingDateCount ?? 0}</span>
                   <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.futureOpeningCount ?? 0}</span>
                   {Number(gpResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {gpResult.dupSkip}</span>}
@@ -1057,31 +1058,110 @@ export default function Leads() {
                 )}
 
                 {/* クエリ別の取得状況（0件の切り分け・クエリ別HOT/HOLD/EXCLUDED） */}
+                {/* 集計整合性（places数 = SKIPPED + 判定対象 / 判定対象 = HOT+HOLD+EXCLUDED）*/}
+                {gpResult.debug?.reconcile && (
+                  <div className={cn('rounded-md border p-2 text-[10px]', gpResult.debug.reconcile.ok ? 'bg-green-50 dark:bg-green-500/10' : 'bg-amber-50 dark:bg-amber-500/10')}>
+                    <div className="font-bold">集計整合性 {gpResult.debug.reconcile.ok ? '✅ 一致' : '⚠ 不一致'}</div>
+                    <div className="text-muted-foreground">
+                      places {gpResult.debug.reconcile.places} = SKIPPED {gpResult.debug.reconcile.skipped} + 判定対象 {gpResult.debug.reconcile.judged}　/
+                      判定対象 = HOT {gpResult.debug.reconcile.hot} + HOLD {gpResult.debug.reconcile.hold} + EXCLUDED {gpResult.debug.reconcile.excluded}　/
+                      DB保存 {gpResult.debug.reconcile.saved}（失敗 {gpResult.debug.reconcile.saveError}）
+                    </div>
+                    <div className="text-muted-foreground">
+                      Place Details: 今回 {gpResult.debug.reconcile.detailThisRun} / 本日累計 {gpResult.debug.reconcile.detailToday} / 取得失敗 {gpResult.debug.reconcile.detailFailed} / 30日内skip {gpResult.dupSkip ?? 0}
+                    </div>
+                    <div className="font-bold text-amber-700 dark:text-amber-300">自動投入0件の理由: {gpResult.debug.autoImportDiag}</div>
+                  </div>
+                )}
+
+                {/* スキップ理由の集計 */}
+                {gpResult.debug?.skipReasons && Object.keys(gpResult.debug.skipReasons).length > 0 && (
+                  <div className="flex flex-wrap gap-1 text-[10px]">
+                    <span className="text-muted-foreground">スキップ/除外理由:</span>
+                    {Object.entries(gpResult.debug.skipReasons).sort((a: any, b: any) => b[1] - a[1]).map(([k, v]: any) => (
+                      <span key={k} className="rounded bg-muted px-1.5 py-0.5">{k} {v}</span>
+                    ))}
+                  </div>
+                )}
+
+                {/* DB保存失敗の詳細 */}
+                {Array.isArray(gpResult.debug?.saveErrorDetails) && gpResult.debug.saveErrorDetails.length > 0 && (
+                  <div className="rounded-md bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                    <div className="font-bold">DB保存失敗 {gpResult.debug.saveErrorDetails.length}件</div>
+                    {gpResult.debug.saveErrorDetails.map((d: any, i: number) => (
+                      <div key={i} className="truncate" title={d.message}>・{d.name || d.placeId || ''}: {d.message}</div>
+                    ))}
+                  </div>
+                )}
+
                 {Array.isArray(gpResult.debug?.queryResults) && gpResult.debug.queryResults.length > 0 && (
                   <div className="overflow-x-auto rounded-md border">
-                    <table className="w-full min-w-[560px] text-[10px]">
+                    <table className="w-full min-w-[720px] text-[10px]">
                       <thead className="bg-muted/50 text-muted-foreground">
                         <tr>
                           <th className="p-1 text-left">検索クエリ</th>
                           <th className="p-1 text-center">HTTP</th>
-                          <th className="p-1 text-center">places数</th>
+                          <th className="p-1 text-center">places</th>
+                          <th className="p-1 text-center">Details</th>
+                          <th className="p-1 text-center">判定</th>
                           <th className="p-1 text-center">HOT</th>
                           <th className="p-1 text-center">HOLD</th>
                           <th className="p-1 text-center">除外</th>
-                          <th className="p-1 text-left">エラー</th>
+                          <th className="p-1 text-center">SKIP</th>
+                          <th className="p-1 text-center">保存</th>
+                          <th className="p-1 text-center">失敗</th>
+                          <th className="p-1 text-left">主な理由</th>
                         </tr>
                       </thead>
                       <tbody>
                         {gpResult.debug.queryResults.map((q: any, i: number) => (
-                          <tr key={i} className="border-t">
+                          <Fragment key={i}>
+                          <tr className="border-t">
                             <td className="p-1">{q.query}</td>
                             <td className={cn('p-1 text-center font-bold', q.status === 200 ? 'text-green-600' : 'text-red-600')}>{q.status}</td>
                             <td className="p-1 text-center">{q.placesLength}</td>
+                            <td className="p-1 text-center">{q.detail ?? 0}</td>
+                            <td className="p-1 text-center">{q.judged ?? 0}</td>
                             <td className="p-1 text-center font-bold text-red-600">{q.hot ?? 0}</td>
                             <td className="p-1 text-center">{q.hold ?? 0}</td>
                             <td className="p-1 text-center text-muted-foreground">{q.excluded ?? 0}</td>
-                            <td className={cn('max-w-[220px] truncate p-1', q.error ? 'text-red-600' : 'text-muted-foreground')} title={q.error || ''}>{q.error || '—'}</td>
+                            <td className="p-1 text-center text-muted-foreground">{q.skipped ?? 0}</td>
+                            <td className="p-1 text-center text-green-600">{q.saved ?? 0}</td>
+                            <td className={cn('p-1 text-center', q.saveError ? 'text-red-600 font-bold' : 'text-muted-foreground')}>{q.saveError ?? 0}</td>
+                            <td className="max-w-[200px] truncate p-1 text-muted-foreground" title={(q.topReasons || []).join(' / ')}>{q.error ? <span className="text-red-600">{q.error}</span> : (q.topReasons || []).join(' / ') || '—'}</td>
                           </tr>
+                          {Array.isArray(q.items) && q.items.length > 0 && (
+                            <tr><td colSpan={12} className="p-0">
+                              <details className="px-2 py-1">
+                                <summary className="cursor-pointer text-[10px] text-primary">place明細を見る（{q.items.length}）</summary>
+                                <div className="mt-1 overflow-x-auto">
+                                  <table className="w-full min-w-[700px] text-[9px]">
+                                    <thead className="text-muted-foreground"><tr>
+                                      <th className="p-0.5 text-left">店名</th><th className="p-0.5 text-left">住所</th><th className="p-0.5 text-left">電話</th>
+                                      <th className="p-0.5 text-left">status</th><th className="p-0.5 text-left">開業日</th><th className="p-0.5 text-center">口コミ</th>
+                                      <th className="p-0.5 text-center">判定</th><th className="p-0.5 text-center">保存</th><th className="p-0.5 text-left">理由/エラー</th>
+                                    </tr></thead>
+                                    <tbody>
+                                      {q.items.map((it: any, j: number) => (
+                                        <tr key={j} className="border-t">
+                                          <td className="max-w-[120px] truncate p-0.5" title={it.name}>{it.name || '—'}</td>
+                                          <td className="max-w-[140px] truncate p-0.5" title={it.address}>{it.address || '—'}</td>
+                                          <td className="p-0.5">{it.phone || '—'}</td>
+                                          <td className="p-0.5">{it.businessStatus || '—'}</td>
+                                          <td className="p-0.5">{it.openingDate || '—'}</td>
+                                          <td className="p-0.5 text-center">{it.userRatingCount ?? '—'}</td>
+                                          <td className={cn('p-0.5 text-center font-bold', it.result === 'HOT' ? 'text-red-600' : it.result === 'HOLD' ? 'text-amber-600' : it.result === 'SKIPPED' ? 'text-muted-foreground' : 'text-zinc-500')}>{it.result}</td>
+                                          <td className="p-0.5 text-center">{it.saved ? '✓' : (it.skip ? '—' : (it.saveError ? '✗' : '—'))}</td>
+                                          <td className="max-w-[160px] truncate p-0.5 text-muted-foreground" title={it.saveError || it.skip || it.exclusion || ''}>{it.saveError ? <span className="text-red-600">{it.saveError}</span> : (it.skip || it.exclusion || '—')}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            </td></tr>
+                          )}
+                          </Fragment>
                         ))}
                       </tbody>
                     </table>
