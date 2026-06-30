@@ -3,7 +3,7 @@
 // 認可: ADMIN_SECRET / CRON_SECRET ヘッダ もしくは ログイン中ユーザーのJWT。
 // フロントには service role を出さず、必ずこのAPI経由で書き込む。
 // ============================================================
-export const MEDIA_FAMILIES = ['goguynet', 'kaitenheiten', 'tsushin', 'saikohkunavi', 'local_blog', 'local_news', 'local_directory', 'other']
+export const MEDIA_FAMILIES = ['goguynet', 'kaitenheiten', 'tsushin', 'saikohkunavi', 'horby', 'local_blog', 'local_news', 'local_directory', 'other']
 // openclose_article=記事型 / local_directory_new_listing=店舗ディレクトリ型 / hybrid=両方
 export const SOURCE_TYPES = ['openclose_article', 'local_directory_new_listing', 'hybrid', 'html_list', 'rss', 'sitemap', 'category_page']
 export const CATEGORY_LABELS = ['開店閉店', '新店情報', '地域ニュース', '店舗情報', '店舗新着']
@@ -68,4 +68,6 @@ export const INITIAL_SOURCES = [
   { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // 彩北なび: 店舗ディレクトリ型（一覧 sort=newest → 店舗詳細 /shop/shop.shtml?s=xxxx を巡回）
   { name: '彩北なび', base_url: 'https://www.saikohkunavi.net/', list_url: 'https://www.saikohkunavi.net/shop/?sort=newest', media_family: 'saikohkunavi', source_type: 'local_directory_new_listing', category_label: '店舗新着', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
+  // HORBY: マーケットプレイス型（検索結果の店舗カードから新規掲載を抽出）。list_url は新着順の検索結果URLをUIで設定。
+  { name: 'HORBY', base_url: 'https://h-word.com/', list_url: 'https://h-word.com/horby/store/searchResult?sortType=new', media_family: 'horby', source_type: 'marketplace_listing', category_label: '店舗新着', is_active: false, reliability_score: 60, crawl_interval_hours: 24 },
 ]

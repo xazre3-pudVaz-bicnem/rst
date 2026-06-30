@@ -10,6 +10,7 @@ import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
+import { detectParserType, extractNewnessBlocks } from './regionalParsers.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -243,8 +244,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       const idx = await fetchHtml(crawlUrl)
       await sleep(delay)
       const linkOpts: LinkOpts = { mediaFamily: site.media_family, categoryLabel: site.category_label, listUrl: crawlUrl }
-      const stype = siteTypeOf(site)
-      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, timeouts: 0, error: idx.error, reason: '' }
+      // parser_type 判定（site設定 → URL/HTML構造から推定）
+      const parserType = idx.ok ? detectParserType(site, idx.html, crawlUrl) : siteTypeOf(site)
+      const stype = parserType
+      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, parserType, parser_used: '', fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, timeouts: 0, error: idx.error, reason: '' }
       if (!idx.ok) {
         counts.error++; if (idx.timedOut) { counts.timeouts++; diag.timeouts++ }
         diag.reason = idx.timedOut ? `リスト取得がタイムアウト（外部サイト応答遅延）` : `リスト取得失敗（${idx.error}）`
@@ -255,6 +258,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
       // ===== 店舗ディレクトリ型（彩北なび等）: 一覧→店舗詳細リンク→詳細ページ取得→判定 =====
       if (stype === 'local_directory_new_listing') {
+        diag.parser_used = 'directory_parser'
         const dr = extractDirectoryListingLinks(idx.html, base, site.media_family)
         diag.totalLinks = dr.totalLinks; diag.detailLinks = dr.detailLinks; diag.openTagged = dr.openTagged
         diag.detailFetched = 0; diag.phoneYes = 0; diag.addressYes = 0; diag.openYes = 0
@@ -404,6 +408,149 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         continue
       }
 
+      // ===== マーケットプレイス/検索結果・カード型（HORBY等）＋ 汎用本文スキャン =====
+      if (stype === 'marketplace_listing' || stype === 'generic_page_text_scan') {
+        diag.parser_used = stype === 'marketplace_listing' ? 'marketplace_card_parser' : 'generic_card_parser'
+        const { candidates, stats } = extractNewnessBlocks(idx.html, base)
+        diag.totalLinks = stats.totalLinks; diag.bodyTextLen = stats.bodyTextLen; diag.blockCount = stats.blockCount
+        diag.keywordBlocks = stats.keywordBlocks; diag.detailLinks = stats.detailLinks; diag.newBadge = stats.newBadge
+        diag.cardCandidates = candidates.length; diag.jsLikely = stats.jsLikely
+        diag.detailFetched = 0; diag.phoneYes = 0; diag.addressYes = 0; diag.openYes = 0
+        if (candidates.length === 0) {
+          diag.reason = stats.jsLikely
+            ? `HTMLは取得できたが本文が少なくJSレンダリングの可能性（本文${stats.bodyTextLen}字）。静的HTMLに店舗情報なし`
+            : stats.keywordBlocks > 0
+              ? `新店キーワード一致ブロック${stats.keywordBlocks}件あるが店名/詳細リンクが取れず候補化できず`
+              : `記事リンク0・店舗カード候補0（ブロック${stats.blockCount}/新店語一致${stats.keywordBlocks}）。本文に新店キーワードなし`
+        }
+        let used = 0
+        for (const cand of candidates.slice(0, maxArticles * 2)) {
+          if (used >= maxArticles) break
+          if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `カード${used}件で打ち切り（時間/件数上限・次回継続）`; break }
+          const detailUrl = cand.detailUrl || crawlUrl
+          const dhash = urlHash(detailUrl + '|' + cand.shopName)
+          const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', dhash).limit(1)
+          const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases,phone_number,address').eq('source_detail_url', detailUrl).limit(1)
+          const existingCand = exC?.[0] || null
+          if (exA?.[0] && existingCand && existingCand.phone_number && existingCand.address) continue
+          counts.articles++; counts.newArticles++; used++
+
+          // 詳細ページ取得（カードに詳細リンクがあれば）
+          let info: any = { shop_name: cand.shopName, phone: cand.phone, address: cand.address, industry: cand.industry, official_url: '', instagram_url: '', map_url: '', open: cand.open, hours: '', holiday: '', excerpt: cand.blockText }
+          let detailStatus = 'no_detail_link'
+          if (cand.detailUrl) {
+            const dRes = await fetchHtml(cand.detailUrl, DETAIL_TIMEOUT_MS); counts.detailFetches++
+            await sleep(delay)
+            if (dRes.ok) { diag.detailFetched++; detailStatus = 'fetched'; const di = extractDirectoryShopInfo(dRes.html, cand.shopName); info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url, instagram_url: di.instagram_url, map_url: di.map_url, open: (di.open.confidence !== 'none' ? di.open : cand.open) } }
+            else { detailStatus = dRes.timedOut ? 'timeout' : 'failed'; if (dRes.timedOut) { counts.timeouts++; diag.timeouts++ } }
+          }
+          // 外部補完（電話 or 住所が無い時のみ）
+          let enrich: any = null
+          if (enrichEnabled && enrichBudget > 0 && info.shop_name && (!info.phone || !info.address) && !overBudget()) {
+            enrich = await enrichCandidate(mapsKey, { shop: info.shop_name, username: '', areaHint: info.address || cand.city || '', industry: info.industry || '', havePhone: info.phone || '', haveAddress: info.address || '' }, {
+              maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,
+              onQuery: (qq: string) => { counts.enrichQueries++; enrichQueriesToLog.add(qq) },
+            })
+            enrichBudget--; counts.enrichTried++
+            if (enrich.status === 'enriched') counts.enrichSucceeded++
+            if (enrich.phone) counts.enrichPhone++
+            if (enrich.address) counts.enrichAddress++
+          }
+          const phone = info.phone || enrich?.phone || ''
+          const address = info.address || enrich?.address || ''
+          const official = info.official_url || enrich?.official || null
+          const instagram = info.instagram_url || enrich?.instagram || null
+          const prefecture = cand.prefecture || enrich?.prefecture || null
+          const city = cand.city || enrich?.city || null
+          const matchedPlaceId = enrich?.place_id || null
+          const open = info.open
+          if (phone) { diag.phoneYes++; counts.phoneYes++ }
+          if (address) diag.addressYes++
+          if (open.confidence !== 'none') diag.openYes++
+          if (matchedPlaceId) counts.placeMatched++
+
+          const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
+          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan })
+          const temperature = dc.temperature
+          if (temperature === 'HOT') { counts.hot++; diag.hot++ }
+          else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded++ }
+          else { counts.hold++; diag.hold++ }
+          counts.candidates++
+
+          const name = info.shop_name || '新店候補'
+          const newnessReason = `${site.name}（${diag.parser_used}）「${name}」${open.text ? ` ${open.text}` : ''} 一致語[${cand.matchedKeywords.join('・')}]${enrich ? ` / 補完[${enrich.status}]` : ''} / ${dc.reason}`
+          const rmConf = (phone && isJapanPhone(phone) ? 35 : 0) + (address ? 30 : 0) + (open.confidence === 'high' ? 25 : open.confidence === 'mid' ? 15 : 0) + (matchedPlaceId ? 10 : 0)
+          const rmChecks: HotCheck[] = [
+            { key: 'has_japan', label: '日本国内', ok: dc.isForeign ? false : (isJapan ? true : null), reasonKey: 'not_japan' },
+            { key: 'has_shop_name', label: '店名あり', ok: !!info.shop_name, reasonKey: 'shop_name_missing' },
+            { key: 'has_industry', label: '業種推定', ok: info.industry ? true : null, reasonKey: 'industry_unknown' },
+            { key: 'has_area', label: '住所あり', ok: !!address, reasonKey: 'address_missing', value: address || undefined },
+            { key: 'has_phone', label: '日本の電話番号あり', ok: (phone && isJapanPhone(phone)) ? true : false, reasonKey: 'phone_missing', value: phone || undefined },
+            { key: 'has_newness', label: '新店根拠(カード)あり', ok: cand.matchedKeywords.length > 0 ? true : null, reasonKey: 'newness_missing', value: cand.matchedKeywords.join('・') || undefined },
+            { key: 'has_opening_date', label: 'OPEN日付あり', ok: open.iso ? true : false, reasonKey: 'opening_date_missing' },
+            { key: 'has_official', label: '公式/Places裏取り', ok: (official || matchedPlaceId) ? true : null, reasonKey: 'official_unverified' },
+          ]
+          const hotReject = buildHotReject({ source: 'regional_media', temperature, confidence: rmConf, checks: rmChecks })
+
+          const payload: any = {
+            name, address: address || null, industry: info.industry || null,
+            phone_number: phone || null, website_url: official,
+            lead_source: 'regional_media', source: 'regional_media', source_type: 'AI自動投入(地域メディア)',
+            source_site_type: stype, parser_used: diag.parser_used, source_media_family: site.media_family || null, source_site_name: site.name,
+            source_list_url: crawlUrl, source_listing_url: crawlUrl, source_detail_url: detailUrl, source_article_url: detailUrl,
+            search_title: name.slice(0, 300), search_snippet: cand.blockText, candidate_block_text_short: cand.blockText, detail_fetch_status: detailStatus,
+            matched_keywords: cand.matchedKeywords, newness_type: stype === 'marketplace_listing' ? 'marketplace_new_listing' : 'generic_new_block',
+            lead_temperature: temperature, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
+            owner_reachability_score: phone ? 70 : 35, auto_import_reason: temperature === 'HOT' ? dc.reason : null, ai_comment: dc.reason,
+            regional_media_newness_reason: newnessReason, regional_media_detected_at: nowIso,
+            extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null,
+            extracted_area: address || [prefecture, city].filter(Boolean).join('') || null, extracted_prefecture: prefecture, extracted_city: city,
+            extracted_industry: info.industry || null,
+            extracted_open_date: open.iso || open.text || null, extracted_open_date_text: open.text || null,
+            extracted_open_month: open.month, extracted_open_day: open.day, extracted_open_date_confidence: open.confidence,
+            instagram_url: instagram, official_url: official, map_url: info.map_url || null,
+            hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
+            hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
+            hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
+            enrichment_status: enrich?.status || 'not_started', enrichment_sources: enrich?.sources || null,
+            enriched_phone: enrich?.phone || null, enriched_address: enrich?.address || null, last_enriched_at: enrich ? nowIso : null,
+            match_confidence: rmConf, google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId,
+            last_seen_at: nowIso, source_run_id: runId,
+          }
+
+          await admin.from('source_articles').insert({
+            source_site_id: site.id, article_url: detailUrl, article_url_hash: dhash, title: name,
+            published_at: open.iso ? new Date(open.iso).toISOString() : null, detected_type: 'open', raw_excerpt: cand.blockText,
+            processed_status: temperature === 'EXCLUDED' ? 'skipped' : 'processed', extracted_shop_name: name, extracted_address: address || null,
+            extracted_open_date: open.text || null, extracted_industry: info.industry || null,
+          }).then(() => {}, () => {})
+
+          let candidateId: string | null = existingCand?.id || null
+          if (!candidateId && phone) { const { data: byPhone } = await admin.from('lead_candidates').select('id').eq('phone_number', phone).limit(1); candidateId = byPhone?.[0]?.id || null }
+          const alreadyImported = !!existingCand?.imported_to_cases
+          if (candidateId) {
+            const { error } = await admin.from('lead_candidates').update(payload).eq('id', candidateId)
+            if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
+          } else {
+            const { data: ins, error } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single()
+            if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
+            candidateId = ins?.id || null
+          }
+          if (temperature === 'HOT' && phone && candidateId && !alreadyImported && importedCount < dailyCap) {
+            const memo = [`【AI自動投入 / ${diag.parser_used}】`, `店舗: ${name}`, `URL: ${detailUrl}`, `理由: ${dc.reason}`].join('\n')
+            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, hp1: official, instagram, source_urls: detailUrl, memo, created_by_id: userId }).select('id').single()
+            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++ }
+          }
+          if (!debug.sample || debug.sample.siteType !== stype) debug.sample = { siteType: stype, parser_used: diag.parser_used, site: site.name, detailUrl, shop_name: name, phone, address, open_date: open.text, industry: info.industry, matched: cand.matchedKeywords, temperature, reason: dc.reason }
+        }
+        diag.newArticles = used
+        if (!diag.reason) diag.reason = diag.saved > 0 ? 'OK' : (diag.cardCandidates > 0 ? 'カード候補はあるが保存条件を満たさず' : '新店カード候補なし')
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: `[${diag.parser_used}]カード${diag.cardCandidates}/詳細${diag.detailFetched} 電話${diag.phoneYes}/住所${diag.addressYes} HOT${diag.hot}/HOLD${diag.hold} ${diag.reason}`.slice(0, 200) }).eq('id', site.id)
+        debug.siteResults.push(diag)
+        continue
+      }
+
+      diag.parser_used = 'article_link_parser'
       const extracted = extractArticleLinks(idx.html, base, linkOpts)
       diag.totalLinks = extracted.totalLinks; diag.candidateLinks = extracted.candidateLinks; diag.keywordHits = extracted.keywordHits
       const links = extracted.links.slice(0, maxArticles * 2)

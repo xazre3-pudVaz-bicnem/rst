@@ -181,6 +181,12 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_month INTEGE
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_day INTEGER;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_date_confidence TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS map_url TEXT;
+-- マーケットプレイス/汎用カード型パーサー
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS parser_used TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_list_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS candidate_block_text_short TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS detail_fetch_status TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS matched_keywords TEXT[];
 CREATE INDEX IF NOT EXISTS idx_lead_candidates_detail_url ON lead_candidates(source_detail_url);
 -- 旧・誤URLの彩北なび(saihokunavi.net)は無効化（正: www.saikohkunavi.net）
 UPDATE source_sites SET is_active = false, last_crawl_result = '旧URL（無効化）' WHERE base_url ILIKE '%saihokunavi.net%';
