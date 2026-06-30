@@ -392,6 +392,11 @@ export interface LeadImportSettings {
   maxPerQuery: number       // 1クエリあたり最大取得件数（既定10）
   rotation: boolean         // 未実行/古いクエリから巡回
   autoFetch: boolean        // 毎朝6:00のCron自動取得ON/OFF（app_configに保存）
+  // Google Places 全国・新店系ワード検索（エリア/業種で絞らない）
+  placesNationwide: boolean
+  placesMaxQueriesPerDay: number // 既定30
+  placesPerQuery: number         // 既定20
+  placesMaxDetailsPerDay: number // 既定100
   // Instagram新店取得
   igEnabled: boolean        // Instagram取得ON/OFF
   igAutoImport: boolean     // IG単体HOT候補をcasesへ自動投入（初期OFF）

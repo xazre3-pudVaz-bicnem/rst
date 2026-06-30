@@ -382,6 +382,10 @@ export default function Leads() {
             maxPerQuery: settings.maxPerQuery,
             maxQueriesPerDay: settings.maxQueriesPerDay,
             rotation: settings.rotation,
+            placesNationwide: settings.placesNationwide,
+            placesMaxQueriesPerDay: settings.placesMaxQueriesPerDay,
+            placesPerQuery: settings.placesPerQuery,
+            placesMaxDetailsPerDay: settings.placesMaxDetailsPerDay,
             hotMaxReviews: settings.hotMaxReviews,
             warmMaxReviews: settings.warmMaxReviews,
             exclude100: settings.exclude100,
@@ -436,6 +440,10 @@ export default function Leads() {
         maxQueriesPerDay: settings.maxQueriesPerDay,
         dailyCap: settings.dailyCap,
         rotation: settings.rotation,
+        placesNationwide: settings.placesNationwide,
+        placesMaxQueriesPerDay: settings.placesMaxQueriesPerDay,
+        placesPerQuery: settings.placesPerQuery,
+        placesMaxDetailsPerDay: settings.placesMaxDetailsPerDay,
         hotMaxReviews: settings.hotMaxReviews,
         warmMaxReviews: settings.warmMaxReviews,
         exclude100: settings.exclude100,
@@ -691,6 +699,25 @@ export default function Leads() {
                 </Button>
                 <span className="ml-2 text-[10px] text-muted-foreground">この設定を毎朝6:00のCronに反映します（手動実行はこの保存に関係なく即時実行）。</span>
               </div>
+              {/* Google Places 全国検索モード */}
+              <div className="lg:col-span-4">
+                <div className="mb-1 flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-300">
+                  Google Places（全国・新店系ワード検索）
+                  {settings.placesNationwide && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">全国検索モード ON</span>}
+                  <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-[9px] text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">openingDate重視 / FUTURE_OPENING取得 ON</span>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.placesNationwide} onChange={(e) => saveSettings({ ...settings, placesNationwide: e.target.checked })} />全国検索モード（地域/業種で絞らない）</label>
+                  <div className="space-y-1"><Label>1日最大検索クエリ数</Label><Input type="number" min={1} value={settings.placesMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 30) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.placesPerQuery} onChange={(e) => saveSettings({ ...settings, placesPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 20)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大Place Details件数</Label><Input type="number" min={1} value={settings.placesMaxDetailsPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxDetailsPerDay: Math.max(1, Number(e.target.value) || 100) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日あたりの投入上限</Label><Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" /></div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">※検索クエリに地域名・業種名を入れません（新店系ワードのみ全国横断）。エリア・業種は取得後に formattedAddress / primaryType から抽出。openingDate / businessStatus を最重要シグナルとして判定（HOT条件は据え置き）。同一place_idは30日以内再取得しない。</div>
+              </div>
+
+              {/* 旧モード（エリア×業種）: 全国検索OFFのときのみ表示 */}
+              {!settings.placesNationwide && (<>
               <div className="space-y-1">
                 <Label>エリアプリセット</Label>
                 <select
@@ -709,14 +736,11 @@ export default function Leads() {
                 <Label>1クエリ最大取得件数（最大20）</Label>
                 <Input type="number" min={1} max={20} value={settings.maxPerQuery} onChange={(e) => saveSettings({ ...settings, maxPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} className="h-8" />
               </div>
-              <div className="space-y-1">
-                <Label>1日あたりの投入上限</Label>
-                <Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" />
-              </div>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={settings.rotation} onChange={(e) => saveSettings({ ...settings, rotation: e.target.checked })} />
                 ローテーション（7日以内の同一クエリは再実行しない）
               </label>
+              </>)}
               <div className="space-y-1">
                 <Label>HOT判定の最大口コミ数</Label>
                 <Input type="number" min={0} value={settings.hotMaxReviews} onChange={(e) => saveSettings({ ...settings, hotMaxReviews: Math.max(0, Number(e.target.value) || 0) })} className="h-8" />
@@ -737,6 +761,7 @@ export default function Leads() {
                 <input type="checkbox" checked readOnly />
                 first_seen_at だけで新規扱いしない（常時ON）
               </label>
+              {!settings.placesNationwide && (<>
               <div className="space-y-1 lg:col-span-2">
                 <Label>対象エリア{settings.areaPreset === 'custom' ? '（1行に1つ）' : '（プリセットで自動展開）'}</Label>
                 {settings.areaPreset === 'custom' ? (
@@ -752,8 +777,9 @@ export default function Leads() {
                 <Textarea value={settings.industries} onChange={(e) => saveSettings({ ...settings, industries: e.target.value })} rows={4} />
               </div>
               <div className="text-[10px] text-muted-foreground lg:col-span-4">
-                ※検索クエリは「エリア × 業種」で生成されます（例:「東京都葛飾区 美容室」）。毎朝6:00の自動実行は Vercel Cron（/api/cron/auto-leads）で行います。
+                ※（旧モード）検索クエリは「エリア × 業種」で生成されます。全国検索モードONでは新店系ワードのみで全国横断します。
               </div>
+              </>)}
 
               {/* Instagram 設定 */}
               <div className="mt-1 border-t pt-2 lg:col-span-4">
@@ -917,8 +943,11 @@ export default function Leads() {
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {gpResult.phoneYes ?? 0}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5">Place Details {gpResult.detailCalls ?? 0}</span>
                   <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {gpResult.openingDateCount ?? 0}</span>
                   <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.futureOpeningCount ?? 0}</span>
+                  {Number(gpResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {gpResult.dupSkip}</span>}
+                  {Number(gpResult.detailCapped ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">詳細上限skip {gpResult.detailCapped}</span>}
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
@@ -947,7 +976,9 @@ export default function Leads() {
                 {/* 使用した条件・ローテーション状況 */}
                 {gpResult.debug && (
                   <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
-                    <div><b>エリアプリセット:</b> {AREA_PRESET_OPTIONS.find((o) => o.value === gpResult.debug.preset)?.label || gpResult.debug.preset}（エリア {(gpResult.debug.areas || []).length} / 業種 {(gpResult.debug.industries || []).length}）</div>
+                    {gpResult.debug.searchMode === 'nationwide_new_open_query'
+                      ? <div><b>検索モード:</b> 全国・新店系ワード検索（地域/業種をクエリに入れない） ・ 本日Place Details {gpResult.debug.detailsToday ?? 0}件</div>
+                      : <div><b>エリアプリセット:</b> {AREA_PRESET_OPTIONS.find((o) => o.value === gpResult.debug.preset)?.label || gpResult.debug.preset}（エリア {(gpResult.debug.areas || []).length} / 業種 {(gpResult.debug.industries || []).length}）</div>}
                     <div className="text-muted-foreground">
                       実行クエリ {gpResult.debug.ranQueries ?? 0}（新規オープン系 {gpResult.newOpenRan ?? 0} / 通常 {gpResult.normalRan ?? 0}）・
                       生成総数 {gpResult.debug.totalQueries ?? 0} ・ 7日内スキップ {gpResult.debug.recentSkipped ?? 0} ・ 残り {gpResult.debug.remaining ?? 0}
@@ -1033,17 +1064,17 @@ export default function Leads() {
                   {settings.autoFetch ? 'ON' : 'OFF'}
                 </span>
                 <span className="text-muted-foreground">次回実行予定: 毎朝6:00（JST）</span>
-                <span className="text-muted-foreground">プリセット: {presetLabel(settings.areaPreset)}</span>
+                {settings.placesNationwide ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places: 全国・新店系ワード検索</span> : <span className="text-muted-foreground">プリセット: {presetLabel(settings.areaPreset)}</span>}
                 {lastRun && <span className="text-muted-foreground">最終実行: {moment(lastRun.created_date).format('MM/DD HH:mm')}（{lastRun.status}）</span>}
               </div>
               <div className="mb-1 flex flex-wrap gap-1.5 text-[10px]">
                 <span className="rounded bg-muted px-1.5 py-0.5">今日の実行クエリ {rotationProgress.todayQueries}</span>
                 <span className="rounded bg-muted px-1.5 py-0.5">直近7日 実行クエリ {rotationProgress.skipped7d}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5">巡回済みエリア {rotationProgress.doneAreas} / {rotationProgress.allAreas}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5">残り未巡回エリア {rotationProgress.remainingAreas}</span>
+                {!settings.placesNationwide && <span className="rounded bg-muted px-1.5 py-0.5">巡回済みエリア {rotationProgress.doneAreas} / {rotationProgress.allAreas}</span>}
+                {!settings.placesNationwide && <span className="rounded bg-muted px-1.5 py-0.5">残り未巡回エリア {rotationProgress.remainingAreas}</span>}
                 {lastRun && <span className="rounded bg-muted px-1.5 py-0.5">前回 取得{lastRun.fetched_count}/HOT{lastRun.hot_count}/投入{lastRun.imported_count}/除外{lastRun.excluded_count}</span>}
               </div>
-              <div className="grid grid-cols-2 gap-1 md:grid-cols-4">
+              <div className={cn('grid grid-cols-2 gap-1 md:grid-cols-4', settings.placesNationwide && 'hidden')}>
                 {rotationProgress.perPref.map((p) => {
                   const pct = p.total ? Math.round((p.done / p.total) * 100) : 0
                   return (
@@ -1058,7 +1089,9 @@ export default function Leads() {
               </div>
               {lastRun?.error_message && <div className="mt-1 text-red-600">エラー: {lastRun.error_message}</div>}
               <div className="mt-1 text-[10px] text-muted-foreground">
-                ※ 一都三県の全{rotationProgress.allAreas}市区町村を、1日最大{settings.maxQueriesPerDay}クエリでローテーション巡回（7日以内の同一クエリはスキップ）。HOTが0件の日もあります（厳格判定のため）。
+                {settings.placesNationwide
+                  ? `※ 全国・新店系ワードのみで横断検索（地域/業種をクエリに入れない）。1日最大${settings.placesMaxQueriesPerDay}クエリ・Place Details最大${settings.placesMaxDetailsPerDay}件。openingDate/businessStatusを最重視。HOTが0件の日もあります（厳格判定のため）。`
+                  : `※ 一都三県の全${rotationProgress.allAreas}市区町村を、1日最大${settings.maxQueriesPerDay}クエリでローテーション巡回（7日以内の同一クエリはスキップ）。HOTが0件の日もあります（厳格判定のため）。`}
               </div>
             </div>
           </div>
