@@ -176,20 +176,22 @@ export interface ProbeResult {
   hot: number; hotA: number; hotB: number; hold: number; excluded: number; imported: number
   alreadyImported: number; importFailed: number
   timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; consecutiveNotFound: number
-  startId: number; fromId: number; toId: number; nextId: number; lastFoundId: number | null; lastValidId: number | null
+  startId: number; fromId: number; toId: number; nextId: number; nextIdBasis: string; probeMode: string; lastFoundId: number | null; lastValidId: number | null
   backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
 }
 
-/** 1サイトの連番探索（前回の続きから＋戻り確認）。DB保存込み。 */
+/** 1サイトの連番探索（既定=安全確認モード: 最後にvalidだったIDの次から再開）。DB保存込み。 */
 export async function runSequentialProbe(admin: any, mapsKey: string | null, site: any, opts: {
   userId: string | null; runId: string | null; nowIso: string; mode: InjectMode
   forwardCount?: number; backfillCount?: number; startIdOverride?: number; force?: boolean
+  probeMode?: 'safe' | 'advance'   // safe=last_valid_id+1 / advance=last_checked_id+1
   dayRemaining: number; autoImportPerRun: number; autoImportPerDay: number; importedToday: number; delayMs: number
 }): Promise<ProbeResult> {
+  const probeMode: 'safe' | 'advance' = opts.probeMode || (site.probe_mode === 'advance' ? 'advance' : 'safe')
   const res: ProbeResult = {
     ok: true, siteName: site.name, probed: 0, valid: 0, invalid: 0, saved: 0, saveError: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, alreadyImported: 0, importFailed: 0,
     timeouts: 0, dupSkip: 0, mojibake: 0, fetchFail: 0, consecutiveNotFound: 0,
-    startId: 0, fromId: 0, toId: 0, nextId: 0, lastFoundId: site.last_found_id ?? null, lastValidId: site.last_valid_id ?? null,
+    startId: 0, fromId: 0, toId: 0, nextId: 0, nextIdBasis: '', probeMode, lastFoundId: site.last_found_id ?? null, lastValidId: site.last_valid_id ?? null,
     backfillFrom: null, backfillTo: null, items: [], reason: '', invalidTopReason: '',
   }
   const template: string = site.url_template || ''
@@ -198,8 +200,13 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   const maxNotFound = Math.max(1, Number(site.max_consecutive_not_found) || 10)
   const forward = Math.max(1, Math.min(Number(opts.forwardCount) || Number(site.forward_scan_count) || 20, 100, opts.dayRemaining))
   const backfill = Math.max(0, Math.min(Number(opts.backfillCount ?? site.backfill_scan_count ?? 5), 20))
-  // 再開位置: 指定 > current_probe_id > last_checked_id+1 > start_probe_id
-  const startId = opts.startIdOverride ?? Number(site.current_probe_id) ?? (site.last_checked_id != null ? Number(site.last_checked_id) + 1 : Number(site.start_probe_id) || 1)
+  const sameIdRetryLimit = Math.max(1, Number(site.same_id_retry_limit) || 3)
+  const invalidRetryIntervalH = Math.max(1, Number(site.invalid_retry_interval_hours) || 24)
+  // 再開位置: 指定ID > (安全モード: last_valid_id+1 → last_found_id+1) / (先行モード: current_probe_id → last_checked_id+1) > start_probe_id
+  const safeStart = site.last_valid_id != null ? Number(site.last_valid_id) + 1 : (site.last_found_id != null ? Number(site.last_found_id) + 1 : null)
+  const advStart = site.current_probe_id != null ? Number(site.current_probe_id) : (site.last_checked_id != null ? Number(site.last_checked_id) + 1 : null)
+  const fallbackStart = (Number(site.start_probe_id) || 1)
+  const startId = opts.startIdOverride ?? (probeMode === 'safe' ? (safeStart ?? advStart ?? fallbackStart) : (advStart ?? safeStart ?? fallbackStart))
   res.startId = startId; res.fromId = startId
   const startedAt = opts.nowIso
   let consecutiveNotFound = Number(site.consecutive_not_found_count) || 0
@@ -228,16 +235,17 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const url = template.replace('{ID}', pad(probedId, padding))
     res.toId = Math.max(res.toId, probedId)
 
-    // 30日以内に確認済みはスキップ（手動forceは除く）。invalidは7日以内skip
+    // 手動force以外はスキップ判定。validは再取得しない。invalidは再確認するが、
+    // 同一IDが same_id_retry_limit 回連続invalidで invalid_retry_interval_hours 以内なら一時スキップ（無限ループ防止）。
     if (!opts.force) {
-      const since30 = new Date(Date.now() - 30 * 86400000).toISOString()
-      const { data: lg } = await admin.from('sequential_probe_results').select('id,valid,checked_at').eq('probed_url', url).order('checked_at', { ascending: false }).limit(1)
+      const { data: lg } = await admin.from('sequential_probe_results').select('valid,checked_at').eq('probed_url', url).order('checked_at', { ascending: false }).limit(10)
       const last = lg?.[0]
       if (last) {
-        const ageDays = (Date.now() - Date.parse(last.checked_at)) / 86400000
         if (last.valid) { res.dupSkip++; continue }            // validは再取得しない
-        if (ageDays < 7) { res.dupSkip++; continue }            // invalidは7日skip
-        if (ageDays < 30 && last.valid) { res.dupSkip++; continue }
+        const invalidStreak = (() => { let c = 0; for (const x of (lg || [])) { if (!x.valid) c++; else break } return c })()
+        const ageH = (Date.now() - Date.parse(last.checked_at)) / 3600000
+        if (invalidStreak >= sameIdRetryLimit && ageH < invalidRetryIntervalH) { res.dupSkip++; continue }
+        // それ以外（invalid回数が少ない/間隔が空いた）は再確認する＝飛ばさない
       }
     }
 
@@ -348,10 +356,18 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     if (res.items.length < 40) res.items.push({ probedId, url, valid: true, charset: r.charset, name, phone, address, category, newness_type, temperature: hot_tier ? `HOT-${hot_tier}` : temperature })
   }
 
-  // 次回開始ID = 最後に確認したID + 1（前方分の最大ID基準）
   const lastChecked = res.toId || (startId + forward - 1)
-  const nextId = lastChecked + 1
-  res.nextId = nextId; res.consecutiveNotFound = consecutiveNotFound
+  // 最新のvalid ID（今回 or 既存）
+  const newLastValid = res.lastValidId ?? site.last_valid_id ?? null
+  const newLastFound = res.lastFoundId ?? site.last_found_id ?? null
+  // 次回開始ID: 安全モード=最後にvalidだったID+1（invalid範囲を飛ばさない）。先行モード=最後に確認したID+1
+  let nextId: number; let nextIdBasis: string
+  if (probeMode === 'safe') {
+    if (newLastValid != null) { nextId = Number(newLastValid) + 1; nextIdBasis = `最後に有効だったID(${newLastValid})の次から再確認` }
+    else if (newLastFound != null) { nextId = Number(newLastFound) + 1; nextIdBasis = `最後に見つかったID(${newLastFound})の次から` }
+    else { nextId = lastChecked + 1; nextIdBasis = '有効IDが無いため最後に確認したIDの次から' }
+  } else { nextId = lastChecked + 1; nextIdBasis = '先行探索モード（最後に確認したID+1）' }
+  res.nextId = nextId; res.nextIdBasis = nextIdBasis; res.consecutiveNotFound = consecutiveNotFound
   // invalid の主理由（最多）
   const reasonCounts: Record<string, number> = {}
   for (const it of res.items) { if (!it.valid && it.invalidReason) reasonCounts[it.invalidReason] = (reasonCounts[it.invalidReason] || 0) + 1 }
@@ -391,6 +407,7 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
       const pr = await runSequentialProbe(admin, mapsKey, site, {
         userId, runId, nowIso, mode,
         forwardCount: Number(s.forwardCount) || undefined, backfillCount: s.backfillCount, startIdOverride: undefined, force: !!s.force,
+        probeMode: s.probeMode === 'advance' ? 'advance' : 'safe',
         dayRemaining, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: 800,
       })
       dayRemaining = Math.max(0, dayRemaining - pr.probed)

@@ -35,6 +35,9 @@ ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS max_consecutive_not_found INTE
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS total_checked_count BIGINT DEFAULT 0;
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS total_valid_count BIGINT DEFAULT 0;
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS total_invalid_count BIGINT DEFAULT 0;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS probe_mode TEXT DEFAULT 'safe';
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS same_id_retry_limit INTEGER DEFAULT 3;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS invalid_retry_interval_hours INTEGER DEFAULT 24;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_id BIGINT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probe_valid BOOLEAN;

@@ -78,6 +78,10 @@ export default function Leads() {
   const [devMode, setDevMode] = useState(false)
   const [drawerCand, setDrawerCand] = useState<LeadCandidate | null>(null)
   const [probeTests, setProbeTests] = useState<Record<string, any>>({})
+  const [probeFormOpen, setProbeFormOpen] = useState(false)
+  const [probeForm, setProbeForm] = useState<any>(null)
+  const [probeFormEditId, setProbeFormEditId] = useState<string | null>(null)
+  const [probeFormTest, setProbeFormTest] = useState<any>(null)
   const [probeResult, setProbeResult] = useState<any>(null)
   const [probeSites, setProbeSites] = useState<any[]>([])
   const [probing, setProbing] = useState(false)
@@ -226,13 +230,29 @@ export default function Leads() {
       if (json?.ok) { setProbeResult(json); toast.success(`連番探索: valid${json.valid} / HOT-A${json.hotA}/HOT-B${json.hotB} / 投入${json.imported}`); loadProbeSites(); load() } else toast.error(json?.error || '連番探索に失敗しました')
     } finally { setProbing(false) }
   }
-  async function probeSiteAction(id: string, o: { forwardCount?: number; backfillCount?: number; startId?: number; force?: boolean }) {
+  async function probeSiteAction(id: string, o: { forwardCount?: number; backfillCount?: number; startId?: number; force?: boolean; probeMode?: 'safe' | 'advance' }) {
     setProbing(true)
     try { const json = await regionalApi({ probeSite: { id, ...o }, settings: { aiInjectMode: settings.aiInjectMode } })
       if (json?.ok) { setProbeResult({ ...json, single: true }); toast.success(`探索: ${json.fromId}〜${json.toId} valid${json.valid}/invalid${json.invalid} 次回${json.nextId}`); loadProbeSites(); load() } else toast.error(json?.error || '探索に失敗しました')
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
+  const DEFAULT_PROBE_FORM = { name: '', url_template: '', start_probe_id: '', id_padding: 12, scan_direction: 'forward', forward_scan_count: 20, max_probe_per_run: 20, parser_type: 'generic_detail_page', probe_mode: 'safe', valid_page_pattern: '', invalid_page_pattern: '', is_active: false }
+  function openAddProbe() { setProbeFormEditId(null); setProbeForm({ ...DEFAULT_PROBE_FORM }); setProbeFormTest(null); setProbeFormOpen(true) }
+  function openEditProbe(st: any) { setProbeFormEditId(st.id); setProbeForm({ name: st.name || '', url_template: st.url_template || '', start_probe_id: String(st.start_probe_id ?? st.current_probe_id ?? ''), id_padding: st.id_padding ?? 12, scan_direction: st.scan_direction || 'forward', forward_scan_count: st.forward_scan_count ?? 20, max_probe_per_run: st.max_probe_per_run ?? 20, parser_type: st.parser_type || 'generic_detail_page', probe_mode: st.probe_mode || 'safe', valid_page_pattern: st.valid_page_pattern || '', invalid_page_pattern: st.invalid_page_pattern || '', is_active: !!st.is_active, current_probe_id: st.current_probe_id, last_checked_id: st.last_checked_id, last_valid_id: st.last_valid_id }); setProbeFormTest(null); setProbeFormOpen(true) }
+  function probePreviewUrl() { const f = probeForm; if (!f?.url_template?.includes('{ID}')) return ''; const id = String(f.start_probe_id || '0'); const padded = Number(f.id_padding) > 0 ? id.padStart(Number(f.id_padding), '0') : id; return f.url_template.replace('{ID}', padded) }
+  async function testProbeForm() {
+    const f = probeForm
+    const json = await regionalApi({ probeTestUrl: { url_template: f.url_template, id_padding: f.id_padding, parser_type: f.parser_type, valid_page_pattern: f.valid_page_pattern, invalid_page_pattern: f.invalid_page_pattern, id: Number(f.start_probe_id) || undefined } })
+    if (json?.ok) { setProbeFormTest(json); toast[json.summary?.parserOk ? 'success' : 'error'](`テスト: ${json.summary?.parserOk ? '保存可能' : '抽出NG'}`) } else toast.error(json?.error || 'テストに失敗しました')
+  }
+  async function saveProbeForm() {
+    const f = probeForm
+    if (!f.name?.trim() || !f.url_template?.includes('{ID}')) { toast.error('サイト名・URLテンプレート（{ID}を含む）は必須です'); return }
+    const payload = { name: f.name, url_template: f.url_template, parser_type: f.parser_type, id_padding: Number(f.id_padding) || 0, scan_direction: f.scan_direction, forward_scan_count: Number(f.forward_scan_count) || 20, max_probe_per_run: Number(f.max_probe_per_run) || 20, probe_mode: f.probe_mode, valid_page_pattern: f.valid_page_pattern || null, invalid_page_pattern: f.invalid_page_pattern || null, is_active: f.is_active, start_probe_id: Number(f.start_probe_id) || 1 }
+    const json = probeFormEditId ? await regionalApi({ updateProbeSite: { id: probeFormEditId, ...payload } }) : await regionalApi({ createProbeSite: payload })
+    if (json?.ok) { toast.success(probeFormEditId ? '更新しました' : '連番ソースを追加しました'); setProbeFormOpen(false); loadProbeSites() } else toast.error(json?.error || '保存に失敗しました')
+  }
   async function testProbe(id: string) {
     setProbing(true)
     try { const json = await regionalApi({ probeTest: { id } })
@@ -1836,6 +1856,7 @@ export default function Leads() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button size="sm" onClick={runProbeAll} disabled={probing}>{probing ? '探索中...' : '全ソースを探索（前回の続きから）'}</Button>
+                <Button size="sm" variant="outline" onClick={openAddProbe}>＋ 連番ソースを追加</Button>
                 <button onClick={loadProbeSites} className="text-[10px] text-primary hover:underline">再読込</button>
               </div>
               {probeResult && (
@@ -1874,8 +1895,9 @@ export default function Leads() {
                       <span className="truncate text-muted-foreground" title={st.url_template}>{st.url_template}</span>
                     </div>
                     <div className="mt-0.5 text-muted-foreground">
-                      次回開始ID <b>{st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ 最後に見つかったID {st.last_found_id ?? '-'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
+                      <b className="text-foreground">最後に有効だったID {st.last_valid_id ?? st.last_found_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ <b className="text-foreground">次回開始ID {st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ モード {st.probe_mode === 'advance' ? '先行探索' : '安全確認'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
                     </div>
+                    <div className="text-[9px] text-muted-foreground">基準: {st.probe_mode === 'advance' ? '最後に確認したIDの次から（先行）' : '最後に有効だったIDの次から再確認（安全・invalid範囲も再確認）'}{(st.last_valid_id != null && st.last_checked_id != null && st.last_checked_id > st.last_valid_id) ? ` ・ invalid再確認対象: ${Number(st.last_valid_id) + 1}〜${st.last_checked_id}` : ''}</div>
                     {st.probe_result_summary && <div className="text-muted-foreground">最終結果: {st.probe_result_summary}</div>}
                     {/* parser テスト結果（既知URL） */}
                     {probeTests[st.id] && (
@@ -1895,12 +1917,13 @@ export default function Leads() {
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       <button onClick={() => testProbe(st.id)} disabled={probing} className="rounded border border-emerald-500 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-500/10">既知URLでテスト</button>
-                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5 })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件</button>
-                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5 })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
-                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 0, backfillCount: 20, force: true, startId: (st.last_checked_id ?? st.current_probe_id) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回範囲を再確認</button>
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5, probeMode: 'safe' })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件（有効IDの次から）</button>
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5, probeMode: 'safe' })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 0, probeMode: 'advance', startId: ((st.last_checked_id ?? st.current_probe_id ?? 0) + 1) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回確認の続きから（先行）</button>
+                      <button onClick={() => { const from = (st.last_valid_id != null ? Number(st.last_valid_id) + 1 : st.current_probe_id); probeSiteAction(st.id, { startId: from, forwardCount: Math.max(1, (st.last_checked_id ?? from) - from + 1), backfillCount: 0, force: true, probeMode: 'safe' }) }} disabled={probing} className="rounded border border-amber-500 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">invalid範囲を再確認</button>
                       <button onClick={() => { const v = prompt('開始IDを入力（その位置から本番探索＝保存あり・強制再取得）', String(st.last_found_id ?? st.current_probe_id ?? st.start_probe_id ?? '')); if (v) probeSiteAction(st.id, { startId: Number(v), forwardCount: 20, backfillCount: 0, force: true }) }} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">指定IDから本番探索（保存）</button>
                       <button onClick={() => { const v = prompt('current_probe_id を編集', String(st.current_probe_id ?? '')); if (v) updateProbeSite(st.id, { current_probe_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">current_id編集</button>
-                      <button onClick={() => { const v = prompt('last_checked_id を編集', String(st.last_checked_id ?? '')); if (v) updateProbeSite(st.id, { last_checked_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">last_checked編集</button>
+                      <button onClick={() => openEditProbe(st)} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary">編集</button>
                       <button onClick={() => updateProbeSite(st.id, { is_active: !st.is_active })} className="rounded border px-1.5 py-0.5 text-[9px]">{st.is_active ? '無効化' : '有効化'}</button>
                     </div>
                   </div>
@@ -2441,6 +2464,56 @@ export default function Leads() {
                   <div>連番URL探索 debug: {probeResult ? `probed${probeResult.probed ?? 0} / valid${probeResult.valid ?? 0} / 文字化け${probeResult.mojibake ?? 0}` : '—'}</div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* 連番ソース 追加/編集モーダル */}
+          {probeFormOpen && probeForm && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setProbeFormOpen(false)}>
+              <div className="absolute inset-0 bg-black/40" />
+              <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm font-bold">{probeFormEditId ? '連番ソースを編集' : '連番ソースを追加'}</div>
+                  <button onClick={() => setProbeFormOpen(false)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
+                </div>
+                <div className="space-y-2">
+                  <div><Label>サイト名</Label><Input value={probeForm.name} onChange={(e) => setProbeForm({ ...probeForm, name: e.target.value })} placeholder="じゃらん観光スポット" className="h-8" /></div>
+                  <div><Label>URLテンプレート（{'{ID}'} に連番IDを差し込み）</Label><Input value={probeForm.url_template} onChange={(e) => setProbeForm({ ...probeForm, url_template: e.target.value })} placeholder="https://www.jalan.net/kankou/spt_guide{ID}/" className="h-8 font-mono" /></div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div><Label>開始ID</Label><Input value={probeForm.start_probe_id} onChange={(e) => setProbeForm({ ...probeForm, start_probe_id: e.target.value })} placeholder="231369" className="h-8" /></div>
+                    <div><Label>ID桁数</Label><Input type="number" value={probeForm.id_padding} onChange={(e) => setProbeForm({ ...probeForm, id_padding: Number(e.target.value) })} className="h-8" /></div>
+                    <div><Label>探索方向</Label><select value={probeForm.scan_direction} onChange={(e) => setProbeForm({ ...probeForm, scan_direction: e.target.value })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm"><option value="forward">昇順</option><option value="backward">降順</option></select></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div><Label>1回の探索件数</Label><Input type="number" value={probeForm.forward_scan_count} onChange={(e) => setProbeForm({ ...probeForm, forward_scan_count: Number(e.target.value) })} className="h-8" /></div>
+                    <div><Label>1日最大件数</Label><Input type="number" value={probeForm.max_probe_per_run} onChange={(e) => setProbeForm({ ...probeForm, max_probe_per_run: Number(e.target.value) })} className="h-8" /></div>
+                    <div><Label>parser_type</Label><select value={probeForm.parser_type} onChange={(e) => setProbeForm({ ...probeForm, parser_type: e.target.value })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm">{['generic_detail_page', 'jalan_spot_detail', 'tabelog_detail', 'epark_detail', 'hotpepper_detail', 'custom'].map((p) => <option key={p} value={p}>{p}</option>)}</select></div>
+                  </div>
+                  <div><Label>有効ページ判定キーワード（|区切り）</Label><Input value={probeForm.valid_page_pattern} onChange={(e) => setProbeForm({ ...probeForm, valid_page_pattern: e.target.value })} placeholder="名称|所在地|お問い合わせ|基本情報" className="h-8" /></div>
+                  <div><Label>無効ページ判定キーワード（|区切り）</Label><Input value={probeForm.invalid_page_pattern} onChange={(e) => setProbeForm({ ...probeForm, invalid_page_pattern: e.target.value })} placeholder="該当観光スポット情報は存在しません|ページが見つかりません|404" className="h-8" /></div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1"><input type="checkbox" checked={probeForm.is_active} onChange={(e) => setProbeForm({ ...probeForm, is_active: e.target.checked })} />有効</label>
+                    <select value={probeForm.probe_mode} onChange={(e) => setProbeForm({ ...probeForm, probe_mode: e.target.value })} className="h-7 rounded border border-input bg-card px-2 text-[11px]"><option value="safe">安全確認モード</option><option value="advance">先行探索モード</option></select>
+                  </div>
+                  {/* 生成URLプレビュー */}
+                  {probePreviewUrl() && <div className="rounded bg-muted/40 p-1.5 text-[10px]">生成URL: <a href={probePreviewUrl()} target="_blank" rel="noreferrer" className="break-all font-mono text-primary hover:underline">{probePreviewUrl()}</a></div>}
+                  {/* テスト結果 */}
+                  {probeFormTest && (
+                    <div className="rounded border bg-muted/40 p-1.5 text-[10px]">
+                      <div className={cn('font-bold', probeFormTest.summary?.parserOk ? 'text-green-600' : 'text-red-600')}>テスト: {probeFormTest.summary?.parserOk ? '保存可能（抽出OK）' : '抽出NG（parser/パターン要確認）'}</div>
+                      {(probeFormTest.items || []).map((it: any, i: number) => (
+                        <div key={i} className="mt-0.5 border-t pt-0.5">{it.valid ? 'valid' : 'invalid'} HTTP{it.status} charset:{it.charset || '-'} / 名称:{it.name || '—'} / 住所:{it.address || '—'} / 電話:{it.phone || '—'} / parser:{it.parser_used}{it.invalidReason ? ` / 理由:${it.invalidReason}` : ''}</div>
+                      ))}
+                    </div>
+                  )}
+                  {/* 入力例 */}
+                  <details className="text-[10px] text-muted-foreground"><summary className="cursor-pointer">入力例（じゃらん）</summary><div className="mt-1">サイト名: じゃらん観光スポット / URL: https://www.jalan.net/kankou/spt_guide{'{ID}'}/ / 開始ID: 231369 / ID桁数: 12 / parser: jalan_spot_detail / 有効: 名称, 所在地, お問い合わせ / 無効: 該当観光スポット情報は存在しません, 404</div></details>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button size="sm" variant="outline" onClick={testProbeForm} disabled={!probeForm.url_template?.includes('{ID}')}>このURLでテスト</Button>
+                    <Button size="sm" onClick={saveProbeForm}>{probeFormEditId ? '更新' : '保存'}</Button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

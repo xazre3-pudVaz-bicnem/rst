@@ -107,20 +107,64 @@ export default async function handler(req: any, res: any) {
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     const pr = await runSequentialProbe(admin, process.env.GOOGLE_MAPS_API_KEY || null, site, {
       userId: userData.user.id, runId: null, nowIso: new Date().toISOString(), mode: (body.settings?.aiInjectMode) || 'standard',
-      forwardCount: Number(body.probeSite.forwardCount) || 20, backfillCount: Number(body.probeSite.backfillCount ?? 5), startIdOverride: body.probeSite.startId != null ? Number(body.probeSite.startId) : undefined, force: !!body.probeSite.force,
+      forwardCount: Number(body.probeSite.forwardCount) || 20, backfillCount: Number(body.probeSite.backfillCount ?? 5), startIdOverride: body.probeSite.startId != null ? Number(body.probeSite.startId) : undefined, force: !!body.probeSite.force, probeMode: body.probeSite.probeMode === 'advance' ? 'advance' : 'safe',
       dayRemaining: Math.max(0, 100 - (probedToday || 0)), autoImportPerRun: 50, autoImportPerDay: 200, importedToday: importedToday || 0, delayMs: 800,
     })
     return res.status(200).json({ ok: true, ...pr })
   }
-  // 連番探索サイトの位置編集（current_probe_id / last_checked_id）
+  // 連番探索サイトの編集（位置＋設定）
   if (body?.updateProbeSite?.id) {
+    const b = body.updateProbeSite
     const u: any = {}
-    if (body.updateProbeSite.current_probe_id != null) u.current_probe_id = Number(body.updateProbeSite.current_probe_id)
-    if (body.updateProbeSite.last_checked_id != null) u.last_checked_id = Number(body.updateProbeSite.last_checked_id)
-    if (body.updateProbeSite.probe_enabled != null) u.probe_enabled = !!body.updateProbeSite.probe_enabled
-    if (body.updateProbeSite.is_active != null) u.is_active = !!body.updateProbeSite.is_active
-    if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', body.updateProbeSite.id) }
+    if (b.name != null) u.name = String(b.name).slice(0, 80)
+    if (b.url_template != null) u.url_template = String(b.url_template).slice(0, 300)
+    if (b.parser_type != null) u.parser_type = String(b.parser_type)
+    if (b.id_padding != null) u.id_padding = Number(b.id_padding)
+    if (b.scan_direction != null) u.scan_direction = b.scan_direction === 'backward' ? 'backward' : 'forward'
+    if (b.forward_scan_count != null) u.forward_scan_count = Math.max(1, Math.min(100, Number(b.forward_scan_count)))
+    if (b.probe_mode != null) u.probe_mode = b.probe_mode === 'advance' ? 'advance' : 'safe'
+    if (b.valid_page_pattern != null) u.valid_page_pattern = String(b.valid_page_pattern).slice(0, 500)
+    if (b.invalid_page_pattern != null) u.invalid_page_pattern = String(b.invalid_page_pattern).slice(0, 500)
+    if (b.start_probe_id != null) u.start_probe_id = Number(b.start_probe_id)
+    if (b.current_probe_id != null) u.current_probe_id = Number(b.current_probe_id)
+    if (b.last_checked_id != null) u.last_checked_id = Number(b.last_checked_id)
+    if (b.last_valid_id != null) u.last_valid_id = Number(b.last_valid_id)
+    if (b.probe_enabled != null) u.probe_enabled = !!b.probe_enabled
+    if (b.is_active != null) u.is_active = !!b.is_active
+    if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', b.id) }
     return res.status(200).json({ ok: true })
+  }
+  // 連番探索ソースを新規追加
+  if (body?.createProbeSite) {
+    const b = body.createProbeSite
+    const name = String(b.name || '').trim()
+    const url_template = String(b.url_template || '').trim()
+    if (!name || !url_template.includes('{ID}')) return res.status(400).json({ ok: false, error: 'サイト名・URLテンプレート（{ID}を含む）は必須です' })
+    let base_url = url_template
+    try { base_url = new URL(url_template.replace('{ID}', '1')).origin } catch { /* noop */ }
+    const startId = Number(b.start_probe_id) || 1
+    const row: any = {
+      name: name.slice(0, 80), base_url, list_url: base_url, source_type: 'sequential_id_probe',
+      media_family: String(b.media_family || 'other'), parser_type: String(b.parser_type || 'generic_detail_page'), category_label: '店舗新着',
+      url_template: url_template.slice(0, 300), id_padding: Number(b.id_padding) || 0,
+      start_probe_id: startId, current_probe_id: startId, scan_direction: b.scan_direction === 'backward' ? 'backward' : 'forward',
+      forward_scan_count: Math.max(1, Math.min(100, Number(b.forward_scan_count) || 20)), probe_batch_size: Math.max(1, Math.min(100, Number(b.forward_scan_count) || 20)),
+      max_probe_per_run: Math.max(1, Math.min(100, Number(b.max_probe_per_run) || 20)), max_consecutive_not_found: 10, backfill_scan_count: 5, probe_mode: b.probe_mode === 'advance' ? 'advance' : 'safe',
+      valid_page_pattern: b.valid_page_pattern ? String(b.valid_page_pattern).slice(0, 500) : null, invalid_page_pattern: b.invalid_page_pattern ? String(b.invalid_page_pattern).slice(0, 500) : null,
+      is_active: b.is_active === true || b.is_active === 'true', probe_enabled: true, reliability_score: 60, crawl_interval_hours: 24,
+      created_by: 'manual_probe', updated_at: new Date().toISOString(),
+    }
+    const { data, error } = await admin.from('source_sites').upsert(row, { onConflict: 'base_url' }).select('id').single()
+    if (error) return res.status(400).json({ ok: false, error: error.message })
+    return res.status(200).json({ ok: true, id: data?.id })
+  }
+  // 保存前テスト: 仮想サイト（テンプレ＋ID）でパーサーを試す（DB保存なし）
+  if (body?.probeTestUrl) {
+    const b = body.probeTestUrl
+    const virtualSite = { url_template: String(b.url_template || ''), id_padding: Number(b.id_padding) || 0, parser_type: String(b.parser_type || 'generic_detail_page'), valid_page_pattern: b.valid_page_pattern || null, invalid_page_pattern: b.invalid_page_pattern || null }
+    const ids = (b.id != null ? [Number(b.id)] : undefined)
+    const result = await testProbeSite(virtualSite, ids)
+    return res.status(200).json(result)
   }
   // 連番探索: 既知URL（または指定ID）でパーサー単体テスト（DB保存なし）
   if (body?.probeTest?.id) {
