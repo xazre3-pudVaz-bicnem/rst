@@ -289,7 +289,7 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
     await new Promise((rs) => setTimeout(rs, 400))
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
+    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp|petlife\.asia/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail|petlife_detail)$/.test(site.parser_type || '')
     const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
     const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
     const classifyTest = (resp: typeof r) => {
@@ -415,7 +415,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
 
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
-    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
+    const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp|petlife\.asia/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail|petlife_detail)$/.test(site.parser_type || '')
     const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
     const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
 
