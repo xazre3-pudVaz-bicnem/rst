@@ -217,8 +217,8 @@ export async function enrichCandidate(
     }
     // Google Places 照合（店名＋エリア/業種）
     if (mapsKey && ctx.shop && (!phone || !address)) {
-      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''} 日本`.trim(), 3)
-      // 日本国内の候補のみ採用（海外Placesは無視）
+      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''}`.trim(), 3)
+      // 日本国内の候補のみ採用（海外Placesは無視。languageCode=ja/regionCode=JPで日本寄せ）
       const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress)) || null
       if (top && nameMatch(ctx.shop, top.displayName?.text || '')) {
         place_id = top.id || ''

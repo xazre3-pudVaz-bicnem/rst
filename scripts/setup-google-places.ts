@@ -48,6 +48,18 @@ WHERE lead_temperature <> 'EXCLUDED' AND (
 );
 `
 
+// 法人/団体/研究会系（新店営業対象でない可能性が高い）を EXCLUDED に更新。
+// ただし 電話＋openingDate が揃う真の新規開業は残す（HOLD扱いのまま）。
+const ORG_CLEANUP = `
+UPDATE lead_candidates SET
+  lead_temperature = 'EXCLUDED',
+  should_exclude_from_call_list = TRUE,
+  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), '法人/団体/研究会系のため除外（新店営業対象ではない可能性が高い）')
+WHERE lead_temperature <> 'EXCLUDED'
+  AND name ~ '(機構|協会|商工会|振興会|振興公社|公社|事業団|協同組合|連合会|連盟|学会|研究会|財団|社団|一般社団法人|一般財団法人|公益社団法人|公益財団法人|NPO|特定非営利活動法人|独立行政法人|委員会|評議会|総本部|協議会)'
+  AND NOT (COALESCE(phone_number, '') <> '' AND has_google_opening_date IS TRUE);
+`
+
 async function main() {
   console.log('=== RST Google Places（全国・新店系／日本限定）セットアップ ===')
   if (!DB_URL) { console.error('✗ SUPABASE_DB_URL が未設定です（.env）。Connection string[URI] を設定して再実行してください。'); process.exit(1) }
@@ -61,6 +73,9 @@ async function main() {
     console.log('• 既存の海外候補を EXCLUDED に更新中...')
     const upd = await client.query(FOREIGN_CLEANUP)
     console.log(`  ✓ 日本国外候補を除外: ${upd.rowCount}件`)
+    console.log('• 既存の法人/団体/研究会系候補を EXCLUDED に更新中...')
+    const updOrg = await client.query(ORG_CLEANUP)
+    console.log(`  ✓ 法人/団体/研究会系を除外: ${updOrg.rowCount}件`)
     console.log('\n✅ セットアップ完了 — npm run build → RST「AI投入」Google Places タブで確認')
   } finally { await client.end() }
 }

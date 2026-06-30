@@ -8,7 +8,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
-import { isForeignAddress } from './japanFilter.js'
+import { isForeignAddress, isOrgNonStore } from './japanFilter.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -39,11 +39,11 @@ export function getAdminClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 
-// 全国・新店系ワードでの検索クエリ（地域名・業種名は入れない／国は日本に限定＝末尾に「日本」）
+// 全国・新店系ワードでの検索クエリ（地域名・業種名・「日本」は入れない。日本寄せは languageCode=ja / regionCode=JP ＋取得後フィルタで担保）
 export const NATIONAL_PLACES_QUERIES = [
-  '新規オープン 日本', 'ニューオープン 日本', 'オープン予定 日本', '開業予定 日本', '開店予定 日本', '開院予定 日本',
-  'プレオープン 日本', 'グランドオープン 日本', '移転オープン 日本', '本日オープン 日本', '近日オープン 日本',
-  '新店舗 日本', '新店 日本', '開業しました 日本', '開店しました 日本', '開院しました 日本', 'オープンしました 日本', '新規開業 日本', '独立開業 日本',
+  '新規オープン', 'ニューオープン', 'オープン予定', '開業予定', '開店予定', '開院予定',
+  'プレオープン', 'グランドオープン', '移転オープン', '本日オープン', '近日オープン',
+  '新店舗', '新店', '開業しました', '開店しました', '開院しました', 'オープンしました', '新規開業', '独立開業',
 ]
 
 export function getDefaultSettings() {
@@ -282,7 +282,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
-    dupSkip: 0, detailCapped: 0, foreignSkipped: 0,
+    dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
   }
@@ -314,6 +314,9 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     const detailsToday = detailsTodayCount || 0
     debug.detailsToday = detailsToday
     debug.searchMode = searchMode
+    debug.languageCode = 'ja'
+    debug.regionCode = 'JP'
+    debug.japanFilter = true
     const nowIso = new Date().toISOString()
 
     for (const gq of picked) {
@@ -391,6 +394,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         }, cases, opts)
 
         if (classified.oldest_review_is_recent) counts.oldestRecent++
+        if (isOrgNonStore(name) && classified.lead_temperature === 'EXCLUDED') counts.orgFiltered++
         if (classified.lead_temperature === 'HOT') counts.hot++
         else if (classified.lead_temperature === 'EXCLUDED') counts.excluded++
         else counts.hold++

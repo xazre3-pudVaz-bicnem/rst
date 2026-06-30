@@ -949,6 +949,7 @@ export default function Leads() {
                   {Number(gpResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {gpResult.dupSkip}</span>}
                   {Number(gpResult.detailCapped ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">詳細上限skip {gpResult.detailCapped}</span>}
                   {Number(gpResult.foreignSkipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">日本国外除外 {gpResult.foreignSkipped}</span>}
+                  {Number(gpResult.orgFiltered ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">法人/団体除外 {gpResult.orgFiltered}</span>}
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
@@ -978,7 +979,7 @@ export default function Leads() {
                 {gpResult.debug && (
                   <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
                     {gpResult.debug.searchMode === 'nationwide_new_open_query'
-                      ? <div><b>検索モード:</b> 全国・新店系ワード検索（地域/業種をクエリに入れない） ・ 本日Place Details {gpResult.debug.detailsToday ?? 0}件</div>
+                      ? <div><b>検索モード:</b> 全国・新店系ワード検索（地域/業種/「日本」をクエリに入れない） ・ languageCode: ja / regionCode: JP / 日本国内フィルタ ON ・ 本日Place Details {gpResult.debug.detailsToday ?? 0}件</div>
                       : <div><b>エリアプリセット:</b> {AREA_PRESET_OPTIONS.find((o) => o.value === gpResult.debug.preset)?.label || gpResult.debug.preset}（エリア {(gpResult.debug.areas || []).length} / 業種 {(gpResult.debug.industries || []).length}）</div>}
                     <div className="text-muted-foreground">
                       実行クエリ {gpResult.debug.ranQueries ?? 0}（新規オープン系 {gpResult.newOpenRan ?? 0} / 通常 {gpResult.normalRan ?? 0}）・

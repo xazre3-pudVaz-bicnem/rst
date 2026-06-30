@@ -51,6 +51,15 @@ export function isForeignPhone(raw?: string | null): boolean {
   return /^\+(?!81)/.test(s) || /^00[1-9]/.test(s)
 }
 
+// 営業対象外の法人・団体・研究会系（新店舗ではない）。店名に含まれると低優先/除外
+export const ORG_NON_STORE = /(機構|協会|観光協会|商工会(議所)?|振興会|振興公社|公社|事業団|事業協同組合|協同組合|連合会|連盟|学会|研究会|研究所(?!.*クリニック)|財団|社団|一般社団法人|一般財団法人|公益社団法人|公益財団法人|NPO法人|NPO|特定非営利活動法人|独立行政法人|地方公共団体|自治体|労働組合|生活協同組合|農業協同組合|JA[ 　]|委員会|評議会|本部|総本部|連絡会|協議会)/
+
+/** 店名が法人・団体・研究会系（営業対象の新店舗ではない可能性が高い）か */
+export function isOrgNonStore(name?: string | null): boolean {
+  if (!name) return false
+  return ORG_NON_STORE.test(String(name))
+}
+
 /** スニペット/本文が海外（日本語・日本住所が取れず海外マーカーあり） */
 export function isForeignText(text?: string | null): boolean {
   if (!text) return false

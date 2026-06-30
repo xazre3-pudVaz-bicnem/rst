@@ -2,7 +2,7 @@ import {
   CHAIN_NAMES, MALL_KEYWORDS, STATION_KEYWORDS, BRANCH_KEYWORDS, EXCLUDED_NAME_KEYWORDS,
 } from './constants.js'
 import { phoneDigits, normalizeAddress, normalizeUrl } from './utils.js'
-import { judgeJapan, isJapanAddress, isJapanPhone } from './japanFilter.js'
+import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -130,6 +130,9 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   // 日本性が確認できる（住所に都道府県/日本、または日本の電話番号）
   const japanConfirmed = !isForeign && (addrIsJapan || hasJapanPhone)
 
+  // 法人/団体/研究会系（営業対象の新店舗ではない）。本当に新規開業で電話＋住所＋openingDateがあればHOLDで残す
+  const orgLike = isOrgNonStore(name)
+
   // 除外系の検出
   const isChain = includesAny(name, CHAIN_NAMES)
   const inMall = includesAny(hay, MALL_KEYWORDS)
@@ -210,8 +213,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite)
 
   const isNewCandidate = !hardExclude && countOk && recencyOk && newnessStrong
-  // HOTは日本国内が必須（日本の住所/都道府県＋日本の電話番号）
-  const isHotFinal = isNewCandidate && score >= 80 && japanConfirmed && hasJapanPhone
+  // HOTは日本国内が必須（日本の住所/都道府県＋日本の電話番号）。法人/団体/研究会系はHOTにしない
+  const isHotFinal = isNewCandidate && score >= 80 && japanConfirmed && hasJapanPhone && !orgLike
 
   // 口コミ日付の判定理由（新店判定は最古を重視）
   const reviewNewnessReason = countZero
@@ -250,6 +253,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const closedTemp = raw.business_status === 'CLOSED_TEMPORARILY'
   let temperature: LeadTemperature
   if (isForeign) temperature = 'EXCLUDED'                      // 日本国外（海外住所/海外電話）
+  // 法人/団体/研究会系: 電話＋住所＋openingDateが揃う真の新規開業のみHOLDで残し、それ以外はEXCLUDED
+  else if (orgLike) temperature = (hasJapanPhone && !!address && hasOpeningDate) ? 'HOLD' : 'EXCLUDED'
   else if (isDup) temperature = 'EXCLUDED'
   else if (excludedName) temperature = 'EXCLUDED'
   else if (nonReachable) temperature = 'EXCLUDED'              // チェーン/施設内/駅ビル/支店
@@ -266,6 +271,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
 
   const exclusionReasons: string[] = []
   if (isForeign) exclusionReasons.push('日本国外の候補のため除外')
+  else if (orgLike && temperature === 'EXCLUDED') exclusionReasons.push('法人/団体/研究会系のため除外（新店営業対象ではない可能性が高い）')
+  else if (orgLike) exclusionReasons.push('法人/団体名のため要確認')
   else if (!japanConfirmed && hasPhone && !isForeign) exclusionReasons.push('日本の住所/都道府県が未確認（要確認）')
   if (isDup) exclusionReasons.push('既存案件と重複')
   if (excludedName) exclusionReasons.push('営業対象外の業態')
