@@ -1539,13 +1539,13 @@ export default function Leads() {
           <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold">🔁 自動巡回（8〜18時 2時間おき・全取得元）</span>
+                <span className="text-sm font-bold">🔁 自動巡回（毎朝8時に自動＋手動でいつでも・全取得元）</span>
                 <button onClick={toggleAutoCrawl} className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-bold', autoCrawlOn ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300')}>
                   自動巡回: {autoCrawlOn ? 'ON' : 'OFF'}
                 </button>
                 <button onClick={loadAutoCrawl} className="text-[10px] text-primary hover:underline">再読込</button>
               </div>
-              <div className="text-[10px] text-muted-foreground">実行: JST 08/10/12/14/16/18時（Vercel Cron）</div>
+              <div className="text-[10px] text-muted-foreground">自動: JST 08:00（1日1回・Vercel Cron）／ 日中は下のボタンで手動巡回</div>
             </div>
 
             {/* 本日サマリー */}
@@ -1592,7 +1592,7 @@ export default function Leads() {
                 </ul>
               </details>
             )}
-            <div className="mt-1.5 text-[10px] text-muted-foreground">※2時間おき(6回/日)はVercel Proが必要です（Hobbyはcron1日1回）。手動ボタンはいつでも実行できます。CRON_SECRETで外部実行を保護。</div>
+            <div className="mt-1.5 text-[10px] text-muted-foreground">※現在Hobbyプランのため自動巡回は1日1回（毎朝8時）です。日中の補充は上の手動ボタンで実行してください。2時間おきの全自動化はVercel Pro、または外部スケジューラ(cron-job.org等)から /api/cron/auto-lead-crawl?secret=CRON_SECRET を叩けば可能です。</div>
           </div>
 
           {/* Google Places API パネル */}
