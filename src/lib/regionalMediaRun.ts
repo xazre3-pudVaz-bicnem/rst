@@ -77,6 +77,31 @@ async function fetchText(url: string, timeoutMs = LIST_TIMEOUT_MS): Promise<stri
   return r.ok ? r.html : null
 }
 
+// ===== JSレンダリングfallback（外部レンダリングAPI経由。Vercel上でPlaywrightは使えないため）=====
+// 環境変数のいずれかが設定されていれば有効:
+//   RENDER_API_URL   … {url} を含むテンプレURL（汎用。例: https://my-renderer/render?url={url}&wait=3000）
+//   SCRAPINGBEE_API_KEY … ScrapingBee（render_js=true）
+//   SCRAPERAPI_KEY      … ScraperAPI（render=true）
+export function renderConfigured(): boolean {
+  return !!(process.env.RENDER_API_URL || process.env.SCRAPINGBEE_API_KEY || process.env.SCRAPERAPI_KEY)
+}
+async function renderFetch(url: string, timeoutMs = 25000): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null; configured: boolean; provider: string }> {
+  if (!renderConfigured()) return { ok: false, status: 0, html: '', length: 0, error: 'browser fallback未設定（RENDER_API_URL / SCRAPINGBEE_API_KEY / SCRAPERAPI_KEY のいずれかを設定してください）', configured: false, provider: 'none' }
+  let target = ''; let provider = ''
+  if (process.env.RENDER_API_URL) { provider = 'render_api_url'; target = process.env.RENDER_API_URL.includes('{url}') ? process.env.RENDER_API_URL.replace('{url}', encodeURIComponent(url)) : `${process.env.RENDER_API_URL}${process.env.RENDER_API_URL.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}` }
+  else if (process.env.SCRAPINGBEE_API_KEY) { provider = 'scrapingbee'; target = `https://app.scrapingbee.com/api/v1/?api_key=${process.env.SCRAPINGBEE_API_KEY}&render_js=true&wait=3000&url=${encodeURIComponent(url)}` }
+  else { provider = 'scraperapi'; target = `https://api.scraperapi.com/?api_key=${process.env.SCRAPERAPI_KEY}&render=true&wait_for_selector=&url=${encodeURIComponent(url)}` }
+  const ctrl = new AbortController(); let timedOut = false
+  const to = setTimeout(() => { timedOut = true; ctrl.abort() }, timeoutMs)
+  try {
+    const res = await fetch(target, { headers: { Accept: 'text/html' }, signal: ctrl.signal })
+    clearTimeout(to)
+    const html = await res.text()
+    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `レンダリングAPI HTTP ${res.status}`, configured: true, provider }
+    return { ok: true, status: res.status, html, length: html.length, error: null, configured: true, provider }
+  } catch (e: any) { clearTimeout(to); return { ok: false, status: 0, html: '', length: 0, error: timedOut ? 'レンダリングAPIタイムアウト' : String(e?.message || e).slice(0, 120), configured: true, provider } }
+}
+
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
 async function robotsAllows(origin: string, path: string): Promise<boolean> {
   const txt = await fetchText(`${origin}/robots.txt`, 6000)
@@ -459,19 +484,42 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       }
 
       // ===== マーケットプレイス/検索結果・カード型（HORBY等）＋ 汎用本文スキャン =====
-      if (stype === 'marketplace_listing' || stype === 'generic_page_text_scan') {
-        diag.parser_used = stype === 'marketplace_listing' ? 'marketplace_card_parser' : 'generic_card_parser'
-        const { candidates, stats } = extractNewnessBlocks(idx.html, base)
+      if (stype === 'marketplace_listing' || stype === 'generic_page_text_scan' || stype === 'horby_new_salon') {
+        const isHorby = stype === 'horby_new_salon' || /u-word\.com|h-word\.com/i.test(crawlUrl)
+        diag.parser_used = isHorby ? 'horby_new_salon' : stype === 'marketplace_listing' ? 'marketplace_card_parser' : 'generic_card_parser'
+        let ex = extractNewnessBlocks(idx.html, base)
+        let candidates = ex.candidates; let stats = ex.stats
+        diag.staticCards = candidates.length
+        // JSレンダリングfallback（静的で候補0かつ rendering_mode が許可・JS疑い時、または browser指定時）
+        const renderingMode = String(site.rendering_mode || 'auto')
+        const wantRender = !overBudget() && (renderingMode === 'browser' || (renderingMode === 'auto' && candidates.length === 0 && stats.jsLikely))
+        diag.renderingMode = renderingMode; diag.renderConfigured = renderConfigured(); diag.rendered = false; diag.renderedCards = 0
+        if (wantRender) {
+          const rr = await renderFetch(crawlUrl)
+          diag.rendered = true; diag.renderProvider = rr.provider
+          if (rr.ok && rr.html) {
+            const re = extractNewnessBlocks(rr.html, base)
+            if (re.candidates.length > candidates.length) { candidates = re.candidates; stats = re.stats }
+            diag.renderedCards = re.candidates.length
+          } else { diag.renderError = rr.error; if (!rr.configured) diag.renderNotConfigured = true }
+        }
         diag.totalLinks = stats.totalLinks; diag.bodyTextLen = stats.bodyTextLen; diag.blockCount = stats.blockCount
         diag.keywordBlocks = stats.keywordBlocks; diag.detailLinks = stats.detailLinks; diag.newBadge = stats.newBadge
         diag.cardCandidates = candidates.length; diag.jsLikely = stats.jsLikely
         diag.detailFetched = 0; diag.phoneYes = 0; diag.addressYes = 0; diag.openYes = 0
         if (candidates.length === 0) {
-          diag.reason = stats.jsLikely
-            ? `HTMLは取得できたが本文が少なくJSレンダリングの可能性（本文${stats.bodyTextLen}字）。静的HTMLに店舗情報なし`
-            : stats.keywordBlocks > 0
-              ? `新店キーワード一致ブロック${stats.keywordBlocks}件あるが店名/詳細リンクが取れず候補化できず`
-              : `記事リンク0・店舗カード候補0（ブロック${stats.blockCount}/新店語一致${stats.keywordBlocks}）。本文に新店キーワードなし`
+          diag.reason = diag.renderNotConfigured
+            ? `静的HTMLに店舗情報なし。JSレンダリングが必要ですが browser fallback が未設定です（RENDER_API_URL / SCRAPINGBEE_API_KEY / SCRAPERAPI_KEY を設定するか rendering_mode=static 以外に）`
+            : diag.rendered
+              ? `静的fetch候補0 → JSレンダリングfallback実行したが店舗カード0（${diag.renderError || 'レンダリング後も抽出できず'}）`
+              : stats.jsLikely
+                ? `HTMLは取得できたが本文が少なくJSレンダリングの可能性（本文${stats.bodyTextLen}字）。rendering_mode=auto/browser ＋ レンダリングAPI設定で取得可能`
+                : stats.keywordBlocks > 0
+                  ? `新店キーワード一致ブロック${stats.keywordBlocks}件あるが店名/詳細リンクが取れず候補化できず`
+                  : `記事リンク0・店舗カード候補0（ブロック${stats.blockCount}/新店語一致${stats.keywordBlocks}）。本文に新店キーワードなし`
+          // 要改善サイトとして記録（HTTP200・候補0・JSヒント/レンダリング要）
+          diag.needsImprovement = true
+          diag.improvementHint = diag.renderNotConfigured ? 'レンダリングAPIを設定（RENDER_API_URL等）' : stats.jsLikely ? 'rendering_mode=browser＋レンダリングAPI設定' : 'parser_type/list_url の見直し'
         }
         let used = 0
         for (const cand of candidates.slice(0, maxArticles * 2)) {

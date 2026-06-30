@@ -37,10 +37,12 @@ export function sanitizeSitePayload(body: any): { ok: boolean; error?: string; v
   const reliability_score = Math.max(0, Math.min(100, Number(body?.reliability_score) || 50))
   const crawl_interval_hours = Math.max(1, Number(body?.crawl_interval_hours) || 24)
   const is_active = body?.is_active === true || body?.is_active === 'true'
+  const rendering_mode = ['static', 'auto', 'browser'].includes(body?.rendering_mode) ? body.rendering_mode : 'auto'
+  const parser_type = typeof body?.parser_type === 'string' && body.parser_type ? String(body.parser_type).slice(0, 40) : undefined
 
   return {
     ok: true,
-    value: { name, base_url, list_url, media_family, source_type, category_label, reliability_score, crawl_interval_hours, is_active },
+    value: { name, base_url, list_url, media_family, source_type, category_label, reliability_score, crawl_interval_hours, is_active, rendering_mode, ...(parser_type ? { parser_type } : {}) },
   }
 }
 
@@ -68,8 +70,8 @@ export const INITIAL_SOURCES = [
   { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // 彩北なび: 店舗ディレクトリ型（一覧 sort=newest → 店舗詳細 /shop/shop.shtml?s=xxxx を巡回）
   { name: '彩北なび', base_url: 'https://www.saikohkunavi.net/', list_url: 'https://www.saikohkunavi.net/shop/?sort=newest', media_family: 'saikohkunavi', source_type: 'local_directory_new_listing', category_label: '店舗新着', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
-  // HORBY: マーケットプレイス型（検索結果の店舗カードから新規掲載を抽出）。list_url は新着順の検索結果URLをUIで設定。
-  { name: 'HORBY', base_url: 'https://h-word.com/', list_url: 'https://h-word.com/horby/store/searchResult?sortType=new', media_family: 'horby', source_type: 'marketplace_listing', category_label: '店舗新着', is_active: false, reliability_score: 60, crawl_interval_hours: 24 },
+  // HORBY 新規加盟店舗: Angular SPA（api.u-word.com の認証付きAPIで描画）。静的fetchでは0件のため rendering_mode=browser（要レンダリングAPI）。/horby を優先URLに。
+  { name: 'HORBY 新規加盟店舗', base_url: 'https://u-word.com/horby', list_url: 'https://u-word.com/horby', media_family: 'horby', source_type: 'marketplace_listing', parser_type: 'horby_new_salon', rendering_mode: 'browser', category_label: '新規加盟店舗', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // ===== 追加初期候補（新店/開店閉店/ニューオープンが出やすいサイト） =====
   { name: '食べログ ニューオープン 全国', base_url: 'https://s.tabelog.com/rstLst/cond16-00-00/', list_url: 'https://s.tabelog.com/rstLst/cond16-00-00/', media_family: 'tabelog', source_type: 'marketplace_listing', category_label: '店舗新着', parser_type: 'tabelog_newopen_list', is_active: false, reliability_score: 75, crawl_interval_hours: 24 },
   { name: '食べログ 東京ニューオープン', base_url: 'https://s.tabelog.com/tokyo/rstLst/cond16-00-00/', list_url: 'https://s.tabelog.com/tokyo/rstLst/cond16-00-00/', media_family: 'tabelog', source_type: 'marketplace_listing', category_label: '店舗新着', parser_type: 'tabelog_newopen_list', is_active: false, reliability_score: 75, crawl_interval_hours: 24 },

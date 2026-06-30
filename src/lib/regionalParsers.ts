@@ -9,7 +9,7 @@ import { extractOpenDateFromTitle, type OpenDate } from './directoryParser.js'
 import { extractAddressLoose, prefectureFromCity } from './enrichProfile.js'
 import { isJapanPhone } from './japanFilter.js'
 
-export type ParserType = 'openclose_article' | 'local_directory_new_listing' | 'marketplace_listing' | 'generic_page_text_scan'
+export type ParserType = 'openclose_article' | 'local_directory_new_listing' | 'marketplace_listing' | 'generic_page_text_scan' | 'horby_new_salon'
 
 // 新店シグナル（強）。店舗自体の新規性。
 const NEWNESS_STRONG = /(新規(?!メニュー|商品|サービス)|ニューオープン|NEW(?:\s?OPEN)?|新着|新規掲載|新規登録|新規オープン|プレオープン|グランドオープン|移転オープン|近日オープン|本日オープン|オープン|開店|開業|開院|\d{1,2}月\d{1,2}日\s?(?:OPEN|オープン|開店|開業)|20\d{2}年\d{1,2}月\s?(?:OPEN|オープン))/
@@ -59,12 +59,15 @@ function cleanHtml(html: string): string {
 
 /** parser_type を判定（site設定 → URL/HTML構造から推定） */
 export function detectParserType(site: any, html: string, url: string): ParserType {
+  // 明示的な parser_type 指定を最優先（HORBY専用など）
+  const pt = String(site?.parser_type || '')
+  if (pt === 'horby_new_salon' || /u-word\.com|h-word\.com/i.test(url)) return 'horby_new_salon'
   const st = String(site?.source_type || '')
   if (st === 'openclose_article' || st === 'local_directory_new_listing' || st === 'marketplace_listing' || st === 'generic_page_text_scan') return st as ParserType
   const fam = String(site?.media_family || '')
   if (['goguynet', 'kaitenheiten', 'tsushin'].includes(fam)) return 'openclose_article'
   if (['saikohkunavi', 'local_directory'].includes(fam)) return 'local_directory_new_listing'
-  if (fam === 'horby' || /h-word\.com/i.test(url)) return 'marketplace_listing'
+  if (fam === 'horby') return 'horby_new_salon'
   // URLヒント: 検索結果/新着順/店舗一覧 → マーケットプレイス
   if (/(searchResult|\bsearch\b|sort(Type)?=|newest|\bstore\b|\bshop\b|\blist\b|menuType=)/i.test(url)) return 'marketplace_listing'
   // HTML構造: 店舗カードらしきクラスが多い → マーケットプレイス

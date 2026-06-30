@@ -447,7 +447,7 @@ export default function Leads() {
   }, [adminFetch])
   useEffect(() => { if (sourceTab === 'regional') loadSites() }, [sourceTab, loadSites])
 
-  const emptySite = { name: '', base_url: '', list_url: '', media_family: 'other', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 50, crawl_interval_hours: 24 }
+  const emptySite = { name: '', base_url: '', list_url: '', media_family: 'other', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 50, crawl_interval_hours: 24, rendering_mode: 'auto' }
 
   async function seedInitial() {
     setRmBusy(true)
@@ -2121,6 +2121,10 @@ export default function Leads() {
                     </select></div>
                   <div className="space-y-0.5"><Label className="text-[10px]">信頼度スコア(0-100)</Label><Input type="number" min={0} max={100} className="h-8" value={siteForm.reliability_score} onChange={(e) => setSiteForm({ ...siteForm, reliability_score: Number(e.target.value) })} /></div>
                   <div className="space-y-0.5"><Label className="text-[10px]">巡回間隔(時間)</Label><Input type="number" min={1} className="h-8" value={siteForm.crawl_interval_hours} onChange={(e) => setSiteForm({ ...siteForm, crawl_interval_hours: Number(e.target.value) })} /></div>
+                  <div className="space-y-0.5"><Label className="text-[10px]">レンダリング</Label>
+                    <select className="h-8 w-full rounded border border-input bg-card px-2 text-sm" value={siteForm.rendering_mode || 'auto'} onChange={(e) => setSiteForm({ ...siteForm, rendering_mode: e.target.value })}>
+                      <option value="static">static（通常fetchのみ）</option><option value="auto">auto（候補0かつJS疑いでbrowser）</option><option value="browser">browser（最初からレンダリング）</option>
+                    </select></div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={siteForm.is_active} onChange={(e) => setSiteForm({ ...siteForm, is_active: e.target.checked })} />有効化する</label>
                   <div className="flex items-end gap-1.5 lg:col-span-2">
                     <Button size="sm" onClick={saveSite} disabled={rmBusy}>{siteForm.id ? '更新' : '登録'}</Button>
@@ -2173,7 +2177,7 @@ export default function Leads() {
                         </td>
                         <td className="p-1.5 text-right">
                           <div className="flex justify-end gap-1">
-                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setSiteForm({ id: s.id, name: s.name, base_url: s.base_url, list_url: s.list_url || '', media_family: s.media_family || 'other', source_type: s.source_type || 'html_list', category_label: s.category_label || '開店閉店', is_active: s.is_active, reliability_score: s.reliability_score ?? 50, crawl_interval_hours: s.crawl_interval_hours ?? 24 })}>編集</Button>
+                            <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setSiteForm({ id: s.id, name: s.name, base_url: s.base_url, list_url: s.list_url || '', media_family: s.media_family || 'other', source_type: s.source_type || 'html_list', category_label: s.category_label || '開店閉店', is_active: s.is_active, reliability_score: s.reliability_score ?? 50, crawl_interval_hours: s.crawl_interval_hours ?? 24, rendering_mode: s.rendering_mode || 'auto', parser_type: s.parser_type || '' })}>編集</Button>
                             <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => testSite(s)}>テスト</Button>
                           </div>
                           {siteTests[s.id] && (
