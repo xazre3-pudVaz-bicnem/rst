@@ -218,7 +218,7 @@ export interface EnrichResult {
   profile_fetched: boolean; profile_reason: string; link_count: number; links_checked: number
   places_matched: boolean; fail_reason: string
   // 店名（プロフィール由来）・地域矛盾・不採用補完
-  profile_name: string; region_conflict: boolean; rejected: { field: string; value: string; reason: string }[]
+  profile_name: string; place_name: string; region_conflict: boolean; rejected: { field: string; value: string; reason: string }[]
   // Google Places openingDate / businessStatus（口コミより強い新店シグナル）
   business_status: string; opening_raw: string | null; opening_confidence: number
   opening_year: number | null; opening_month: number | null; opening_day: number | null
@@ -246,7 +246,7 @@ export async function enrichCandidate(
   let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
   let businessStatus = ''
   let profileFetched = false, profileReason = '', linkCount = 0, linksChecked = 0, placesMatched = false
-  let profileName = '', profilePref = '', regionConflict = false
+  let profileName = '', profilePref = '', regionConflict = false, placeName = ''
   const rejected: { field: string; value: string; reason: string }[] = []
   const sources: { url: string; got: string }[] = []
   const failReasons: string[] = []
@@ -304,7 +304,7 @@ export async function enrichCandidate(
         const sr = await searchLight(mapsKey, `${ex.name || ctx.shop} ${prefecture || city || ctx.areaHint || ''}`.trim(), 3)
         const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress)) || null
         if (top) {
-          place_id = top.id || place_id; placesMatched = true
+          place_id = top.id || place_id; placesMatched = true; if (top.displayName?.text) placeName = top.displayName.text
           const d = top.id ? await placeDetails(mapsKey, top.id) : null
           const p: any = d || top
           businessStatus = p.businessStatus || businessStatus
@@ -381,7 +381,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
-      profile_name: profileName, region_conflict: regionConflict, rejected,
+      profile_name: profileName, place_name: placeName, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: (phone && address) ? '' : failReasons.slice(0, 4).join(' / '),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
@@ -392,7 +392,7 @@ export async function enrichCandidate(
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
       phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
       profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
-      profile_name: profileName, region_conflict: regionConflict, rejected,
+      profile_name: profileName, place_name: placeName, region_conflict: regionConflict, rejected,
       places_matched: placesMatched, fail_reason: String(e?.message || e).slice(0, 120),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,

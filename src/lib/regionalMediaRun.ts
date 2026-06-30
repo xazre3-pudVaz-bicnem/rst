@@ -10,7 +10,7 @@ import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
-import { detectParserType, extractNewnessBlocks } from './regionalParsers.js'
+import { detectParserType, extractNewnessBlocks, sanitizeShopName } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
@@ -347,14 +347,18 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (phone) counts.phoneYes++
 
           const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
-          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan }, mode)
-          const temperature = dc.temperature
-          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dc.hot_tier === 'A') counts.hotA++; else counts.hotB++ }
+          const dSn = sanitizeShopName(info.shop_name, { placesMatched: !!matchedPlaceId })
+          const dName = (matchedPlaceId && enrich?.place_name) ? enrich.place_name : (dSn.valid ? dSn.name : '')
+          const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
+          let temperature = dc.temperature
+          let dHotTier = dc.hot_tier
+          if (!dName && temperature === 'HOT') { temperature = 'HOLD'; dHotTier = null }  // 店名未確定はHOTにしない
+          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dHotTier === 'A') counts.hotA++; else counts.hotB++ }
           else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded++ }
           else { counts.hold++; diag.hold++ }
           counts.candidates++
 
-          const name = info.shop_name || '店舗ディレクトリ候補'
+          const name = dName || '店名未確定'
           const newnessReason = `${site.name}（店舗新着）「${name}」${open.text ? ` ${open.text}` : ''}${enrich ? ` / 補完[${enrich.status}]` : ''} / ${dc.reason}`
 
           // HOT未達理由
@@ -378,7 +382,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             source_site_type: 'local_directory_new_listing', source_media_family: site.media_family || null, source_site_name: site.name,
             source_listing_url: crawlUrl, source_detail_url: item.url, source_article_url: item.url,
             search_title: item.title?.slice(0, 300) || name, search_snippet: info.excerpt?.slice(0, 500) || null,
-            lead_temperature: temperature, hot_tier: dc.hot_tier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
+            lead_temperature: temperature, hot_tier: dHotTier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
             owner_reachability_score: phone ? 70 : 35, auto_import_reason: temperature === 'HOT' ? dc.reason : null, ai_comment: dc.reason,
             regional_media_newness_reason: newnessReason, regional_media_detected_at: nowIso,
             newness_type: 'new_listing_open',
@@ -502,14 +506,18 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (matchedPlaceId) counts.placeMatched++
 
           const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
-          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan }, mode)
-          const temperature = dc.temperature
-          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dc.hot_tier === 'A') counts.hotA++; else counts.hotB++ }
+          const mSn = sanitizeShopName(info.shop_name, { placesMatched: !!matchedPlaceId })
+          const dName = (matchedPlaceId && enrich?.place_name) ? enrich.place_name : (mSn.valid ? mSn.name : '')
+          const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
+          let temperature = dc.temperature
+          let dHotTier = dc.hot_tier
+          if (!dName && temperature === 'HOT') { temperature = 'HOLD'; dHotTier = null }
+          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dHotTier === 'A') counts.hotA++; else counts.hotB++ }
           else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded++ }
           else { counts.hold++; diag.hold++ }
           counts.candidates++
 
-          const name = info.shop_name || '新店候補'
+          const name = dName || '店名未確定'
           const newnessReason = `${site.name}（${diag.parser_used}）「${name}」${open.text ? ` ${open.text}` : ''} 一致語[${cand.matchedKeywords.join('・')}]${enrich ? ` / 補完[${enrich.status}]` : ''} / ${dc.reason}`
           const rmConf = (phone && isJapanPhone(phone) ? 35 : 0) + (address ? 30 : 0) + (open.confidence === 'high' ? 25 : open.confidence === 'mid' ? 15 : 0) + (matchedPlaceId ? 10 : 0)
           const rmChecks: HotCheck[] = [
@@ -532,7 +540,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             source_list_url: crawlUrl, source_listing_url: crawlUrl, source_detail_url: detailUrl, source_article_url: detailUrl,
             search_title: name.slice(0, 300), search_snippet: cand.blockText, candidate_block_text_short: cand.blockText, detail_fetch_status: detailStatus,
             matched_keywords: cand.matchedKeywords, newness_type: stype === 'marketplace_listing' ? 'marketplace_new_listing' : 'generic_new_block',
-            lead_temperature: temperature, hot_tier: dc.hot_tier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
+            lead_temperature: temperature, hot_tier: dHotTier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
             owner_reachability_score: phone ? 70 : 35, auto_import_reason: temperature === 'HOT' ? dc.reason : null, ai_comment: dc.reason,
             regional_media_newness_reason: newnessReason, regional_media_detected_at: nowIso,
             extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null,
@@ -666,29 +674,38 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const haveArea = !!(areaMerged || address)
         const strongOpening = !!enrich?.has_opening  // Google openingDate / FUTURE_OPENING
         const openNote = strongOpening ? `Google開業日(${enrich.opening_raw}${enrich.business_status === 'FUTURE_OPENING' ? '・開業予定' : ''})` : ''
+        // 店名: Google Places正式名 > 記事抽出(整形・サイト名/カテゴリ/記事タイトルは無効)
+        const sn = sanitizeShopName(ex.shop_name || '', { placesMatched: !!placeMatched })
+        const shopName = (placeMatched && enrich?.place_name) ? enrich.place_name : (sn.valid ? sn.name : '')
+        const nameValid = !!shopName
+        const nameReason = nameValid ? '' : (sn.reason || '店名抽出失敗')
         // 日本国外は除外（海外住所/海外電話）
         const isForeign = isForeignAddress(address) || isForeignText(`${ex.shop_name || ''} ${bestTitle || ''}`) || (!!phone && !isJapanPhone(phone))
         const japanOk = !isForeign && (!!prefecture || isJapanAddress(address) || !!ex.area || isJapanPhone(phone))
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: 新店記事＝新店根拠。openingDateは加点（必須にしない）
-        const articleNew = !!ex.shop_name && (recentOk || strongOpening || !!ex.open_date)
-        const chA = detectChain(ex.shop_name || '', bestTitle || '')
+        const articleNew = nameValid && (recentOk || strongOpening || !!ex.open_date)
+        const chA = detectChain(shopName || ex.shop_name || '', bestTitle || '')
         const sc = scoreCandidate({
-          source: 'regional_media', isJapan: japanOk, hasShopName: !!ex.shop_name, hasPhone: !!phone && isJapanPhone(phone),
+          source: 'regional_media', isJapan: japanOk, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone),
           hasArea: haveArea, hasOpeningDate: strongOpening || !!ex.open_date, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew: false, regionalNew: articleNew, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
           isChain: !!ex.is_chain || chA.definite, chainSuspect: chA.suspect && !chA.definite, isOrg: false, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
         }, mode)
         const tt = tierToTemperature(sc.tier)
+        let hotTier = tt.hot_tier
         temperature = tt.temperature
-        const hotTier = tt.hot_tier
         reason = sc.reason
+        // 店名が未確定（サイト名/カテゴリ/記事タイトル）なら、電話・住所があってもHOTにせずHOLD
+        if (!nameValid && (temperature === 'HOT' || temperature === 'EXCLUDED')) {
+          if (temperature === 'HOT') { temperature = 'HOLD'; hotTier = null; reason = `店名抽出未確定のため自動投入不可（${nameReason}）。` }
+        }
 
         if (temperature === 'HOT') { counts.hot++; diag.hot++; if (hotTier === 'A') counts.hotA++; else counts.hotB++ }
         else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded = (diag.excluded || 0) + 1 }
         else { counts.hold++; diag.hold++ }
         counts.candidates++
 
-        const name = ex.shop_name || `${ex.area || ''}${ex.industry || ''}`.trim() || '地域メディア候補'
+        const name = shopName || '店名未確定'
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
         const newnessReason = `${site.name}「${bestTitle}」（${meta.published_at ? new Date(meta.published_at).toLocaleDateString('ja-JP') : '日付不明'}）${ex.open_date ? ` 開店日: ${ex.open_date}` : ''}${enrichNote} / ${reason}`
 

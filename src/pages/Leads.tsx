@@ -100,10 +100,13 @@ export default function Leads() {
   const [rmSites, setRmSites] = useState<any[]>([])
   const [rmCounts, setRmCounts] = useState<{ total: number; active: number; inactive: number }>({ total: 0, active: 0, inactive: 0 })
   const [rmSitesErr, setRmSitesErr] = useState<string | null>(null)
+  const [siteFilter, setSiteFilter] = useState<{ status: string; q: string; sourceType: string; parserType: string }>({ status: 'all', q: '', sourceType: '', parserType: '' })
+  const [siteShown, setSiteShown] = useState(50)
   const [rmBusy, setRmBusy] = useState(false)
   const [siteForm, setSiteForm] = useState<any>(null) // {id?, name, base_url, list_url, media_family, source_type, category_label, is_active, reliability_score, crawl_interval_hours}
   const [siteTests, setSiteTests] = useState<Record<string, any>>({})
   const [allTest, setAllTest] = useState<any>(null)
+  const [shown, setShown] = useState(50)  // 一覧の表示件数
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -237,6 +240,13 @@ export default function Leads() {
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
+  const [recorrecting, setRecorrecting] = useState(false)
+  async function recorrectNames() {
+    if (!window.confirm('既存の地域メディア/Instagram候補の店名を再判定します。\nサイト名/カテゴリ/記事タイトルのままの候補は「店名未確定」にしてHOLDへ下げます。実行しますか？')) return
+    setRecorrecting(true)
+    try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / HOLD降格${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
+    finally { setRecorrecting(false) }
+  }
   const DEFAULT_PROBE_FORM = { name: '', url_template: '', region_label: '', prefecture: '', start_probe_id: '', id_padding: 12, scan_direction: 'forward', forward_scan_count: 20, max_probe_per_run: 20, parser_type: 'generic_detail_page', probe_mode: 'safe', valid_page_pattern: '', invalid_page_pattern: '', is_active: false }
   function openAddProbe() { setProbeFormEditId(null); setProbeForm({ ...DEFAULT_PROBE_FORM }); setProbeFormTest(null); setProbeFormOpen(true) }
   function openEditProbe(st: any) { setProbeFormEditId(st.id); setProbeForm({ name: st.name || '', url_template: st.url_template || '', region_label: st.region_label || '', prefecture: st.prefecture || '', start_probe_id: String(st.start_probe_id ?? st.current_probe_id ?? ''), id_padding: st.id_padding ?? 12, scan_direction: st.scan_direction || 'forward', forward_scan_count: st.forward_scan_count ?? 20, max_probe_per_run: st.max_probe_per_run ?? 20, parser_type: st.parser_type || 'generic_detail_page', probe_mode: st.probe_mode || 'safe', valid_page_pattern: st.valid_page_pattern || '', invalid_page_pattern: st.invalid_page_pattern || '', is_active: !!st.is_active, current_probe_id: st.current_probe_id, last_checked_id: st.last_checked_id, last_valid_id: st.last_valid_id }); setProbeFormTest(null); setProbeFormOpen(true) }
@@ -747,6 +757,19 @@ export default function Leads() {
     () => (filter === 'ALL' ? sourceCandidates : sourceCandidates.filter((c) => c.lead_temperature === filter)),
     [sourceCandidates, filter],
   )
+  const visible = useMemo(() => (shown >= filtered.length ? filtered : filtered.slice(0, shown)), [filtered, shown])
+  const rmSitesFiltered = useMemo(() => {
+    const q = siteFilter.q.trim().toLowerCase()
+    return rmSites.filter((s) => {
+      if (siteFilter.status === 'active' && !s.is_active) return false
+      if (siteFilter.status === 'inactive' && s.is_active) return false
+      if (siteFilter.sourceType && s.source_type !== siteFilter.sourceType) return false
+      if (siteFilter.parserType && (s.parser_type || '') !== siteFilter.parserType) return false
+      if (q && !(`${s.name || ''} ${s.base_url || ''} ${s.list_url || ''} ${s.url_template || ''}`.toLowerCase().includes(q))) return false
+      return true
+    })
+  }, [rmSites, siteFilter])
+  const rmSitesVisible = useMemo(() => (siteShown >= rmSitesFiltered.length ? rmSitesFiltered : rmSitesFiltered.slice(0, siteShown)), [rmSitesFiltered, siteShown])
 
   const card = (icon: React.ReactNode, label: string, value: number, color: string) => (
     <div className="flex items-center gap-2.5 rounded-xl border bg-card p-2.5">
@@ -1989,6 +2012,23 @@ export default function Leads() {
                 </div>
               )}
 
+              {/* サイト一覧 フィルタ */}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-2xs">
+                {[['all', '全'], ['active', '有効'], ['inactive', '無効']].map(([k, label]) => (
+                  <button key={k} onClick={() => setSiteFilter({ ...siteFilter, status: k })} className={cn('rounded border px-2 py-0.5', siteFilter.status === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{label}</button>
+                ))}
+                <Input className="h-7 w-44 text-2xs" placeholder="サイト名/URL検索" value={siteFilter.q} onChange={(e) => setSiteFilter({ ...siteFilter, q: e.target.value })} />
+                <select className="h-7 rounded border border-input bg-card px-1 text-2xs" value={siteFilter.sourceType} onChange={(e) => setSiteFilter({ ...siteFilter, sourceType: e.target.value })}>
+                  <option value="">source_type:全</option>{Array.from(new Set(rmSites.map((s) => s.source_type).filter(Boolean))).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select className="h-7 rounded border border-input bg-card px-1 text-2xs" value={siteFilter.parserType} onChange={(e) => setSiteFilter({ ...siteFilter, parserType: e.target.value })}>
+                  <option value="">parser_type:全</option>{Array.from(new Set(rmSites.map((s) => s.parser_type).filter(Boolean))).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <span className="text-muted-foreground">全{rmSitesFiltered.length}件中 {Math.min(siteShown, rmSitesFiltered.length)}件</span>
+                {[20, 50, 100].map((n) => <button key={n} onClick={() => setSiteShown(n)} className={cn('rounded border px-1.5 py-0.5', siteShown === n ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{n}</button>)}
+                <button onClick={() => setSiteShown(rmSitesFiltered.length || 1)} className={cn('rounded border px-1.5 py-0.5', siteShown >= rmSitesFiltered.length ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>全部見れる</button>
+                {(siteFilter.q || siteFilter.status !== 'all' || siteFilter.sourceType || siteFilter.parserType) && <button onClick={() => setSiteFilter({ status: 'all', q: '', sourceType: '', parserType: '' })} className="rounded border border-input px-1.5 py-0.5 hover:bg-accent">クリア</button>}
+              </div>
               {/* サイト一覧 */}
               <div className="mt-2 overflow-x-auto">
                 <table className="w-full min-w-[1000px] text-2xs">
@@ -2000,9 +2040,9 @@ export default function Leads() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rmSites.length === 0 ? (
-                      <tr><td colSpan={9} className="p-3 text-center text-muted-foreground">巡回サイトがありません。「初期ソースを登録」または「巡回サイトを追加」してください。</td></tr>
-                    ) : rmSites.map((s) => (
+                    {rmSitesFiltered.length === 0 ? (
+                      <tr><td colSpan={9} className="p-3 text-center text-muted-foreground">{rmSites.length === 0 ? '巡回サイトがありません。「初期ソースを登録」または「巡回サイトを追加」してください。' : '条件に一致するサイトがありません。'}</td></tr>
+                    ) : rmSitesVisible.map((s) => (
                       <tr key={s.id} className="border-t align-top">
                         <td className="p-1.5 font-medium">{s.name}</td>
                         <td className="max-w-[200px] p-1.5"><a href={s.list_url || s.base_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{s.list_url || s.base_url}</a></td>
@@ -2084,6 +2124,18 @@ export default function Leads() {
             ))}
           </div>
 
+          {/* 表示件数 */}
+          <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+            <span>全{filtered.length}件中 {Math.min(shown, filtered.length)}件表示</span>
+            <span className="ml-1">表示件数:</span>
+            {[20, 50, 100, 200].map((n) => (
+              <button key={n} onClick={() => setShown(n)} className={cn('rounded border px-2 py-0.5', shown === n ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{n}</button>
+            ))}
+            <button onClick={() => setShown(filtered.length || 1)} className={cn('rounded border px-2 py-0.5', shown >= filtered.length ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>すべて</button>
+            {shown < filtered.length && <button onClick={() => setShown((s) => s + 50)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+50)</button>}
+            <button onClick={recorrectNames} disabled={recorrecting} className="ml-auto rounded border border-amber-500 px-2 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10">{recorrecting ? '再補正中...' : '既存の店名を再補正（サイト名/カテゴリをHOLDへ）'}</button>
+          </div>
+
           {/* テーブル */}
           {loading ? (
             <SkeletonRows count={8} />
@@ -2117,7 +2169,7 @@ export default function Leads() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((c) => (
+                  {visible.map((c) => (
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[150px] p-2">
@@ -2200,7 +2252,7 @@ export default function Leads() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((c) => (
+                  {visible.map((c) => (
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[160px] p-2">
@@ -2272,7 +2324,7 @@ export default function Leads() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((c) => {
+                  {visible.map((c) => {
                     const klass = c.ig_classification
                     const badge = klass === 'google_match_hot' ? ['Google照合HOT', 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300']
                       : klass === 'ig_only_hot' ? ['IG単体HOT候補', 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300']
@@ -2339,7 +2391,7 @@ export default function Leads() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((c) => (
+                  {visible.map((c) => (
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2">
                         <span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span>
