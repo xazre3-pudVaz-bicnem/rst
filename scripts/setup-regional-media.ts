@@ -187,6 +187,40 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_list_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS candidate_block_text_short TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS detail_fetch_status TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS matched_keywords TEXT[];
+-- 連番URL探索（sequential_id_probe）
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS url_template TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS id_padding INTEGER;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS current_probe_id BIGINT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS last_checked_id BIGINT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS last_found_id BIGINT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS scan_direction TEXT DEFAULT 'forward';
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS probe_batch_size INTEGER DEFAULT 20;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS max_probe_per_run INTEGER DEFAULT 20;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS valid_page_pattern TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS invalid_page_pattern TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS parser_type TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS last_probe_at TIMESTAMPTZ;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS probe_enabled BOOLEAN DEFAULT true;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS probe_result_summary TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS consecutive_not_found_count INTEGER DEFAULT 0;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS max_consecutive_not_found INTEGER DEFAULT 10;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_id BIGINT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probe_valid BOOLEAN;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probe_status TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_official_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS first_discovered_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS sequential_probe_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), source_site_id UUID, probed_url TEXT NOT NULL UNIQUE, probed_id BIGINT,
+  valid BOOLEAN, status TEXT, last_probed_at TIMESTAMPTZ NOT NULL DEFAULT now(), created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE sequential_probe_log ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS rst_all_authenticated ON sequential_probe_log;
+CREATE POLICY rst_all_authenticated ON sequential_probe_log FOR ALL TO authenticated USING (true) WITH CHECK (true);
+-- じゃらん観光スポット（連番探索）の初期登録（既定OFF・UIで有効化）
+INSERT INTO source_sites (name, base_url, list_url, media_family, source_type, parser_type, category_label, is_active, reliability_score, crawl_interval_hours, url_template, id_padding, current_probe_id, scan_direction, probe_batch_size, max_probe_per_run, max_consecutive_not_found, probe_enabled, updated_at)
+VALUES ('じゃらん観光スポット', 'https://www.jalan.net/kankou/', 'https://www.jalan.net/kankou/', 'jalan', 'sequential_id_probe', 'jalan_spot_detail', '店舗新着', false, 60, 24, 'https://www.jalan.net/kankou/spt_guide{ID}/', 12, 231369, 'forward', 20, 20, 10, true, now())
+ON CONFLICT (base_url) DO UPDATE SET source_type='sequential_id_probe', parser_type='jalan_spot_detail', url_template=EXCLUDED.url_template, id_padding=12, scan_direction='forward', probe_batch_size=20, max_probe_per_run=20, max_consecutive_not_found=10, updated_at=now();
 CREATE INDEX IF NOT EXISTS idx_lead_candidates_detail_url ON lead_candidates(source_detail_url);
 -- 旧・誤URLの彩北なび(saihokunavi.net)は無効化（正: www.saikohkunavi.net）
 UPDATE source_sites SET is_active = false, last_crawl_result = '旧URL（無効化）' WHERE base_url ILIKE '%saihokunavi.net%';

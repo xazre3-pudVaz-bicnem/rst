@@ -12,6 +12,7 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
 import { detectParserType, extractNewnessBlocks } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
+import { runSequentialProbe } from './sequentialProbe.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -243,6 +244,23 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       if (!allowed) {
         debug.siteResults.push({ site: site.name, error: 'robots.txt により不許可' })
         await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: 'robots.txtにより不許可' }).eq('id', site.id)
+        continue
+      }
+
+      // ===== 連番URL探索型（じゃらん等）: url_template の {ID} を順に増減してページ検出 =====
+      if (site.source_type === 'sequential_id_probe' && site.probe_enabled !== false) {
+        const startToday2 = new Date(); startToday2.setHours(0, 0, 0, 0)
+        const { count: probedToday } = await admin.from('sequential_probe_log').select('id', { count: 'exact', head: true }).gte('last_probed_at', startToday2.toISOString())
+        const dayRemaining = Math.max(0, 100 - (probedToday || 0))   // 1日最大100URL
+        const pr = await runSequentialProbe(admin, mapsKey, site, {
+          userId, runId, nowIso, mode, perRunMax: Math.min(20, Number(site.max_probe_per_run) || 20), dayRemaining,
+          autoImportPerRun, autoImportPerDay, importedToday: importedCount, delayMs: delay,
+        })
+        counts.candidates += pr.valid; counts.saved += pr.saved; counts.saveError += pr.saveError
+        counts.hot += pr.hot; counts.hotA += pr.hotA; counts.hotB += pr.hotB; counts.hold += pr.hold; counts.excluded += pr.excluded
+        counts.imported += pr.imported; counts.timeouts += pr.timeouts; importedCount += pr.imported
+        debug.siteResults.push({ site: site.name, siteType: 'sequential_id_probe', parserType: 'sequential_id_probe', parser_used: site.parser_type || 'generic_detail_page', fetchOk: true, status: 200, probed: pr.probed, valid: pr.valid, invalid: pr.invalid, detailFetched: pr.valid, saved: pr.saved, hot: pr.hot, hotA: pr.hotA, hotB: pr.hotB, hold: pr.hold, excluded: pr.excluded, idRange: `${pr.fromId}〜${pr.toId}`, lastFoundId: pr.lastFoundId, consecutiveNotFound: pr.consecutiveNotFound, timeouts: pr.timeouts, reason: pr.reason, items: pr.items })
+        if (!debug.sample || debug.sample.siteType !== 'sequential_id_probe') { const v = pr.items.find((it: any) => it.valid); if (v) debug.sample = { siteType: 'sequential_id_probe', site: site.name, ...v } }
         continue
       }
 

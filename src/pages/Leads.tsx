@@ -1411,8 +1411,12 @@ export default function Leads() {
                   <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">{rmResult.error}</div>
                 ) : (
                   <>
+                    <div className="rounded border border-amber-200 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                      ※ 連番URL探索は各サイト上で新しく存在を確認できた掲載ページ（<b>新規掲載候補</b>）を検出します。<b>新規オープンを保証するものではありません</b>。営業前に電話番号・住所・業種・新規性を確認してください。
+                    </div>
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-muted px-1.5 py-0.5">巡回サイト {rmResult.sites ?? 0}</span>
+                      {(Number(rmResult.hotA ?? 0) > 0 || Number(rmResult.hotB ?? 0) > 0) && <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {rmResult.hotA ?? 0} / HOT-B {rmResult.hotB ?? 0}</span>}
                       <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">新規記事 {rmResult.newArticles ?? 0}</span>
                       <span className="rounded bg-muted px-1.5 py-0.5">候補 {rmResult.candidates ?? 0}</span>
                       <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places一致 {rmResult.placeMatched ?? 0}</span>
@@ -1443,10 +1447,12 @@ export default function Leads() {
                             <div key={i} className="border-b pb-0.5">
                               <div className="font-medium">{h.site}{' '}
                                 {h.deferred && <span className="rounded bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">次回継続</span>}{' '}
-                                {!h.deferred && <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{h.parserType === 'local_directory_new_listing' ? '店舗ディレクトリ型' : h.parserType === 'marketplace_listing' ? 'マーケットプレイス型' : h.parserType === 'generic_page_text_scan' ? '汎用本文スキャン' : '記事型'}{h.parser_used ? `（${h.parser_used}）` : ''}</span>}{' '}
+                                {!h.deferred && <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{h.parserType === 'local_directory_new_listing' ? '店舗ディレクトリ型' : h.parserType === 'marketplace_listing' ? 'マーケットプレイス型' : h.parserType === 'sequential_id_probe' ? '連番URL探索型' : h.parserType === 'generic_page_text_scan' ? '汎用本文スキャン' : '記事型'}{h.parser_used ? `（${h.parser_used}）` : ''}</span>}{' '}
                                 {!h.deferred && <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span>}
                                 {Number(h.timeouts ?? 0) > 0 && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">timeout{h.timeouts}</span>}</div>
-                              {!h.deferred && (h.siteType === 'local_directory_new_listing' ? (
+                              {!h.deferred && (h.siteType === 'sequential_id_probe' ? (
+                                <div className="text-muted-foreground">連番探索 ID{h.idRange ?? '-'} ・ probed{h.probed ?? 0} ・ <b>valid{h.valid ?? 0}</b>/invalid{h.invalid ?? 0} ・ 最終found ID{h.lastFoundId ?? '-'} ・ 連続not_found{h.consecutiveNotFound ?? 0} ・ 保存{h.saved ?? 0} ・ HOT-A{h.hotA ?? 0}/HOT-B{h.hotB ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
+                              ) : h.siteType === 'local_directory_new_listing' ? (
                                 <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ <b>店舗詳細リンク{h.detailLinks ?? 0}</b> ・ OPEN表記{h.openTagged ?? 0} ・ 詳細取得{h.detailFetched ?? 0} ・ 電話取得{h.phoneYes ?? 0} ・ 住所取得{h.addressYes ?? 0} ・ OPEN日{h.openYes ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
                               ) : (h.siteType === 'marketplace_listing' || h.siteType === 'generic_page_text_scan') ? (
                                 <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 本文{h.bodyTextLen ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ ブロック{h.blockCount ?? 0} ・ <b>店舗カード候補{h.cardCandidates ?? 0}</b> ・ 新店語一致{h.keywordBlocks ?? 0} ・ 新規バッジ{h.newBadge ?? 0} ・ 詳細リンク{h.detailLinks ?? 0} ・ 詳細取得{h.detailFetched ?? 0} ・ 電話{h.phoneYes ?? 0}/住所{h.addressYes ?? 0}/OPEN{h.openYes ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}{h.jsLikely ? ' ・ ⚠JSレンダリングの可能性' : ''}</div>

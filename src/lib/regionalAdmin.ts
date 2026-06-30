@@ -3,9 +3,9 @@
 // 認可: ADMIN_SECRET / CRON_SECRET ヘッダ もしくは ログイン中ユーザーのJWT。
 // フロントには service role を出さず、必ずこのAPI経由で書き込む。
 // ============================================================
-export const MEDIA_FAMILIES = ['goguynet', 'kaitenheiten', 'tsushin', 'saikohkunavi', 'horby', 'local_blog', 'local_news', 'local_directory', 'other']
-// openclose_article=記事型 / local_directory_new_listing=店舗ディレクトリ型 / hybrid=両方
-export const SOURCE_TYPES = ['openclose_article', 'local_directory_new_listing', 'hybrid', 'html_list', 'rss', 'sitemap', 'category_page']
+export const MEDIA_FAMILIES = ['goguynet', 'kaitenheiten', 'tsushin', 'saikohkunavi', 'horby', 'jalan', 'tabelog', 'epark', 'hotpepper', 'local_blog', 'local_news', 'local_directory', 'other']
+// openclose_article=記事型 / local_directory_new_listing=店舗ディレクトリ型 / marketplace_listing=検索結果カード型 / sequential_id_probe=連番探索 / generic_page_text_scan=汎用本文
+export const SOURCE_TYPES = ['openclose_article', 'local_directory_new_listing', 'marketplace_listing', 'sequential_id_probe', 'generic_page_text_scan', 'hybrid', 'html_list', 'rss', 'sitemap', 'category_page']
 export const CATEGORY_LABELS = ['開店閉店', '新店情報', '地域ニュース', '店舗情報', '店舗新着']
 
 /** URL正規化: 前後空白除去・末尾スラッシュ削除（比較/保存の一貫性のため） */
