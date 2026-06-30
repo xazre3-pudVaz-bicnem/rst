@@ -100,7 +100,7 @@ export default function Leads() {
   const [igResult, setIgResult] = useState<any>(null)
   const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw' | 'probe'>('places')
   // メインビュー（架電対象リスト / 取得・投入 / 取得元管理 / 連番URL探索 / エラー・ログ / 設定）
-  const [mainView, setMainView] = useState<'list' | 'get' | 'manage' | 'probe' | 'errors' | 'settings'>('list')
+  const [mainView, setMainView] = useState<'list' | 'triage' | 'get' | 'manage' | 'probe' | 'errors' | 'settings'>('list')
   const [devMode, setDevMode] = useState(false)
   const [drawerCand, setDrawerCand] = useState<LeadCandidate | null>(null)
   const [probeTests, setProbeTests] = useState<Record<string, any>>({})
@@ -138,6 +138,21 @@ export default function Leads() {
   const [shown, setShown] = useState(50)  // 一覧の表示件数
   const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr' | 'opening_date' | 'new_gbp'>('all')  // HOT絞り込み
   const [rankMode, setRankMode] = useState<'priority' | 'newest'>('priority')  // 並び順: 架電優先 / 新着
+  // ===== 統合トリアージ =====
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [tGrade, setTGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C' | 'D'>('all')
+  const [tCat, setTCat] = useState<string>('all')
+  const [tPref, setTPref] = useState<string>('all')
+  const [tPhone, setTPhone] = useState<'all' | 'yes' | 'no' | 'fixed'>('yes')
+  const [tTemp, setTTemp] = useState<'all' | 'HOT' | 'HOLD' | 'EXCLUDED'>('HOT')
+  const [tNotImported, setTNotImported] = useState(true)
+  const [tDup, setTDup] = useState(false)
+  const [tFlagged, setTFlagged] = useState(false)
+  const [tSearch, setTSearch] = useState('')
+  const [tSort, setTSort] = useState<'quality' | 'priority' | 'newest'>('quality')
+  const [tShown, setTShown] = useState(60)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [qualityRunning, setQualityRunning] = useState(false)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -765,6 +780,100 @@ export default function Leads() {
     return true
   }
 
+  // ===== 統合トリアージ: 絞り込み・並び替え =====
+  const qScore = (c: any): number => (typeof c.quality_score === 'number' ? c.quality_score : -1)
+  const triageList = useMemo(() => {
+    const digits = tSearch.replace(/[^0-9]/g, '')
+    let arr = candidates.filter((c: any) => {
+      if (tTemp !== 'all' && c.lead_temperature !== tTemp) return false
+      if (tGrade !== 'all' && c.quality_grade !== tGrade) return false
+      if (tCat !== 'all' && (c.industry_category || 'その他') !== tCat) return false
+      if (tPref !== 'all') { const p = (c.address || c.extracted_address || ''); if (!String(p).includes(tPref)) return false }
+      const hasPhone = !!(c.phone_number || c.extracted_phone)
+      if (tPhone === 'yes' && !hasPhone) return false
+      if (tPhone === 'no' && hasPhone) return false
+      if (tPhone === 'fixed') { const d = String(c.phone_number || c.extracted_phone || '').replace(/[^\d]/g, ''); if (!(d && /^0/.test(d) && !/^0[789]0/.test(d) && !/^050/.test(d))) return false }
+      if (tNotImported && c.imported_to_cases) return false
+      if (tDup && !(c.dup_group_size > 1)) return false
+      if (tFlagged && !(Array.isArray(c.quality_flags) && c.quality_flags.length)) return false
+      if (tSearch) { const hay = `${c.name || ''} ${c.address || ''} ${c.extracted_address || ''} ${c.industry || ''}`; if (!hay.includes(tSearch) && !(digits && String(c.phone_number || '').replace(/[^\d]/g, '').includes(digits))) return false }
+      return true
+    })
+    arr = [...arr]
+    if (tSort === 'quality') arr.sort((a: any, b: any) => qScore(b) - qScore(a) || callPriority(b) - callPriority(a))
+    else if (tSort === 'priority') arr.sort((a: any, b: any) => callPriority(b) - callPriority(a))
+    else arr.sort((a: any, b: any) => Date.parse(b.first_seen_at || b.last_seen_at || 0) - Date.parse(a.first_seen_at || a.last_seen_at || 0))
+    return arr
+  }, [candidates, tTemp, tGrade, tCat, tPref, tPhone, tNotImported, tDup, tFlagged, tSearch, tSort])
+  const triageVisible = useMemo(() => triageList.slice(0, tShown), [triageList, tShown])
+  const prefList = useMemo(() => Array.from(new Set(candidates.map((c: any) => (String(c.address || c.extracted_address || '').match(/(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/) || [])[1]).filter(Boolean))).sort() as string[], [candidates])
+  // 取得元別の歩留まり
+  const sourceYield = useMemo(() => {
+    const m = new Map<string, { total: number; hot: number; imported: number; avgQ: number; sumQ: number; qN: number }>()
+    for (const c of candidates as any[]) {
+      const k = c.source || c.lead_source || c.source_type || '(不明)'
+      const e = m.get(k) || { total: 0, hot: 0, imported: 0, avgQ: 0, sumQ: 0, qN: 0 }
+      e.total++; if (c.lead_temperature === 'HOT') e.hot++; if (c.imported_to_cases) e.imported++
+      if (typeof c.quality_score === 'number') { e.sumQ += c.quality_score; e.qN++ }
+      m.set(k, e)
+    }
+    return Array.from(m.entries()).map(([k, e]) => ({ source: k, ...e, avgQ: e.qN ? Math.round(e.sumQ / e.qN) : 0 })).sort((a, b) => b.total - a.total)
+  }, [candidates])
+
+  function toggleSel(id: string) { setSelectedIds((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n }) }
+  function selectAllVisible() { setSelectedIds(new Set(triageVisible.map((c: any) => c.id))) }
+  function clearSel() { setSelectedIds(new Set()) }
+  const selectedCands = useMemo(() => candidates.filter((c: any) => selectedIds.has(c.id)), [candidates, selectedIds])
+
+  async function bulkInject() {
+    const targets = selectedCands.filter((c: any) => !c.imported_to_cases && c.lead_temperature !== 'EXCLUDED')
+    if (!targets.length) { toast.error('投入できる候補がありません（EXCLUDED/投入済を除く）'); return }
+    if (!window.confirm(`選択した ${targets.length} 件を案件(cases)に投入します。よろしいですか？\n※電話番号のある候補を優先してください。`)) return
+    setBulkBusy(true)
+    let ok = 0, ng = 0
+    for (const c of targets) { try { await importToCase(c as LeadCandidate); ok++ } catch { ng++ } }
+    setBulkBusy(false); clearSel(); toast.success(`投入完了: 成功${ok} / 失敗${ng}`); load()
+  }
+  async function bulkSetTemp(temp: 'EXCLUDED' | 'HOLD' | 'HOT') {
+    if (!selectedCands.length) return
+    const label = temp === 'EXCLUDED' ? '除外' : temp === 'HOLD' ? '保留' : 'HOT'
+    if (!window.confirm(`選択した ${selectedCands.length} 件を「${label}」に変更します。よろしいですか？`)) return
+    setBulkBusy(true)
+    let ok = 0
+    for (const c of selectedCands as any[]) { try { await LeadCandidateApi.update(c.id, { lead_temperature: temp, should_exclude_from_call_list: temp === 'EXCLUDED' }); ok++ } catch { /* noop */ } }
+    setBulkBusy(false); clearSel(); toast.success(`${label}に変更: ${ok}件`); load()
+  }
+  // 今日の架電リスト: 電話あり・未投入・重複除去（dedup_keyごと最高品質1件）・高品質順 上位N
+  function buildCallList(n = 30) {
+    const pool = (candidates as any[]).filter((c) => c.lead_temperature === 'HOT' && (c.phone_number || c.extracted_phone) && !c.imported_to_cases)
+    const best = new Map<string, any>()
+    for (const c of pool) { const k = c.dedup_key || c.id; const cur = best.get(k); if (!cur || qScore(c) > qScore(cur)) best.set(k, c) }
+    const list = Array.from(best.values()).sort((a, b) => qScore(b) - qScore(a) || callPriority(b) - callPriority(a)).slice(0, n)
+    setSelectedIds(new Set(list.map((c) => c.id)))
+    setTTemp('HOT'); setTPhone('yes'); setTNotImported(true); setTSort('quality')
+    toast.success(`今日の架電リスト: 重複除去後の高品質HOT ${list.length}件を選択しました（CSV出力・一括投入できます）`)
+    return list
+  }
+  function exportCsv(rows: any[], filename: string) {
+    if (!rows.length) { toast.error('出力対象がありません'); return }
+    const cols = [['品質', 'quality_score'], ['グレード', 'quality_grade'], ['温度', 'lead_temperature'], ['店名', 'name'], ['電話', 'phone_number'], ['住所', 'address'], ['業種', 'industry_category'], ['市外局番整合', 'phone_pref_match'], ['公式', 'website_url'], ['ソース', 'source'], ['詳細URL', 'source_detail_url'], ['注意', 'quality_flags']]
+    const esc = (v: any) => { const s = Array.isArray(v) ? v.join(' / ') : (v == null ? '' : String(v)); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+    const head = cols.map((c) => c[0]).join(',')
+    const body = rows.map((r) => cols.map((c) => esc((r as any)[c[1]])).join(',')).join('\n')
+    const blob = new Blob(['﻿' + head + '\n' + body], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url)
+    toast.success(`${rows.length}件をCSV出力しました`)
+  }
+  async function runQualityRecompute() {
+    if (!window.confirm('全候補の品質スコア・グレード・業種・重複を再計算します。実行しますか？')) return
+    setQualityRunning(true)
+    try {
+      const json = await regionalApi({ recomputeQuality: { mode: 'all', limit: 2000, withDups: true } })
+      if (json?.ok) { toast.success(`品質再計算: ${json.quality?.updated ?? 0}件更新 / 重複${json.dup?.dupGroups ?? 0}グループ`); load() }
+      else toast.error(json?.error || '再計算に失敗しました')
+    } finally { setQualityRunning(false) }
+  }
+
   async function handleManualImport(c: LeadCandidate, force = false) {
     if (c.imported_to_cases) return
     const ok = await confirm({
@@ -1075,7 +1184,7 @@ export default function Leads() {
 
           {/* メインタブ */}
           <div className="flex flex-wrap gap-1 border-b pb-1">
-            {([['list', '架電対象リスト'], ['get', '取得・投入'], ['manage', '取得元管理'], ['probe', '連番URL探索'], ['errors', 'エラー/ログ'], ['settings', '設定']] as const).map(([k, lbl]) => (
+            {([['list', '架電対象リスト'], ['triage', '統合トリアージ★'], ['get', '取得・投入'], ['manage', '取得元管理'], ['probe', '連番URL探索'], ['errors', 'エラー/ログ'], ['settings', '設定']] as const).map(([k, lbl]) => (
               <button key={k} onClick={() => { setMainView(k); if (k === 'probe') loadProbeSites() }} className={cn('rounded-t-md border-b-2 px-3 py-1.5 text-sm font-medium', mainView === k ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')}>
                 {lbl}{k === 'errors' && sourceErrors.length > 0 ? <span className="ml-1 rounded-full bg-red-500 px-1.5 text-[10px] text-white">{sourceErrors.length}</span> : ''}
               </button>
@@ -1084,6 +1193,7 @@ export default function Leads() {
           {/* タブ説明 */}
           <div className="rounded-md bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
             {mainView === 'list' && '営業電話できる可能性が高い候補です。HOT-A / HOT-B を優先して確認してください。行をクリックすると詳細が開きます。'}
+            {mainView === 'triage' && '全ソース横断のトリアージ画面。品質スコア/グレード・業種・都道府県・電話・重複で絞り込み、まとめて投入/除外できます。「今日の架電リスト」で重複を除いた高品質候補を即作成。CSV出力可。'}
             {mainView === 'get' && '新しい候補を各取得元（Google Places / Instagram Web / 地域メディア）から集めて、自動でHOT判定します。'}
             {mainView === 'manage' && '巡回サイト（source_sites）の管理と、新店情報サイトの自動発見・登録を行います。'}
             {mainView === 'probe' && 'じゃらん等の連番URLを確認し、新しく存在する掲載ページ（新規掲載候補）を探します。新規オープン確定ではありません。'}
@@ -2815,6 +2925,108 @@ export default function Leads() {
           )}
           </>)}
 
+          {/* ===== 統合トリアージタブ ===== */}
+          {mainView === 'triage' && (() => {
+            const gradeColor: Record<string, string> = { S: 'bg-purple-600 text-white', A: 'bg-rose-600 text-white', B: 'bg-amber-500 text-white', C: 'bg-slate-400 text-white', D: 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300' }
+            const gradeDist: Record<string, number> = { S: 0, A: 0, B: 0, C: 0, D: 0 }
+            for (const c of triageList as any[]) gradeDist[c.quality_grade || 'D'] = (gradeDist[c.quality_grade || 'D'] || 0) + 1
+            const Btn = ({ on, children, onClick }: any) => <button onClick={onClick} className={cn('rounded border px-2 py-0.5 text-[11px]', on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card hover:bg-accent')}>{children}</button>
+            return (
+            <div className="space-y-3">
+              {/* 操作バー */}
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-2">
+                <Button size="sm" onClick={() => buildCallList(30)} className="bg-rose-600 hover:bg-rose-700">📞 今日の架電リストを作成（重複除去・高品質30件）</Button>
+                <Button size="sm" variant="outline" onClick={() => exportCsv(triageList, `leads_${moment().format('YYYYMMDD_HHmm')}.csv`)}>⬇ 絞り込み結果をCSV出力（{triageList.length}件）</Button>
+                <Button size="sm" variant="outline" onClick={runQualityRecompute} disabled={qualityRunning}>{qualityRunning ? '再計算中...' : '品質を再計算'}</Button>
+                <div className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground">
+                  {(['S', 'A', 'B', 'C', 'D'] as const).map((g) => <span key={g} className={cn('rounded px-1.5 py-0.5 font-bold', gradeColor[g])}>{g} {gradeDist[g]}</span>)}
+                </div>
+              </div>
+
+              {/* フィルタ */}
+              <div className="space-y-1.5 rounded-xl border bg-card p-2 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-muted-foreground">温度:</span>
+                  {(['HOT', 'HOLD', 'EXCLUDED', 'all'] as const).map((t) => <Btn key={t} on={tTemp === t} onClick={() => setTTemp(t)}>{t === 'all' ? '全て' : t}</Btn>)}
+                  <span className="ml-2 text-muted-foreground">グレード:</span>
+                  {(['all', 'S', 'A', 'B', 'C', 'D'] as const).map((g) => <Btn key={g} on={tGrade === g} onClick={() => setTGrade(g)}>{g === 'all' ? '全' : g}</Btn>)}
+                  <span className="ml-2 text-muted-foreground">電話:</span>
+                  {([['yes', 'あり'], ['fixed', '固定のみ'], ['no', 'なし'], ['all', '全']] as const).map(([k, l]) => <Btn key={k} on={tPhone === k} onClick={() => setTPhone(k as any)}>{l}</Btn>)}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-muted-foreground">業種:</span>
+                  {(['all', '飲食', '美容・サロン', '医療・治療', '小売・物販', '暮らし・サービス', '宿泊・観光', 'その他'] as const).map((c) => <Btn key={c} on={tCat === c} onClick={() => setTCat(c)}>{c === 'all' ? '全' : c}</Btn>)}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-muted-foreground">都道府県:</span>
+                  <select value={tPref} onChange={(e) => setTPref(e.target.value)} className="rounded border border-input bg-background px-1 py-0.5 text-[11px]">
+                    <option value="all">全て</option>
+                    {prefList.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                  <span className="ml-2 text-muted-foreground">並び:</span>
+                  {([['quality', '品質順'], ['priority', '架電優先順'], ['newest', '新着順']] as const).map(([k, l]) => <Btn key={k} on={tSort === k} onClick={() => setTSort(k as any)}>{l}</Btn>)}
+                  <label className="ml-2 flex items-center gap-1"><input type="checkbox" checked={tNotImported} onChange={(e) => setTNotImported(e.target.checked)} />未投入のみ</label>
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={tDup} onChange={(e) => setTDup(e.target.checked)} />重複のみ</label>
+                  <label className="flex items-center gap-1"><input type="checkbox" checked={tFlagged} onChange={(e) => setTFlagged(e.target.checked)} />要注意のみ</label>
+                  <input value={tSearch} onChange={(e) => setTSearch(e.target.value)} placeholder="店名/住所/電話で検索" className="ml-1 w-40 rounded border border-input bg-background px-2 py-0.5 text-[11px]" />
+                </div>
+              </div>
+
+              {/* 取得元別の歩留まり */}
+              <details className="rounded-xl border bg-card p-2 text-[11px]">
+                <summary className="cursor-pointer font-bold">取得元別の歩留まり（品質平均・HOT率・投入率）</summary>
+                <table className="mt-1 w-full">
+                  <thead className="text-muted-foreground"><tr className="text-left"><th className="py-0.5">取得元</th><th>件数</th><th>HOT</th><th>投入済</th><th>品質平均</th></tr></thead>
+                  <tbody>{sourceYield.map((s) => <tr key={s.source} className="border-t border-border/40"><td className="py-0.5">{s.source}</td><td>{s.total}</td><td>{s.hot}</td><td>{s.imported}</td><td><span className={cn('rounded px-1 font-bold', s.avgQ >= 65 ? 'text-emerald-600' : s.avgQ >= 50 ? 'text-amber-600' : 'text-muted-foreground')}>{s.avgQ}</span></td></tr>)}</tbody>
+                </table>
+              </details>
+
+              {/* バルクアクションバー */}
+              {selectedIds.size > 0 && (
+                <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-xl border border-primary bg-primary/10 p-2 text-xs backdrop-blur">
+                  <span className="font-bold">{selectedIds.size}件 選択中</span>
+                  <Button size="sm" onClick={bulkInject} disabled={bulkBusy} className="bg-emerald-600 hover:bg-emerald-700">案件に一括投入</Button>
+                  <Button size="sm" variant="outline" onClick={() => bulkSetTemp('EXCLUDED')} disabled={bulkBusy}>一括除外</Button>
+                  <Button size="sm" variant="outline" onClick={() => bulkSetTemp('HOLD')} disabled={bulkBusy}>一括保留</Button>
+                  <Button size="sm" variant="outline" onClick={() => exportCsv(selectedCands, `callist_${moment().format('YYYYMMDD_HHmm')}.csv`)}>選択をCSV出力</Button>
+                  <button onClick={clearSel} className="ml-auto text-[11px] text-muted-foreground hover:underline">選択解除</button>
+                </div>
+              )}
+
+              {/* リスト */}
+              <div className="overflow-x-auto rounded-xl border bg-card">
+                <table className="w-full text-[11px]">
+                  <thead className="bg-muted/50 text-muted-foreground">
+                    <tr className="text-left">
+                      <th className="w-8 px-2 py-1"><input type="checkbox" checked={triageVisible.length > 0 && triageVisible.every((c: any) => selectedIds.has(c.id))} onChange={(e) => e.target.checked ? selectAllVisible() : clearSel()} /></th>
+                      <th className="px-1 py-1">品質</th><th className="px-1">温度</th><th className="px-2">店名</th><th className="px-2">電話</th><th className="px-2">住所</th><th className="px-1">業種</th><th className="px-1">注意</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triageVisible.map((c: any) => (
+                      <tr key={c.id} className={cn('border-t border-border/40 hover:bg-accent/40', selectedIds.has(c.id) && 'bg-primary/5')}>
+                        <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleSel(c.id)} /></td>
+                        <td className="px-1 py-1 cursor-pointer" onClick={() => setDrawerCand(c)}><span className={cn('rounded px-1 py-0.5 font-bold', gradeColor[c.quality_grade || 'D'])}>{c.quality_grade || '-'}</span> <span className="text-muted-foreground">{c.quality_score ?? '-'}</span></td>
+                        <td className="px-1 cursor-pointer" onClick={() => setDrawerCand(c)}><span className="rounded px-1 py-0.5 text-[10px]" style={{ background: (LEAD_TEMP_COLORS as any)[c.lead_temperature]?.bg, color: (LEAD_TEMP_COLORS as any)[c.lead_temperature]?.fg }}>{c.lead_temperature}{c.hot_tier ? `-${c.hot_tier}` : ''}</span></td>
+                        <td className="max-w-[180px] truncate px-2 cursor-pointer" onClick={() => setDrawerCand(c)} title={c.name}>{c.name || '（店名未確定）'}{c.dup_group_size > 1 && <span className="ml-1 rounded bg-orange-200 px-1 text-[9px] text-orange-800 dark:bg-orange-500/30 dark:text-orange-200">重複{c.dup_group_size}</span>}</td>
+                        <td className="px-2 cursor-pointer" onClick={() => setDrawerCand(c)}>{c.phone_number || c.extracted_phone || <span className="text-red-500">なし</span>}{c.phone_pref_match === 'mismatch' && <span className="ml-1 text-[9px] text-red-500" title="市外局番が住所と不一致">⚠地域</span>}</td>
+                        <td className="max-w-[200px] truncate px-2 cursor-pointer" onClick={() => setDrawerCand(c)} title={c.address}>{c.address || c.extracted_address || ''}</td>
+                        <td className="px-1 text-muted-foreground">{c.industry_category || ''}</td>
+                        <td className="px-1">{Array.isArray(c.quality_flags) && c.quality_flags.length > 0 && <span className="rounded bg-red-100 px-1 text-[9px] text-red-700 dark:bg-red-500/20 dark:text-red-300" title={c.quality_flags.join(' / ')}>⚠{c.quality_flags.length}</span>}</td>
+                      </tr>
+                    ))}
+                    {triageVisible.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">条件に一致する候補がありません。フィルタを緩めてください。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-center gap-2 text-[11px]">
+                <span className="text-muted-foreground">{triageVisible.length} / {triageList.length} 件表示</span>
+                {tShown < triageList.length && <button onClick={() => setTShown((s) => s + 60)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+60)</button>}
+              </div>
+            </div>
+            )
+          })()}
+
           {/* ===== エラー/ログタブ ===== */}
           {mainView === 'errors' && (
             <div className="space-y-2 rounded-xl border bg-card p-3 text-xs">
@@ -2910,6 +3122,26 @@ export default function Leads() {
                   <button onClick={() => setDrawerCand(null)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
                 </div>
                 <div className="text-base font-bold">{drawerCand.name}{(drawerCand as any).name_unconfirmed_hot && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要店名確認</span>}</div>
+                {/* 品質サマリー */}
+                {typeof (drawerCand as any).quality_score === 'number' && (() => {
+                  const g = (drawerCand as any).quality_grade || 'D'
+                  const gc: Record<string, string> = { S: 'bg-purple-600 text-white', A: 'bg-rose-600 text-white', B: 'bg-amber-500 text-white', C: 'bg-slate-400 text-white', D: 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300' }
+                  const flags = Array.isArray((drawerCand as any).quality_flags) ? (drawerCand as any).quality_flags : []
+                  return (
+                    <div className="mt-1.5 rounded-lg border bg-muted/30 p-2 text-[11px]">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('rounded px-2 py-0.5 text-sm font-bold', gc[g])}>{g}</span>
+                        <span className="text-lg font-bold">{(drawerCand as any).quality_score}</span>
+                        <span className="text-muted-foreground">品質スコア</span>
+                        {(drawerCand as any).industry_category && <span className="rounded bg-background px-1.5 py-0.5">{(drawerCand as any).industry_category}</span>}
+                        {(drawerCand as any).phone_pref_match === 'match' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">電話×住所 地域一致</span>}
+                        {(drawerCand as any).phone_pref_match === 'mismatch' && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">⚠ 市外局番が住所と不一致</span>}
+                        {(drawerCand as any).dup_group_size > 1 && <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">重複{(drawerCand as any).dup_group_size}件</span>}
+                      </div>
+                      {flags.length > 0 && <ul className="mt-1 list-disc pl-4 text-red-600 dark:text-red-400">{flags.map((f: string, i: number) => <li key={i}>{f}</li>)}</ul>}
+                    </div>
+                  )
+                })()}
                 {(drawerCand as any).name_unconfirmed_hot && (
                   <div className="mt-1 rounded border border-amber-300 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                     店名未確定ですが、電話番号・住所・新店根拠があるため営業可能候補(HOT-B)です。<b>営業前に店名をご確認ください。</b>
