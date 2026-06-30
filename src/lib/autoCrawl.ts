@@ -10,11 +10,13 @@ import { runRegionalMedia, getDefaultRegionalSettings } from './regionalMediaRun
 import { runInstagramWeb, getDefaultIwSettings } from './instagramWebRun.js'
 import { runAllSequentialProbes } from './sequentialProbe.js'
 import { recomputeDupGroups } from './leadQualityRun.js'
+import { runSerpDiscovery } from './serpDiscovery.js'
+import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
 
-export type CrawlOnly = 'all' | 'places' | 'regional' | 'instagram' | 'sequential' | 'failed'
+export type CrawlOnly = 'all' | 'places' | 'regional' | 'instagram' | 'sequential' | 'discovery' | 'failed'
 export interface CrawlOpts { trigger?: 'cron' | 'manual'; only?: CrawlOnly; userId?: string | null; budgetMs?: number }
 
 /** ロック取得。実行中(未失効)なら false。古いロックはTTLで上書き。 */
@@ -102,6 +104,23 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'sequential_auto')
     if (cfg.sequentialEnabled === false) return { skipped: true }
     return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', probeDailyCap: 500, autoImportPerRun: 50, ...cfg, ...(master.sequential || {}) }, opts.userId || null)
+  } })
+  if (wantType('discovery')) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 12000, run: async () => {
+    const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }
+    const enabled = DISCOVERY_SOURCES.filter((s) => s.mode === 'serp' && toggles[s.type] !== false).map((s) => s.type)
+    if (!enabled.length) return { skipped: true, reason: '有効なSERP取得元なし' }
+    // 最後に実行してから古い順（未実行/失敗を優先）に並べ、残り時間内で回す
+    const { data: last } = await admin.from('auto_lead_runs').select('source,created_date').in('source', enabled).order('created_date', { ascending: false }).limit(200)
+    const lastBy = new Map<string, number>()
+    for (const r of (last || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }
+    enabled.sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))
+    const agg: any = { hot: 0, hotB: 0, hold: 0, excluded: 0, saved: 0, imported: 0, detailFetched: 0, ran: [] as string[] }
+    for (const st of enabled) {
+      if (Date.now() - startMs > budgetMs - 9000) break
+      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 3, perQuery: 7, maxDetails: 8, runBudgetMs: 13000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
+      if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hotB += r.hotB || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.saved += r.saved || 0; agg.imported += r.imported || 0; agg.detailFetched += r.detailFetched || 0; agg.ran.push(st) }
+    }
+    return agg
   } })
 
   // 「最後に成功してから時間が経っている順」に並べ替え（未実行/失敗を優先）。失敗モードはそのまま順に。

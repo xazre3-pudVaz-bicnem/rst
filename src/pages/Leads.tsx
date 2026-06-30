@@ -153,7 +153,7 @@ export default function Leads() {
   const [tDup, setTDup] = useState(false)
   const [tFlagged, setTFlagged] = useState(false)
   const [tSearch, setTSearch] = useState('')
-  const [tSort, setTSort] = useState<'quality' | 'priority' | 'newest'>('quality')
+  const [tSort, setTSort] = useState<'sales' | 'quality' | 'priority' | 'newest'>('sales')
   const [tShown, setTShown] = useState(60)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [qualityRunning, setQualityRunning] = useState(false)
@@ -164,6 +164,13 @@ export default function Leads() {
   const [crawlFailedSites, setCrawlFailedSites] = useState<any[]>([])
   const [crawlBusy, setCrawlBusy] = useState<string>('')
   const [autoCrawlOn, setAutoCrawlOn] = useState<boolean>(true)
+  // ===== 新規取得元レジストリ（27 source_type） =====
+  const [discovery, setDiscovery] = useState<{ sources: any[]; toggles: Record<string, boolean>; excluded: string[]; cost: any } | null>(null)
+  const [discoveryBusy, setDiscoveryBusy] = useState<string>('')
+  // ===== トリアージ拡張フィルタ =====
+  const [tSalesGrade, setTSalesGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C'>('all')
+  const [tSource, setTSource] = useState<string>('all')
+  const [tWebsite, setTWebsite] = useState<string>('all')
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -833,15 +840,19 @@ export default function Leads() {
       if (tNotImported && c.imported_to_cases) return false
       if (tDup && !(c.dup_group_size > 1)) return false
       if (tFlagged && !(Array.isArray(c.quality_flags) && c.quality_flags.length)) return false
+      if (tSalesGrade !== 'all' && c.sales_priority_grade !== tSalesGrade) return false
+      if (tSource !== 'all' && (c.discovery_source_type || c.source || c.lead_source) !== tSource) return false
+      if (tWebsite !== 'all' && (c.website_status || 'unknown') !== tWebsite) return false
       if (tSearch) { const hay = `${c.name || ''} ${c.address || ''} ${c.extracted_address || ''} ${c.industry || ''}`; if (!hay.includes(tSearch) && !(digits && String(c.phone_number || '').replace(/[^\d]/g, '').includes(digits))) return false }
       return true
     })
     arr = [...arr]
-    if (tSort === 'quality') arr.sort((a: any, b: any) => qScore(b) - qScore(a) || callPriority(b) - callPriority(a))
+    if (tSort === 'sales') arr.sort((a: any, b: any) => (b.sales_priority_score ?? -1) - (a.sales_priority_score ?? -1) || qScore(b) - qScore(a))
+    else if (tSort === 'quality') arr.sort((a: any, b: any) => qScore(b) - qScore(a) || callPriority(b) - callPriority(a))
     else if (tSort === 'priority') arr.sort((a: any, b: any) => callPriority(b) - callPriority(a))
     else arr.sort((a: any, b: any) => Date.parse(b.first_seen_at || b.last_seen_at || 0) - Date.parse(a.first_seen_at || a.last_seen_at || 0))
     return arr
-  }, [candidates, tTemp, tGrade, tCat, tPref, tPhone, tNotImported, tDup, tFlagged, tSearch, tSort])
+  }, [candidates, tTemp, tGrade, tCat, tPref, tPhone, tNotImported, tDup, tFlagged, tSalesGrade, tSource, tWebsite, tSearch, tSort])
   const triageVisible = useMemo(() => triageList.slice(0, tShown), [triageList, tShown])
   const prefList = useMemo(() => Array.from(new Set(candidates.map((c: any) => (String(c.address || c.extracted_address || '').match(/(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/) || [])[1]).filter(Boolean))).sort() as string[], [candidates])
   // 取得元別の歩留まり
@@ -952,6 +963,30 @@ export default function Leads() {
   async function toggleAutoCrawl() {
     const next = !autoCrawlOn
     try { const cur = (await AppConfigApi.get('auto_crawl')) || {}; await AppConfigApi.set('auto_crawl', { ...cur, enabled: next }); setAutoCrawlOn(next); toast.success(`自動巡回を${next ? 'ON' : 'OFF'}にしました`) } catch (e) { toast.error('変更に失敗: ' + jpError(e)) }
+  }
+
+  // ===== 新規取得元レジストリ =====
+  const loadDiscovery = useCallback(async () => {
+    const j = await regionalApi({ discoveryStatus: true })
+    if (j?.ok) setDiscovery({ sources: j.sources || [], toggles: j.toggles || {}, excluded: j.excluded || [], cost: j.cost })
+  }, [])
+  useEffect(() => { if (mainView === 'get') loadDiscovery() }, [mainView, loadDiscovery])
+  async function toggleDiscovery(type: string, enabled: boolean) {
+    const j = await regionalApi({ discoveryToggle: { type, enabled } })
+    if (j?.ok) { setDiscovery((p) => p ? { ...p, toggles: j.toggles } : p); toast.success(`${enabled ? 'ON' : 'OFF'}にしました`) }
+  }
+  async function runDiscoveryOne(type: string, label: string) {
+    setDiscoveryBusy(type)
+    try {
+      const j = await regionalApi({ runDiscovery: { sourceType: type }, settings: { aiInjectMode: settings.aiInjectMode, serperDailyCap: (settings as any).serperDailyCap ?? 50 } })
+      if (j?.skipped) toast.info(j.reason || 'スキップ')
+      else if (j?.ok) { toast.success(`${label}: 新規${j.newUrls ?? 0}/詳細${j.detailFetched ?? 0} HOT-B${j.hotB ?? 0}/HOLD${j.hold ?? 0} 投入${j.imported ?? 0}（既読skip${j.seenSkipped ?? 0}）`); load(); loadDiscovery() }
+      else toast.error(j?.error || '実行に失敗しました')
+    } finally { setDiscoveryBusy('') }
+  }
+  async function recomputeSales() {
+    setDiscoveryBusy('sales')
+    try { const j = await regionalApi({ recomputeSales: { limit: 800, onlyHot: true } }); if (j?.ok) { toast.success(`営業優先度再計算: ${j.updated}件 / メモ${j.memos}件`); load() } else toast.error(j?.error || '失敗') } finally { setDiscoveryBusy('') }
   }
 
   async function autoExcludeBad() {
@@ -1613,6 +1648,39 @@ export default function Leads() {
             )}
             <div className="mt-1.5 text-[10px] text-muted-foreground">※現在Hobbyプランのため自動巡回は1日1回（毎朝8時）です。日中の補充は上の手動ボタンで実行してください。2時間おきの全自動化はVercel Pro、または外部スケジューラ(cron-job.org等)から /api/cron/auto-lead-crawl?secret=CRON_SECRET を叩けば可能です。</div>
           </div>
+
+          {/* ===== 新規取得元レジストリ（27 source_type） ===== */}
+          {discovery && (
+            <div className="rounded-xl border-2 border-emerald-500/40 bg-card p-3">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-bold">🧭 新規取得元（{discovery.sources.length}種）— 質の高い新規リスト自動作成</span>
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  {discovery.cost && <span>本日Serper {discovery.cost.serper ?? 0}/{(settings as any).serperDailyCap ?? 50}クエリ</span>}
+                  <Button size="sm" variant="outline" onClick={recomputeSales} disabled={!!discoveryBusy}>{discoveryBusy === 'sales' ? '計算中...' : '営業優先度を再計算'}</Button>
+                </div>
+              </div>
+              <div className="mb-1 text-[10px] text-muted-foreground">電話/住所なしはHOT禁止・店名未確定でも電話+住所+新規根拠でHOT-B・日本国内のみ・大手/公共/閉店/重複は除外。検索駆動(SERP)はその場で実行、土台は外部API確認後に有効化。</div>
+              {Array.from(new Set(discovery.sources.map((s: any) => s.group))).map((grp) => (
+                <div key={grp} className="mt-1.5">
+                  <div className="text-[10px] font-bold text-muted-foreground">{grp}</div>
+                  <div className="mt-0.5 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                    {discovery.sources.filter((s: any) => s.group === grp).map((s: any) => {
+                      const on = discovery.toggles[s.type] !== false
+                      return (
+                        <div key={s.type} className="flex items-center gap-1.5 rounded border border-border/60 bg-background px-1.5 py-1 text-[10px]">
+                          <button onClick={() => toggleDiscovery(s.type, !on)} className={cn('rounded-full px-1.5 py-0.5 font-bold', on ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-700')}>{on ? 'ON' : 'OFF'}</button>
+                          <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}</span>
+                          {s.mode === 'serp' && <button onClick={() => runDiscoveryOne(s.type, s.label)} disabled={!!discoveryBusy} className="rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10">{discoveryBusy === s.type ? '実行中' : '実行'}</button>}
+                          {s.type === 'portal_published_date_search' && <button onClick={runEkiten} disabled={ekitenRunning} className="rounded border border-pink-500 px-1.5 py-0.5 text-pink-700 dark:text-pink-300">実行</button>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+              {discovery.excluded?.length > 0 && <div className="mt-1.5 text-[9px] text-muted-foreground">追加しない（除外指定）: {discovery.excluded.join(', ')}</div>}
+            </div>
+          )}
 
           {/* Google Places API パネル */}
           <div className="rounded-xl border bg-card p-3">
@@ -3117,13 +3185,24 @@ export default function Leads() {
                   {(['all', '飲食', '美容・サロン', '医療・治療', '小売・物販', '暮らし・サービス', '宿泊・観光', 'その他'] as const).map((c) => <Btn key={c} on={tCat === c} onClick={() => setTCat(c)}>{c === 'all' ? '全' : c}</Btn>)}
                 </div>
                 <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-muted-foreground">営業優先度:</span>
+                  {(['all', 'S', 'A', 'B', 'C'] as const).map((g) => <Btn key={g} on={tSalesGrade === g} onClick={() => setTSalesGrade(g)}>{g === 'all' ? '全' : g}</Btn>)}
+                  <span className="ml-2 text-muted-foreground">Web:</span>
+                  {([['all', '全'], ['none', 'HPなし'], ['instagram_only', 'IGのみ'], ['builder', '簡易HP'], ['own_domain', '独自']] as const).map(([k, l]) => <Btn key={k} on={tWebsite === k} onClick={() => setTWebsite(k)}>{l}</Btn>)}
+                  <span className="ml-2 text-muted-foreground">取得元:</span>
+                  <select value={tSource} onChange={(e) => setTSource(e.target.value)} className="rounded border border-input bg-background px-1 py-0.5 text-[11px]">
+                    <option value="all">全て</option>
+                    {Array.from(new Set(candidates.map((c: any) => c.discovery_source_type || c.source || c.lead_source).filter(Boolean))).map((s: any) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
                   <span className="text-muted-foreground">都道府県:</span>
                   <select value={tPref} onChange={(e) => setTPref(e.target.value)} className="rounded border border-input bg-background px-1 py-0.5 text-[11px]">
                     <option value="all">全て</option>
                     {prefList.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
                   <span className="ml-2 text-muted-foreground">並び:</span>
-                  {([['quality', '品質順'], ['priority', '架電優先順'], ['newest', '新着順']] as const).map(([k, l]) => <Btn key={k} on={tSort === k} onClick={() => setTSort(k as any)}>{l}</Btn>)}
+                  {([['sales', '営業優先順'], ['quality', '品質順'], ['priority', '架電優先順'], ['newest', '新着順']] as const).map(([k, l]) => <Btn key={k} on={tSort === k} onClick={() => setTSort(k as any)}>{l}</Btn>)}
                   <label className="ml-2 flex items-center gap-1"><input type="checkbox" checked={tNotImported} onChange={(e) => setTNotImported(e.target.checked)} />未投入のみ</label>
                   <label className="flex items-center gap-1"><input type="checkbox" checked={tDup} onChange={(e) => setTDup(e.target.checked)} />重複のみ</label>
                   <label className="flex items-center gap-1"><input type="checkbox" checked={tFlagged} onChange={(e) => setTFlagged(e.target.checked)} />要注意のみ</label>
@@ -3158,23 +3237,25 @@ export default function Leads() {
                   <thead className="bg-muted/50 text-muted-foreground">
                     <tr className="text-left">
                       <th className="w-8 px-2 py-1"><input type="checkbox" checked={triageVisible.length > 0 && triageVisible.every((c: any) => selectedIds.has(c.id))} onChange={(e) => e.target.checked ? selectAllVisible() : clearSel()} /></th>
-                      <th className="px-1 py-1">品質</th><th className="px-1">温度</th><th className="px-2">店名</th><th className="px-2">電話</th><th className="px-2">住所</th><th className="px-1">業種</th><th className="px-1">注意</th>
+                      <th className="px-1 py-1">営業</th><th className="px-1">品質</th><th className="px-1">温度</th><th className="px-2">店名</th><th className="px-2">電話</th><th className="px-2">住所</th><th className="px-1">業種</th><th className="px-1">Web</th><th className="px-1">注意</th>
                     </tr>
                   </thead>
                   <tbody>
                     {triageVisible.map((c: any) => (
                       <tr key={c.id} className={cn('border-t border-border/40 hover:bg-accent/40', selectedIds.has(c.id) && 'bg-primary/5')}>
                         <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleSel(c.id)} /></td>
+                        <td className="px-1 py-1 cursor-pointer" onClick={() => setDrawerCand(c)}>{c.sales_priority_grade ? <span className={cn('rounded px-1 py-0.5 font-bold', c.sales_priority_grade === 'S' ? 'bg-purple-600 text-white' : c.sales_priority_grade === 'A' ? 'bg-rose-600 text-white' : c.sales_priority_grade === 'B' ? 'bg-amber-500 text-white' : 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700')} title={`営業優先度 ${c.sales_priority_score ?? ''}`}>{c.sales_priority_grade}</span> : <span className="text-muted-foreground">-</span>}{c.call_memo && <span className="ml-0.5" title="架電前メモあり">📝</span>}</td>
                         <td className="px-1 py-1 cursor-pointer" onClick={() => setDrawerCand(c)}><span className={cn('rounded px-1 py-0.5 font-bold', gradeColor[c.quality_grade || 'D'])}>{c.quality_grade || '-'}</span> <span className="text-muted-foreground">{c.quality_score ?? '-'}</span></td>
                         <td className="px-1 cursor-pointer" onClick={() => setDrawerCand(c)}><span className="rounded px-1 py-0.5 text-[10px]" style={{ background: (LEAD_TEMP_COLORS as any)[c.lead_temperature]?.bg, color: (LEAD_TEMP_COLORS as any)[c.lead_temperature]?.fg }}>{c.lead_temperature}{c.hot_tier ? `-${c.hot_tier}` : ''}</span></td>
                         <td className="max-w-[180px] truncate px-2 cursor-pointer" onClick={() => setDrawerCand(c)} title={c.name}>{c.name || '（店名未確定）'}{c.dup_group_size > 1 && <span className="ml-1 rounded bg-orange-200 px-1 text-[9px] text-orange-800 dark:bg-orange-500/30 dark:text-orange-200">重複{c.dup_group_size}</span>}</td>
                         <td className="px-2 cursor-pointer" onClick={() => setDrawerCand(c)}>{c.phone_number || c.extracted_phone || <span className="text-red-500">なし</span>}{c.phone_pref_match === 'mismatch' && <span className="ml-1 text-[9px] text-red-500" title="市外局番が住所と不一致">⚠地域</span>}</td>
                         <td className="max-w-[200px] truncate px-2 cursor-pointer" onClick={() => setDrawerCand(c)} title={c.address}>{c.address || c.extracted_address || ''}</td>
                         <td className="px-1 text-muted-foreground">{c.industry_category || ''}</td>
+                        <td className="px-1 text-muted-foreground" title={c.seo_weakness_reason || ''}>{c.website_status === 'none' ? 'HPなし' : c.website_status === 'instagram_only' ? 'IGのみ' : c.website_status === 'builder' ? `簡易(${c.website_type})` : c.website_status === 'linktree' ? 'リンク集' : c.website_status === 'own_domain' ? '独自' : ''}</td>
                         <td className="px-1">{Array.isArray(c.quality_flags) && c.quality_flags.length > 0 && <span className="rounded bg-red-100 px-1 text-[9px] text-red-700 dark:bg-red-500/20 dark:text-red-300" title={c.quality_flags.join(' / ')}>⚠{c.quality_flags.length}</span>}</td>
                       </tr>
                     ))}
-                    {triageVisible.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">条件に一致する候補がありません。フィルタを緩めてください。</td></tr>}
+                    {triageVisible.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-muted-foreground">条件に一致する候補がありません。フィルタを緩めてください。</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -3301,6 +3382,24 @@ export default function Leads() {
                     </div>
                   )
                 })()}
+                {/* 営業優先度＋Web弱点 */}
+                {(drawerCand as any).sales_priority_grade && (
+                  <div className="mt-1.5 rounded-lg border border-emerald-300 bg-emerald-50/50 p-2 text-[11px] dark:border-emerald-500/30 dark:bg-emerald-500/10">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={cn('rounded px-2 py-0.5 text-sm font-bold', (drawerCand as any).sales_priority_grade === 'S' ? 'bg-purple-600 text-white' : (drawerCand as any).sales_priority_grade === 'A' ? 'bg-rose-600 text-white' : (drawerCand as any).sales_priority_grade === 'B' ? 'bg-amber-500 text-white' : 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700')}>営業{(drawerCand as any).sales_priority_grade}</span>
+                      <span className="font-bold">{(drawerCand as any).sales_priority_score}</span>
+                      <span className="text-muted-foreground">新規{(drawerCand as any).newness_score ?? '-'}/連絡{(drawerCand as any).contactability_score ?? '-'}/Web弱{(drawerCand as any).website_weakness_score ?? '-'}/投資{(drawerCand as any).budget_likelihood_score ?? '-'}</span>
+                      {(drawerCand as any).signal_count > 0 && <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-emerald-800 dark:bg-emerald-500/30 dark:text-emerald-200">シグナル{(drawerCand as any).signal_count}</span>}
+                    </div>
+                    {(drawerCand as any).hp_sales_angle && <div className="mt-1 text-muted-foreground">提案角度: {(drawerCand as any).hp_sales_angle}</div>}
+                  </div>
+                )}
+                {(drawerCand as any).call_memo && (
+                  <details className="mt-1.5 rounded-lg border bg-muted/30 p-2 text-[11px]" open>
+                    <summary className="cursor-pointer font-bold">📝 架電前メモ（AI生成）</summary>
+                    <pre className="mt-1 whitespace-pre-wrap font-sans text-[10px] leading-relaxed">{(drawerCand as any).call_memo}</pre>
+                  </details>
+                )}
                 {(drawerCand as any).name_unconfirmed_hot && (
                   <div className="mt-1 rounded border border-amber-300 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                     店名未確定ですが、電話番号・住所・新店根拠があるため営業可能候補(HOT-B)です。<b>営業前に店名をご確認ください。</b>

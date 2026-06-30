@@ -11,6 +11,9 @@ import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDi
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
 import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
 import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/leadQualityRun.js'
+import { runSerpDiscovery } from '../../../src/lib/serpDiscovery.js'
+import { recomputeSalesBatch } from '../../../src/lib/leadSignals.js'
+import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles } from '../../../src/lib/discoverySources.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
 
@@ -275,6 +278,36 @@ export default async function handler(req: any, res: any) {
       }
       return res.status(200).json({ ok: true, scanned: rows?.length || 0, excluded })
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+
+  // 新規取得元レジストリ＋ON/OFF＋コスト状況の取得
+  if (body?.discoveryStatus) {
+    const { data: cfg } = await admin.from('app_config').select('value').eq('key', 'discovery_sources').maybeSingle()
+    const { data: cost } = await admin.from('app_config').select('value').eq('key', 'discovery_cost').maybeSingle()
+    const toggles = { ...defaultSourceToggles(), ...((cfg?.value as any) || {}) }
+    return res.status(200).json({ ok: true, sources: DISCOVERY_SOURCES, toggles, excluded: EXCLUDED_SOURCE_TYPES, cost: cost?.value || null })
+  }
+  // 取得元のON/OFF切替
+  if (body?.discoveryToggle?.type) {
+    const { data: cfg } = await admin.from('app_config').select('value').eq('key', 'discovery_sources').maybeSingle()
+    const toggles = { ...defaultSourceToggles(), ...((cfg?.value as any) || {}) }
+    toggles[body.discoveryToggle.type] = !!body.discoveryToggle.enabled
+    await admin.from('app_config').upsert({ key: 'discovery_sources', value: toggles, updated_date: new Date().toISOString() }, { onConflict: 'key' })
+    return res.status(200).json({ ok: true, toggles })
+  }
+  // SERPディスカバリ実行（指定source_typeを1つ）
+  if (body?.runDiscovery?.sourceType) {
+    try {
+      const out = await runSerpDiscovery(admin, body.runDiscovery.sourceType, process.env.GOOGLE_MAPS_API_KEY || null, {
+        ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
+      }, userData.user.id)
+      return res.status(200).json(out)
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+  // 営業優先度/Web弱点/架電前メモの一括再計算
+  if (body?.recomputeSales) {
+    try { const out = await recomputeSalesBatch(admin, { limit: body.recomputeSales.limit || 800, onlyHot: !!body.recomputeSales.onlyHot }); return res.status(200).json({ ok: true, ...out }) }
+    catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
 
   // リード品質の一括再計算（quality_score/grade/業種/重複キー/地域整合）＋クロスソース重複グルーピング
