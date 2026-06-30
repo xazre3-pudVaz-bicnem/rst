@@ -61,6 +61,10 @@ function callPriority(c: any): number {
   if (seen) { const d = (Date.now() - Date.parse(seen)) / 86400000; if (d <= 3) s += 8; else if (d <= 7) s += 4 }
   // 新店根拠
   if (c.newness_reason || c.regional_media_newness_reason || c.matched_keywords?.length) s += 4
+  // 品質スコア（地域整合・店名確定・ネガティブ検出を反映）を加味
+  if (typeof c.quality_score === 'number') { s += Math.round((c.quality_score - 50) * 0.2) } // 品質50を基準に±10
+  if (c.phone_pref_match === 'mismatch') s -= 8  // 電話の市外局番が住所と不一致＝誤データ/本社番号疑い
+  if (Array.isArray(c.quality_flags) && c.quality_flags.some((f: string) => /閉店|移転|廃業/.test(f))) s -= 40  // 閉店/移転疑いは大幅減点
   return Math.max(0, Math.min(100, Math.round(s)))
 }
 
@@ -872,6 +876,12 @@ export default function Leads() {
       if (json?.ok) { toast.success(`品質再計算: ${json.quality?.updated ?? 0}件更新 / 重複${json.dup?.dupGroups ?? 0}グループ`); load() }
       else toast.error(json?.error || '再計算に失敗しました')
     } finally { setQualityRunning(false) }
+  }
+  async function autoExcludeBad() {
+    if (!window.confirm('閉店/移転/廃業の疑いがある候補（投入済・HOTを除く）を一括で除外します。実行しますか？')) return
+    setQualityRunning(true)
+    try { const json = await regionalApi({ autoExcludeBad: { limit: 3000 } }); if (json?.ok) { toast.success(`自動除外: ${json.scanned}件走査 / ${json.excluded}件を除外（閉店/移転疑い）`); load() } else toast.error(json?.error || '除外に失敗しました') }
+    finally { setQualityRunning(false) }
   }
 
   async function handleManualImport(c: LeadCandidate, force = false) {
@@ -2938,6 +2948,7 @@ export default function Leads() {
                 <Button size="sm" onClick={() => buildCallList(30)} className="bg-rose-600 hover:bg-rose-700">📞 今日の架電リストを作成（重複除去・高品質30件）</Button>
                 <Button size="sm" variant="outline" onClick={() => exportCsv(triageList, `leads_${moment().format('YYYYMMDD_HHmm')}.csv`)}>⬇ 絞り込み結果をCSV出力（{triageList.length}件）</Button>
                 <Button size="sm" variant="outline" onClick={runQualityRecompute} disabled={qualityRunning}>{qualityRunning ? '再計算中...' : '品質を再計算'}</Button>
+                <Button size="sm" variant="outline" onClick={autoExcludeBad} disabled={qualityRunning} className="border-red-400 text-red-600">閉店/移転を自動除外</Button>
                 <div className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground">
                   {(['S', 'A', 'B', 'C', 'D'] as const).map((g) => <span key={g} className={cn('rounded px-1.5 py-0.5 font-bold', gradeColor[g])}>{g} {gradeDist[g]}</span>)}
                 </div>

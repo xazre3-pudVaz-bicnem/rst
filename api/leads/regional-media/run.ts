@@ -227,6 +227,24 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true, activeCount: count || 0 })
   }
 
+  // 低品質の自動クリーンアップ: 閉店/移転/廃業フラグ付き候補を EXCLUDED へ（HOT/投入済は触らない）
+  if (body?.autoExcludeBad) {
+    try {
+      const lim = Math.min(5000, body.autoExcludeBad?.limit || 3000)
+      const { data: rows } = await admin.from('lead_candidates').select('id,quality_flags,lead_temperature,imported_to_cases,name').not('quality_flags', 'is', null).limit(lim)
+      let excluded = 0
+      for (const r of (rows || []) as any[]) {
+        const flags = Array.isArray(r.quality_flags) ? r.quality_flags : []
+        const closed = flags.some((f: string) => /閉店|移転|廃業/.test(f))
+        if (closed && r.lead_temperature !== 'EXCLUDED' && !r.imported_to_cases) {
+          await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', should_exclude_from_call_list: true, ai_comment: `閉店/移転/廃業の疑いのため自動除外。${flags.join(' / ')}` }).eq('id', r.id)
+          excluded++
+        }
+      }
+      return res.status(200).json({ ok: true, scanned: rows?.length || 0, excluded })
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+
   // リード品質の一括再計算（quality_score/grade/業種/重複キー/地域整合）＋クロスソース重複グルーピング
   if (body?.recomputeQuality) {
     try {
