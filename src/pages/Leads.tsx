@@ -1648,6 +1648,9 @@ export default function Leads() {
                   <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-600">有効サイトなし</span>
                 )}
                 <button onClick={checkRmStatus} className="text-[10px] text-primary hover:underline">再確認</button>
+                {rmDiag && (rmDiag.renderConfigured
+                  ? <span className="rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] text-purple-600 dark:text-purple-300">JSレンダリング: {rmDiag.renderProvider || 'ON'}</span>
+                  : <span className="rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] text-zinc-500" title="SCRAPINGBEE_API_KEY 未設定">JSレンダリング: 未設定</span>)}
               </div>
               <Button size="sm" onClick={() => runRegionalAll(false)} disabled={rmRunning || !settings.regionalEnabled}>
                 <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '全サイト巡回'}
@@ -2165,9 +2168,13 @@ export default function Leads() {
                       <tr><td colSpan={9} className="p-3 text-center text-muted-foreground">{rmSites.length === 0 ? '巡回サイトがありません。「初期ソースを登録」または「巡回サイトを追加」してください。' : '条件に一致するサイトがありません。'}</td></tr>
                     ) : rmSitesVisible.map((s) => (
                       <tr key={s.id} className="border-t align-top">
-                        <td className="p-1.5 font-medium">{s.name}</td>
+                        <td className="p-1.5 font-medium">{s.name}
+                          {s.rendering_mode && s.rendering_mode !== 'static' && <span className={cn('ml-1 rounded px-1 text-[8px]', s.rendering_mode === 'browser' ? 'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300' : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-700')}>{s.rendering_mode === 'browser' ? 'JS描画' : 'auto'}</span>}
+                          {s.last_rendering_result && <div className="text-[8px] text-purple-600 dark:text-purple-300">{s.last_rendering_result}</div>}
+                          {s.last_rendering_error && <div className="text-[8px] text-red-500">{s.last_rendering_error}</div>}
+                        </td>
                         <td className="max-w-[200px] p-1.5"><a href={s.list_url || s.base_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{s.list_url || s.base_url}</a></td>
-                        <td className="p-1.5">{s.media_family} / {s.source_type}<div className="text-muted-foreground">{s.category_label}</div></td>
+                        <td className="p-1.5">{s.media_family} / {s.source_type}<div className="text-muted-foreground">{s.parser_type || s.category_label}</div></td>
                         <td className="p-1.5 text-center">{s.reliability_score}</td>
                         <td className="p-1.5 text-center">{s.crawl_interval_hours}h</td>
                         <td className="p-1.5 text-center">{s.last_crawled_at ? moment(s.last_crawled_at).format('MM/DD HH:mm') : '—'}</td>

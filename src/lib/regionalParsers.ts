@@ -149,6 +149,37 @@ export interface BlockExtractResult {
   stats: { totalLinks: number; blockCount: number; keywordBlocks: number; detailLinks: number; bodyTextLen: number; newBadge: number; jsLikely: boolean }
 }
 
+// 都道府県名（HORBYの new_salon_area は都道府県のみのことが多い）
+const PREF_RE = /(北海道|青森|岩手|宮城|秋田|山形|福島|茨城|栃木|群馬|埼玉|千葉|東京|神奈川|新潟|富山|石川|福井|山梨|長野|岐阜|静岡|愛知|三重|滋賀|京都|大阪|兵庫|奈良|和歌山|鳥取|島根|岡山|広島|山口|徳島|香川|愛媛|高知|福岡|佐賀|長崎|熊本|大分|宮崎|鹿児島|沖縄)/
+
+/** HORBY（u-word.com/horby）の「NEW SALON / 新規加盟店舗」カードを抽出。
+ *  ScrapingBeeでJS描画後HTMLを渡す。一覧カードに詳細リンク(href)が無いため店名/エリア/カテゴリのみ取得（→電話なしでHOLD）。 */
+export function parseHorbyCards(html: string, base: URL): BlockExtractResult {
+  const candidates: BlockCandidate[] = []
+  // .new_salon_item ブロックを抽出（DOMのみ。CSSの .new_salon_item[...] は class=" で始まらないので除外される）
+  const items = Array.from(html.matchAll(/<div[^>]+class="new_salon_item"[^>]*>([\s\S]*?)(?=<div[^>]+class="new_salon_item"|<\/div>\s*<\/div>\s*<\/section>|$)/gi))
+  for (const m of items) {
+    const block = m[1]
+    let name = stripTags((block.match(/class="new_salon_name"[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || '')).trim()
+    if (!name) name = stripTags((block.match(/<a[^>]*title="([^"]+)"/i)?.[1] || '')).trim()
+    const area = stripTags((block.match(/class="new_salon_area"[^>]*>([\s\S]*?)<\/div>/i)?.[1] || '')).trim()
+    const tag = stripTags((block.match(/class="new_salon_tag_item"[^>]*>([\s\S]*?)<\/div>/i)?.[1] || '')).trim()
+    const menu = stripTags((block.match(/class="menu_name"[^>]*>([\s\S]*?)<\//i)?.[1] || '')).trim()
+    const detail = (block.match(/href=["']([^"']*(?:\/horby\/store\/|\/store\/)[^"']+)["']/i)?.[1] || '')  // 通常は無い（JSナビ）
+    if (!name) continue
+    const pref = (area.match(PREF_RE)?.[1] || '')
+    // 一覧カードに詳細リンク(href)が無いため、店名で一意な合成URL（#付き＝fetchしない・重複保存防止用キー）
+    const detailUrl = detail ? new URL(detail, base).href : `${base.origin}/horby#salon-${encodeURIComponent(name.slice(0, 40))}`
+    candidates.push({
+      shopName: name.slice(0, 60), address: pref ? `${pref}` : area, prefecture: pref ? (pref.length <= 3 && !/[都道府県]$/.test(pref) ? pref + (pref === '北海道' ? '' : pref === '東京' ? '都' : /大阪|京都/.test(pref) ? '府' : '県') : pref) : '',
+      city: '', phone: '', industry: tag || '', open: { text: '', date: '', confidence: 'none' } as any,
+      detailUrl, matchedKeywords: ['新規加盟店舗'], blockText: `${name} ${area} ${tag} ${menu}`.trim().slice(0, 200), isNew: true,
+      category: tag || '', reviewish: '',
+    })
+  }
+  return { candidates, stats: { totalLinks: 0, blockCount: items.length, keywordBlocks: candidates.length, detailLinks: candidates.filter((c) => c.detailUrl).length, bodyTextLen: stripTags(html).length, newBadge: candidates.length, jsLikely: false } }
+}
+
 /** カード/リスト/記事ブロック単位で新店候補を抽出（マーケットプレイス/汎用本文スキャン共通） */
 export function extractNewnessBlocks(html: string, base: URL): BlockExtractResult {
   const cleaned = cleanHtml(html)

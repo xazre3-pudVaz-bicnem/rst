@@ -51,6 +51,9 @@ ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS review_flag BOOLEAN DEFAULT fa
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS rendering_mode TEXT DEFAULT 'auto';
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS needs_improvement BOOLEAN DEFAULT false;
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS improvement_hint TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS rendering_provider TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS last_rendering_result TEXT;
+ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS last_rendering_error TEXT;
 UPDATE source_sites SET normalized_url_template = regexp_replace(regexp_replace(url_template, '\{ID\}', '', 'g'), '/+$', ''), source_key = regexp_replace(regexp_replace(url_template, '\{ID\}', '', 'g'), '/+$', '') || '|' || COALESCE(parser_type, 'generic_detail_page') WHERE source_type = 'sequential_id_probe' AND url_template IS NOT NULL AND (normalized_url_template IS NULL OR normalized_url_template = '');
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_id BIGINT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS probed_url TEXT;

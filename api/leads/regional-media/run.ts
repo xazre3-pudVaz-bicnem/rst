@@ -68,6 +68,8 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         ok: true, configured: (activeSites || 0) > 0, totalSites, activeSites,
         hasUrl, hasRole, projectRef, hasMapsKey: !!process.env.GOOGLE_MAPS_API_KEY,
+        renderConfigured: !!(process.env.SCRAPINGBEE_API_KEY || process.env.SCRAPERAPI_KEY || process.env.RENDER_API_URL),
+        renderProvider: process.env.SCRAPINGBEE_API_KEY ? 'scrapingbee' : process.env.SCRAPERAPI_KEY ? 'scraperapi' : process.env.RENDER_API_URL ? 'render_api_url' : null,
         error: err,
       })
     } catch (e: any) {

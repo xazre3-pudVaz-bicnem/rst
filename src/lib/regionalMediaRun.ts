@@ -10,7 +10,7 @@ import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
-import { detectParserType, extractNewnessBlocks, sanitizeShopName } from './regionalParsers.js'
+import { detectParserType, extractNewnessBlocks, parseHorbyCards, sanitizeShopName } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
@@ -77,30 +77,48 @@ async function fetchText(url: string, timeoutMs = LIST_TIMEOUT_MS): Promise<stri
   return r.ok ? r.html : null
 }
 
-// ===== JSレンダリングfallback（外部レンダリングAPI経由。Vercel上でPlaywrightは使えないため）=====
-// 環境変数のいずれかが設定されていれば有効:
-//   RENDER_API_URL   … {url} を含むテンプレURL（汎用。例: https://my-renderer/render?url={url}&wait=3000）
-//   SCRAPINGBEE_API_KEY … ScrapingBee（render_js=true）
+// ===== JSレンダリング取得（外部レンダリングAPI経由。Vercel上でPlaywrightは使えないため）=====
+// 環境変数:
+//   RENDER_PROVIDER … 'scrapingbee' | 'scraperapi' | 'render_api_url'（未指定なら設定済みのものを自動選択）
+//   SCRAPINGBEE_API_KEY … ScrapingBee（render_js=true・JS描画後HTML）
 //   SCRAPERAPI_KEY      … ScraperAPI（render=true）
+//   RENDER_API_URL      … {url} を含む汎用テンプレ（例: https://my-renderer/render?url={url}&wait=8000）
 export function renderConfigured(): boolean {
-  return !!(process.env.RENDER_API_URL || process.env.SCRAPINGBEE_API_KEY || process.env.SCRAPERAPI_KEY)
+  return !!(process.env.SCRAPINGBEE_API_KEY || process.env.SCRAPERAPI_KEY || process.env.RENDER_API_URL)
 }
-async function renderFetch(url: string, timeoutMs = 25000): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null; configured: boolean; provider: string }> {
-  if (!renderConfigured()) return { ok: false, status: 0, html: '', length: 0, error: 'browser fallback未設定（RENDER_API_URL / SCRAPINGBEE_API_KEY / SCRAPERAPI_KEY のいずれかを設定してください）', configured: false, provider: 'none' }
-  let target = ''; let provider = ''
-  if (process.env.RENDER_API_URL) { provider = 'render_api_url'; target = process.env.RENDER_API_URL.includes('{url}') ? process.env.RENDER_API_URL.replace('{url}', encodeURIComponent(url)) : `${process.env.RENDER_API_URL}${process.env.RENDER_API_URL.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}` }
-  else if (process.env.SCRAPINGBEE_API_KEY) { provider = 'scrapingbee'; target = `https://app.scrapingbee.com/api/v1/?api_key=${process.env.SCRAPINGBEE_API_KEY}&render_js=true&wait=3000&url=${encodeURIComponent(url)}` }
-  else { provider = 'scraperapi'; target = `https://api.scraperapi.com/?api_key=${process.env.SCRAPERAPI_KEY}&render=true&wait_for_selector=&url=${encodeURIComponent(url)}` }
+function pickRenderProvider(): string {
+  const p = String(process.env.RENDER_PROVIDER || '').toLowerCase()
+  if (p === 'scrapingbee' && process.env.SCRAPINGBEE_API_KEY) return 'scrapingbee'
+  if (p === 'scraperapi' && process.env.SCRAPERAPI_KEY) return 'scraperapi'
+  if (p === 'render_api_url' && process.env.RENDER_API_URL) return 'render_api_url'
+  // 自動選択（ScrapingBee優先）
+  if (process.env.SCRAPINGBEE_API_KEY) return 'scrapingbee'
+  if (process.env.SCRAPERAPI_KEY) return 'scraperapi'
+  if (process.env.RENDER_API_URL) return 'render_api_url'
+  return 'none'
+}
+/** renderPage(url): JS描画後HTMLを取得（共通関数）。未設定ならエラーで落とさず configured:false を返す。 */
+export async function renderPage(url: string, opts: { waitMs?: number; timeoutMs?: number } = {}): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null; configured: boolean; provider: string }> {
+  const provider = pickRenderProvider()
+  if (provider === 'none') return { ok: false, status: 0, html: '', length: 0, error: 'SCRAPINGBEE_API_KEY 未設定のためJSレンダリング取得不可（RENDER_PROVIDER=scrapingbee）', configured: false, provider: 'none' }
+  const waitMs = Math.max(0, Math.min(20000, opts.waitMs ?? 8000))
+  const timeoutMs = opts.timeoutMs ?? 30000
+  let target = ''
+  if (provider === 'scrapingbee') target = `https://app.scrapingbee.com/api/v1/?api_key=${process.env.SCRAPINGBEE_API_KEY}&render_js=true&wait=${waitMs}&url=${encodeURIComponent(url)}`
+  else if (provider === 'scraperapi') target = `https://api.scraperapi.com/?api_key=${process.env.SCRAPERAPI_KEY}&render=true&url=${encodeURIComponent(url)}`
+  else target = process.env.RENDER_API_URL!.includes('{url}') ? process.env.RENDER_API_URL!.replace('{url}', encodeURIComponent(url)) : `${process.env.RENDER_API_URL}${process.env.RENDER_API_URL!.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}`
   const ctrl = new AbortController(); let timedOut = false
   const to = setTimeout(() => { timedOut = true; ctrl.abort() }, timeoutMs)
   try {
     const res = await fetch(target, { headers: { Accept: 'text/html' }, signal: ctrl.signal })
     clearTimeout(to)
     const html = await res.text()
-    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `レンダリングAPI HTTP ${res.status}`, configured: true, provider }
+    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `レンダリングAPI HTTP ${res.status}（${String(html).slice(0, 80)}）`, configured: true, provider }
     return { ok: true, status: res.status, html, length: html.length, error: null, configured: true, provider }
   } catch (e: any) { clearTimeout(to); return { ok: false, status: 0, html: '', length: 0, error: timedOut ? 'レンダリングAPIタイムアウト' : String(e?.message || e).slice(0, 120), configured: true, provider } }
 }
+// 後方互換のエイリアス
+const renderFetch = renderPage
 
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
 async function robotsAllows(origin: string, path: string): Promise<boolean> {
@@ -487,22 +505,27 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       if (stype === 'marketplace_listing' || stype === 'generic_page_text_scan' || stype === 'horby_new_salon') {
         const isHorby = stype === 'horby_new_salon' || /u-word\.com|h-word\.com/i.test(crawlUrl)
         diag.parser_used = isHorby ? 'horby_new_salon' : stype === 'marketplace_listing' ? 'marketplace_card_parser' : 'generic_card_parser'
-        let ex = extractNewnessBlocks(idx.html, base)
+        const extract = (h: string) => isHorby ? parseHorbyCards(h, base) : extractNewnessBlocks(h, base)
+        let ex = extract(idx.html)
         let candidates = ex.candidates; let stats = ex.stats
         diag.staticCards = candidates.length
-        // JSレンダリングfallback（静的で候補0かつ rendering_mode が許可・JS疑い時、または browser指定時）
+        // JSレンダリング取得（browser=最初から / auto=静的で候補0かつJS疑い時）
         const renderingMode = String(site.rendering_mode || 'auto')
-        const wantRender = !overBudget() && (renderingMode === 'browser' || (renderingMode === 'auto' && candidates.length === 0 && stats.jsLikely))
+        const wantRender = !overBudget() && (renderingMode === 'browser' || (renderingMode === 'auto' && candidates.length === 0 && (stats.jsLikely || isHorby)))
         diag.renderingMode = renderingMode; diag.renderConfigured = renderConfigured(); diag.rendered = false; diag.renderedCards = 0
+        let renderResultNote = ''
         if (wantRender) {
-          const rr = await renderFetch(crawlUrl)
+          const rr = await renderFetch(crawlUrl, { waitMs: isHorby ? 9000 : 6000 })
           diag.rendered = true; diag.renderProvider = rr.provider
           if (rr.ok && rr.html) {
-            const re = extractNewnessBlocks(rr.html, base)
-            if (re.candidates.length > candidates.length) { candidates = re.candidates; stats = re.stats }
+            const re = extract(rr.html)
+            if (re.candidates.length >= candidates.length) { candidates = re.candidates; stats = re.stats }
             diag.renderedCards = re.candidates.length
-          } else { diag.renderError = rr.error; if (!rr.configured) diag.renderNotConfigured = true }
-        }
+            renderResultNote = `rendered(${rr.provider}) HTML${rr.length}字 カード${re.candidates.length}件`
+          } else { diag.renderError = rr.error; if (!rr.configured) diag.renderNotConfigured = true; renderResultNote = `rendering失敗: ${rr.error}` }
+        } else if (isHorby && renderingMode === 'static') { renderResultNote = 'rendering_mode=static のためJS取得せず（HORBYは要レンダリング）' }
+        // レンダリング結果をソースに記録
+        await admin.from('source_sites').update({ rendering_provider: diag.renderProvider || pickRenderProvider(), last_rendering_result: renderResultNote.slice(0, 200) || null, last_rendering_error: diag.renderError || null }).eq('id', site.id).then(() => {}, () => {})
         diag.totalLinks = stats.totalLinks; diag.bodyTextLen = stats.bodyTextLen; diag.blockCount = stats.blockCount
         diag.keywordBlocks = stats.keywordBlocks; diag.detailLinks = stats.detailLinks; diag.newBadge = stats.newBadge
         diag.cardCandidates = candidates.length; diag.jsLikely = stats.jsLikely
@@ -536,7 +559,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           // 詳細ページ取得（カードに詳細リンクがあれば）
           let info: any = { shop_name: cand.shopName, phone: cand.phone, address: cand.address, industry: cand.industry, official_url: '', instagram_url: '', map_url: '', open: cand.open, hours: '', holiday: '', excerpt: cand.blockText }
           let detailStatus = 'no_detail_link'
-          if (cand.detailUrl) {
+          if (cand.detailUrl && !cand.detailUrl.includes('#')) {  // #付き合成URL（HORBY等・詳細リンク無し）はfetchしない
             const dRes = await fetchHtml(cand.detailUrl, DETAIL_TIMEOUT_MS); counts.detailFetches++
             await sleep(delay)
             if (dRes.ok) { diag.detailFetched++; detailStatus = 'fetched'; const di = extractDirectoryShopInfo(dRes.html, cand.shopName); info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url, instagram_url: di.instagram_url, map_url: di.map_url, open: (di.open.confidence !== 'none' ? di.open : cand.open) } }
