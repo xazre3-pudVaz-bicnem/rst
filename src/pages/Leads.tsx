@@ -72,7 +72,10 @@ export default function Leads() {
   const [igConfigured, setIgConfigured] = useState<boolean | null>(null)
   const [igRunning, setIgRunning] = useState(false)
   const [igResult, setIgResult] = useState<any>(null)
-  const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw'>('places')
+  const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw' | 'probe'>('places')
+  const [probeResult, setProbeResult] = useState<any>(null)
+  const [probeSites, setProbeSites] = useState<any[]>([])
+  const [probing, setProbing] = useState(false)
   const [iwConfigured, setIwConfigured] = useState<boolean | null>(null)
   const [iwDiag, setIwDiag] = useState<any>(null)
   const [iwRunning, setIwRunning] = useState(false)
@@ -210,6 +213,21 @@ export default function Leads() {
     const json = await regionalApi({ registerCandidate: { id } })
     if (json?.ok) { toast.success('source_sitesへ登録しました'); loadCandidates() } else toast.error(json?.error || '登録に失敗しました')
   }
+  // 連番URL探索
+  async function loadProbeSites() { const json = await regionalApi({ listProbeSites: true }); if (json?.ok) setProbeSites(json.sites || []) }
+  async function runProbeAll() {
+    setProbing(true)
+    try { const json = await regionalApi({ probe: {}, settings: { aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay } })
+      if (json?.ok) { setProbeResult(json); toast.success(`連番探索: valid${json.valid} / HOT-A${json.hotA}/HOT-B${json.hotB} / 投入${json.imported}`); loadProbeSites(); load() } else toast.error(json?.error || '連番探索に失敗しました')
+    } finally { setProbing(false) }
+  }
+  async function probeSiteAction(id: string, o: { forwardCount?: number; backfillCount?: number; startId?: number; force?: boolean }) {
+    setProbing(true)
+    try { const json = await regionalApi({ probeSite: { id, ...o }, settings: { aiInjectMode: settings.aiInjectMode } })
+      if (json?.ok) { setProbeResult({ ...json, single: true }); toast.success(`探索: ${json.fromId}〜${json.toId} valid${json.valid}/invalid${json.invalid} 次回${json.nextId}`); loadProbeSites(); load() } else toast.error(json?.error || '探索に失敗しました')
+    } finally { setProbing(false) }
+  }
+  async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
 
   // 地域メディア候補の再補完（AI再判定とは別）
   async function reenrichRegional(c: LeadCandidate) {
@@ -659,11 +677,12 @@ export default function Leads() {
     }
   }, [candidates])
 
-  const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional' | 'iw') => {
+  const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional' | 'iw' | 'probe') => {
     if (tab === 'instagram') return c.lead_source === 'instagram_hashtag'
     if (tab === 'regional') return c.lead_source === 'regional_media'
     if (tab === 'iw') return c.lead_source === 'instagram_web'
-    return !['instagram_hashtag', 'regional_media', 'instagram_web'].includes(c.lead_source || '')
+    if (tab === 'probe') return c.lead_source === 'sequential_id_probe'
+    return !['instagram_hashtag', 'regional_media', 'instagram_web', 'sequential_id_probe'].includes(c.lead_source || '')
   }, [])
   const sourceCandidates = useMemo(
     () => candidates.filter((c) => inSource(c, sourceTab)),
@@ -1685,16 +1704,75 @@ export default function Leads() {
 
           {/* ソース切替（Google Places / Instagram / 地域メディア） */}
           <div className="flex gap-1">
-            {([['places', 'Google Places'], ['instagram', 'Instagram'], ['regional', '地域メディア'], ['iw', 'Instagram Web検索']] as const).map(([k, lbl]) => (
+            {([['places', 'Google Places'], ['instagram', 'Instagram'], ['regional', '地域メディア'], ['iw', 'Instagram Web検索'], ['probe', '連番URL探索']] as const).map(([k, lbl]) => (
               <button
                 key={k}
-                onClick={() => setSourceTab(k)}
+                onClick={() => { setSourceTab(k); if (k === 'probe') loadProbeSites() }}
                 className={cn('rounded-md border px-3 py-1 text-xs font-medium', sourceTab === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground hover:bg-accent')}
               >
                 {lbl}（{candidates.filter((c) => inSource(c, k)).length}）
               </button>
             ))}
           </div>
+
+          {/* 連番URL探索タブ専用パネル */}
+          {sourceTab === 'probe' && (
+            <div className="mt-2 space-y-2 rounded-lg border bg-card p-3 text-xs">
+              <div className="rounded border border-amber-200 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                ※ 連番URL探索は、各サイト上で新しく存在確認できた掲載ページ（<b>新規掲載候補</b>）を検出する機能です。<b>実際の開業日を保証するものではありません</b>。営業投入前に電話番号・住所・業種・新規性を確認してください。
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={runProbeAll} disabled={probing}>{probing ? '探索中...' : '全ソースを探索（前回の続きから）'}</Button>
+                <button onClick={loadProbeSites} className="text-[10px] text-primary hover:underline">再読込</button>
+              </div>
+              {probeResult && (
+                <div className="flex flex-wrap gap-1.5 text-[10px]">
+                  {probeResult.single
+                    ? <><span className="rounded bg-muted px-1.5 py-0.5">探索 {probeResult.fromId}〜{probeResult.toId}</span><span className="rounded bg-muted px-1.5 py-0.5">次回開始 {probeResult.nextId}</span>{probeResult.backfillFrom && <span className="rounded bg-muted px-1.5 py-0.5">戻り確認 {probeResult.backfillFrom}〜{probeResult.backfillTo}</span>}</>
+                    : <span className="rounded bg-muted px-1.5 py-0.5">有効ソース {probeResult.sources ?? 0}</span>}
+                  <span className="rounded bg-muted px-1.5 py-0.5">探索URL {probeResult.probed ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">有効 {probeResult.valid ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">無効 {probeResult.invalid ?? 0}</span>
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話 {probeResult.phoneYes ?? '-'}</span>
+                  <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {probeResult.hotA ?? 0}</span>
+                  <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {probeResult.hotB ?? 0}</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {probeResult.hold ?? 0}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {probeResult.excluded ?? 0}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {probeResult.imported ?? 0}</span>
+                  {Number(probeResult.mojibake ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">文字化け {probeResult.mojibake}</span>}
+                  {Number(probeResult.fetchFail ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">fetch失敗 {probeResult.fetchFail}</span>}
+                  {Number(probeResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {probeResult.dupSkip}</span>}
+                </div>
+              )}
+              {/* ソース別 */}
+              <div className="space-y-1">
+                {probeSites.length === 0 && <div className="text-[10px] text-muted-foreground">連番探索ソースがありません。地域メディアの巡回サイト管理で source_type=sequential_id_probe を追加するか、じゃらん（既定OFF）を有効化してください。</div>}
+                {probeSites.map((st: any) => (
+                  <div key={st.id} className="rounded border bg-muted/30 p-2 text-[10px]">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{st.name}</span>
+                      <span className={cn('rounded px-1 text-[9px]', st.is_active ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700')}>{st.is_active ? '有効' : '無効'}</span>
+                      <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{st.parser_type || 'generic_detail_page'}</span>
+                      <span className="truncate text-muted-foreground" title={st.url_template}>{st.url_template}</span>
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      次回開始ID <b>{st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ 最後に見つかったID {st.last_found_id ?? '-'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
+                    </div>
+                    {st.probe_result_summary && <div className="text-muted-foreground">最終結果: {st.probe_result_summary}</div>}
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 20, backfillCount: 5 })} disabled={probing} className="rounded border border-primary px-1.5 py-0.5 text-[9px] text-primary hover:bg-primary/10">次の20件</button>
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 100, backfillCount: 5 })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">次の100件</button>
+                      <button onClick={() => probeSiteAction(st.id, { forwardCount: 0, backfillCount: 20, force: true, startId: (st.last_checked_id ?? st.current_probe_id) })} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">前回範囲を再確認</button>
+                      <button onClick={() => { const v = prompt('開始IDを入力', String(st.current_probe_id ?? st.start_probe_id ?? '')); if (v) probeSiteAction(st.id, { startId: Number(v), forwardCount: 20, backfillCount: 0 }) }} disabled={probing} className="rounded border px-1.5 py-0.5 text-[9px]">指定IDから探索</button>
+                      <button onClick={() => { const v = prompt('current_probe_id を編集', String(st.current_probe_id ?? '')); if (v) updateProbeSite(st.id, { current_probe_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">current_id編集</button>
+                      <button onClick={() => { const v = prompt('last_checked_id を編集', String(st.last_checked_id ?? '')); if (v) updateProbeSite(st.id, { last_checked_id: Number(v) }) }} className="rounded border px-1.5 py-0.5 text-[9px]">last_checked編集</button>
+                      <button onClick={() => updateProbeSite(st.id, { is_active: !st.is_active })} className="rounded border px-1.5 py-0.5 text-[9px]">{st.is_active ? '無効化' : '有効化'}</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 巡回サイト管理（地域メディアタブ） */}
           {sourceTab === 'regional' && (

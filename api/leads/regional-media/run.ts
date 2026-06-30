@@ -8,6 +8,7 @@ import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
+import { runAllSequentialProbes, runSequentialProbe } from '../../../src/lib/sequentialProbe.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -89,6 +90,43 @@ export default async function handler(req: any, res: any) {
   if (!userData?.user) return res.status(401).json({ error: 'ログインが必要です（セッション切れの可能性）' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})
+
+  // 連番URL探索（全 sequential_id_probe サイト）
+  if (body?.probe) {
+    try {
+      const result = await runAllSequentialProbes(admin, process.env.GOOGLE_MAPS_API_KEY || null, { ...(body.settings || {}), forwardCount: body.probe.forwardCount, backfillCount: body.probe.backfillCount, force: body.probe.force }, userData.user.id)
+      return res.status(200).json(result)
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+  // 連番探索: 1サイトのみ（テスト/次のN件/指定IDから/前回範囲再確認）
+  if (body?.probeSite?.id) {
+    const { data: site } = await admin.from('source_sites').select('*').eq('id', body.probeSite.id).maybeSingle()
+    if (!site) return res.status(404).json({ ok: false, error: 'サイトが見つかりません' })
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    const { count: probedToday } = await admin.from('sequential_probe_results').select('id', { count: 'exact', head: true }).gte('checked_at', startToday.toISOString())
+    const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
+    const pr = await runSequentialProbe(admin, process.env.GOOGLE_MAPS_API_KEY || null, site, {
+      userId: userData.user.id, runId: null, nowIso: new Date().toISOString(), mode: (body.settings?.aiInjectMode) || 'standard',
+      forwardCount: Number(body.probeSite.forwardCount) || 20, backfillCount: Number(body.probeSite.backfillCount ?? 5), startIdOverride: body.probeSite.startId != null ? Number(body.probeSite.startId) : undefined, force: !!body.probeSite.force,
+      dayRemaining: Math.max(0, 100 - (probedToday || 0)), autoImportPerRun: 50, autoImportPerDay: 200, importedToday: importedToday || 0, delayMs: 800,
+    })
+    return res.status(200).json({ ok: true, ...pr })
+  }
+  // 連番探索サイトの位置編集（current_probe_id / last_checked_id）
+  if (body?.updateProbeSite?.id) {
+    const u: any = {}
+    if (body.updateProbeSite.current_probe_id != null) u.current_probe_id = Number(body.updateProbeSite.current_probe_id)
+    if (body.updateProbeSite.last_checked_id != null) u.last_checked_id = Number(body.updateProbeSite.last_checked_id)
+    if (body.updateProbeSite.probe_enabled != null) u.probe_enabled = !!body.updateProbeSite.probe_enabled
+    if (body.updateProbeSite.is_active != null) u.is_active = !!body.updateProbeSite.is_active
+    if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', body.updateProbeSite.id) }
+    return res.status(200).json({ ok: true })
+  }
+  // 連番探索サイト一覧
+  if (body?.listProbeSites) {
+    const { data } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').order('name')
+    return res.status(200).json({ ok: true, sites: data || [] })
+  }
 
   // 巡回サイト自動発見（検索→診断→候補保存→高スコア自動登録）
   if (body?.discover) {
