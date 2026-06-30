@@ -110,6 +110,7 @@ export default function Leads() {
   const [siteTests, setSiteTests] = useState<Record<string, any>>({})
   const [allTest, setAllTest] = useState<any>(null)
   const [shown, setShown] = useState(50)  // 一覧の表示件数
+  const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr'>('all')  // HOT絞り込み
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -299,7 +300,7 @@ export default function Leads() {
   async function recorrectNames() {
     if (!window.confirm('既存の地域メディア/Instagram候補の店名を再判定します。\nサイト名/カテゴリ/記事タイトルのままの候補は「店名未確定」にしてHOLDへ下げます。実行しますか？')) return
     setRecorrecting(true)
-    try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / HOLD降格${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
+    try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / 店名未確定HOT-B昇格${json.promotedHotB ?? 0} / HOLD${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
     finally { setRecorrecting(false) }
   }
   async function recorrectProbe() {
@@ -820,7 +821,17 @@ export default function Leads() {
     () => (filter === 'ALL' ? sourceCandidates : sourceCandidates.filter((c) => c.lead_temperature === filter)),
     [sourceCandidates, filter],
   )
-  const visible = useMemo(() => (shown >= filtered.length ? filtered : filtered.slice(0, shown)), [filtered, shown])
+  const subFiltered = useMemo(() => {
+    if (subFilter === 'all') return filtered
+    return filtered.filter((c: any) => {
+      if (subFilter === 'unconfirmed_hot') return c.name_unconfirmed_hot === true
+      if (subFilter === 'named_hot') return c.lead_temperature === 'HOT' && !c.name_unconfirmed_hot
+      if (subFilter === 'has_phone') return !!c.phone_number
+      if (subFilter === 'has_addr') return !!c.address
+      return true
+    })
+  }, [filtered, subFilter])
+  const visible = useMemo(() => (shown >= subFiltered.length ? subFiltered : subFiltered.slice(0, shown)), [subFiltered, shown])
   const rmSitesFiltered = useMemo(() => {
     const q = siteFilter.q.trim().toLowerCase()
     return rmSites.filter((s) => {
@@ -2281,15 +2292,21 @@ export default function Leads() {
             ))}
           </div>
 
+          {/* HOT絞り込み（営業担当が店名未確定HOTだけ確認できる） */}
+          <div className="flex flex-wrap items-center gap-1 text-2xs">
+            {([['all', 'すべて'], ['named_hot', '店名ありHOT'], ['unconfirmed_hot', '店名未確定HOT(要確認)'], ['has_phone', '電話あり'], ['has_addr', '住所あり']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => setSubFilter(k)} className={cn('rounded-full border px-2 py-0.5', subFilter === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-muted-foreground hover:bg-accent')}>{label}{k === 'unconfirmed_hot' && ` (${sourceCandidates.filter((c: any) => c.name_unconfirmed_hot).length})`}</button>
+            ))}
+          </div>
           {/* 表示件数 */}
           <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
-            <span>全{filtered.length}件中 {Math.min(shown, filtered.length)}件表示</span>
+            <span>全{subFiltered.length}件中 {Math.min(shown, subFiltered.length)}件表示</span>
             <span className="ml-1">表示件数:</span>
             {[20, 50, 100, 200].map((n) => (
               <button key={n} onClick={() => setShown(n)} className={cn('rounded border px-2 py-0.5', shown === n ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{n}</button>
             ))}
-            <button onClick={() => setShown(filtered.length || 1)} className={cn('rounded border px-2 py-0.5', shown >= filtered.length ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>すべて</button>
-            {shown < filtered.length && <button onClick={() => setShown((s) => s + 50)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+50)</button>}
+            <button onClick={() => setShown(subFiltered.length || 1)} className={cn('rounded border px-2 py-0.5', shown >= subFiltered.length ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>すべて</button>
+            {shown < subFiltered.length && <button onClick={() => setShown((s) => s + 50)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+50)</button>}
             <button onClick={recorrectNames} disabled={recorrecting} className="ml-auto rounded border border-amber-500 px-2 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10">{recorrecting ? '再補正中...' : '既存の店名を再補正（サイト名/カテゴリをHOLDへ）'}</button>
             <button onClick={recorrectProbe} disabled={recorrecting} className="rounded border border-indigo-500 px-2 py-0.5 text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-500/10">{recorrecting ? '再取得中...' : '連番候補を再取得（食べログ正式店名へ）'}</button>
           </div>
@@ -2752,7 +2769,13 @@ export default function Leads() {
                   <span className={cn('rounded px-2 py-0.5 font-bold', LEAD_TEMP_COLORS[drawerCand.lead_temperature])}>{drawerCand.lead_temperature === 'HOT' && drawerCand.hot_tier ? `HOT-${drawerCand.hot_tier}` : drawerCand.lead_temperature}</span>
                   <button onClick={() => setDrawerCand(null)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
                 </div>
-                <div className="text-base font-bold">{drawerCand.name}</div>
+                <div className="text-base font-bold">{drawerCand.name}{(drawerCand as any).name_unconfirmed_hot && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要店名確認</span>}</div>
+                {(drawerCand as any).name_unconfirmed_hot && (
+                  <div className="mt-1 rounded border border-amber-300 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                    店名未確定ですが、電話番号・住所・新店根拠があるため営業可能候補(HOT-B)です。<b>営業前に店名をご確認ください。</b>
+                  </div>
+                )}
+                {(drawerCand as any).source_article_title && <div className="mt-1 text-[10px] text-muted-foreground">記事タイトル: {(drawerCand as any).source_article_title}</div>}
                 <div className="mb-2 text-muted-foreground">{drawerCand.industry || '業種不明'}{drawerCand.extracted_area ? ` ・ ${drawerCand.extracted_area}` : ''}</div>
                 <dl className="space-y-1">
                   {[['電話番号', drawerCand.phone_number], ['電話番号取得元', (drawerCand as any).phone_source === 'login_required' ? 'ログイン制限のため取得不可' : (drawerCand as any).phone_source === 'detail_page' ? '詳細ページ' : (drawerCand as any).phone_source === 'enrich' ? '検索補完(Places/公式)' : (drawerCand as any).phone_source], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['詳細取得モード', (drawerCand as any).detail_rendering_mode], ['parser_used', (drawerCand as any).parser_used], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (

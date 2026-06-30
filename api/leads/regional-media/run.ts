@@ -9,7 +9,7 @@ import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
-import { sanitizeShopName } from '../../../src/lib/regionalParsers.js'
+import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
 function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; hasOpening?: boolean; placeMatched?: boolean; confidence?: number }) {
@@ -232,23 +232,34 @@ export default async function handler(req: any, res: any) {
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
 
-  // 既存候補の店名を再補正（サイト名/カテゴリ/記事タイトルのままの候補をHOLDへ）
+  // 既存候補の店名を再補正（新方針: 店名未確定でも電話+住所ありなら HOT-B、無ければHOLD）
   if (body?.recorrectNames) {
     const limit = Math.min(2000, Number(body.recorrectNames.limit) || 1000)
-    const { data: rows } = await admin.from('lead_candidates').select('id,name,lead_temperature,is_new_gbp,ai_comment').in('lead_source', ['regional_media', 'instagram_web']).limit(limit)
-    let scanned = 0, fixed = 0, held = 0
+    const { data: rows } = await admin.from('lead_candidates').select('id,name,lead_temperature,is_new_gbp,ai_comment,phone_number,address,is_chain,duplicate_of_case_id').in('lead_source', ['regional_media', 'instagram_web']).limit(limit)
+    let scanned = 0, fixed = 0, held = 0, promotedHotB = 0
     for (const r of (rows || [])) {
       scanned++
       const sn = sanitizeShopName(r.name || '', { placesMatched: !!r.is_new_gbp })
       if (sn.valid) { if (sn.name !== r.name) { await admin.from('lead_candidates').update({ name: sn.name }).eq('id', r.id); fixed++ }; continue }
-      // 店名未確定: HOLDへ降格（HOTなら下げる）
-      const u: any = { name: '店名未確定', recommended_status: 'HOLD' }
-      if (r.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null }
-      u.ai_comment = `店名再補正: ${sn.reason}（自動投入不可・要手動確認）${r.ai_comment ? ' / ' + r.ai_comment : ''}`.slice(0, 500)
+      // 店名未確定
+      const phoneOk = !!r.phone_number && isValidJpPhone(r.phone_number) && isJapanPhone(r.phone_number)
+      const hasAddr = !!r.address
+      const u: any = { name: '店名未確定' }
+      if (phoneOk && hasAddr && !r.is_chain && !r.duplicate_of_case_id) {
+        // 新方針: 電話+住所あり → HOT-B（営業前に店名確認）
+        u.lead_temperature = 'HOT'; u.hot_tier = 'B'; u.recommended_status = 'HOT_B'; u.name_unconfirmed_hot = true
+        u.ai_comment = `店名再補正: 店名未確定だが電話・住所ありのため営業可能候補(HOT-B)。営業前に店名確認推奨。${r.ai_comment ? ' / ' + r.ai_comment : ''}`.slice(0, 500)
+        promotedHotB++
+      } else {
+        // 電話/住所が無い → HOLD
+        u.recommended_status = 'HOLD'; u.name_unconfirmed_hot = false
+        if (r.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null }
+        u.ai_comment = `店名再補正: ${sn.reason}（${!phoneOk ? '電話番号なし/不正' : '住所なし'}のためHOLD）${r.ai_comment ? ' / ' + r.ai_comment : ''}`.slice(0, 500)
+        held++
+      }
       await admin.from('lead_candidates').update(u).eq('id', r.id)
-      held++
     }
-    return res.status(200).json({ ok: true, scanned, fixed, held })
+    return res.status(200).json({ ok: true, scanned, fixed, held, promotedHotB })
   }
 
   // 巡回サイト自動発見（検索→診断→候補保存→高スコア自動登録）

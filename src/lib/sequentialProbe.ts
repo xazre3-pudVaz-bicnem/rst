@@ -7,7 +7,7 @@
 //  - 連続not_found停止・1回20/1日100URL・30日再取得回避・robots配慮
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
-import { extractJpPhone, sanitizeShopName } from './regionalParsers.js'
+import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
@@ -367,10 +367,18 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       isChain: chP.definite, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
     }, opts.mode)
     let { temperature, hot_tier } = tierToTemperature(sc.tier)
-    // HOT条件: 正式店名＋電話＋住所が必須。欠ければHOLD（「連番探索候補」/店名未確定/住所なし/電話なしはHOT禁止）
+    // 新方針: HOTは電話＋住所が必須。店名未確定でも電話＋住所＋新規掲載根拠ありなら HOT-B（営業前に店名確認）
     let recommendedStatus: string = sc.tier
-    const hotBlock = !nameValid ? '店名未確定' : !address ? '住所未取得' : (!phone || !isJapanPhone(phone)) ? '電話番号未取得' : ''
-    if (hotBlock && temperature === 'HOT') { temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD' }
+    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+    let nameUnconfirmedHot = false
+    let hotBlock = ''
+    if (temperature === 'HOT') {
+      if (!phoneOk) { hotBlock = '電話番号未取得'; temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD' }
+      else if (!address) { hotBlock = '住所未取得'; temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD' }
+      else if (!nameValid) { hot_tier = 'B'; nameUnconfirmedHot = true; recommendedStatus = 'HOT_B' }  // 店名未確定でもHOT-B
+    } else if (temperature === 'HOLD' && !nameValid && phoneOk && !!address && !chP.definite && !excludedFacility && !isForeignAddress(address)) {
+      temperature = 'HOT'; hot_tier = 'B'; nameUnconfirmedHot = true; recommendedStatus = 'HOT_B'  // 店名未確定HOLD→電話+住所+新規掲載ありでHOT-B昇格
+    }
     if (temperature === 'HOT') { res.hot++; if (hot_tier === 'A') res.hotA++; else res.hotB++ }
     else if (temperature === 'EXCLUDED') res.excluded++; else res.hold++
 
@@ -384,7 +392,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     ]
     const hotReject = buildHotReject({ source: 'regional_media', temperature, confidence: sc.score, checks: rmChecks })
     const finalName = nameValid ? name : '店名未確定'
-    const holdNote = hotBlock ? `${parserUsed}で${hotBlock}のため自動投入不可（要手動確認）。` : ''
+    const holdNote = nameUnconfirmedHot ? '店名未確定だが電話・住所・新規掲載ありのため営業可能候補(HOT-B)。営業前に店名確認推奨。' : (hotBlock ? `${parserUsed}で${hotBlock}のため自動投入不可（要手動確認）。` : '')
     const payload: any = {
       name: finalName, address: address || null, industry: category || null, phone_number: phone || null, website_url: official || null,
       source: 'sequential_id_probe', lead_source: 'sequential_id_probe', source_type: 'AI自動投入(連番探索)',
@@ -395,6 +403,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       newness_type, regional_media_newness_reason: `連番探索(${parserUsed}) ID=${probedId}「${finalName}」${hasOpen ? '・OPEN表記あり' : '・新規掲載候補'} / ${holdNote}${sc.reason}`,
       first_discovered_at: opts.nowIso, regional_media_detected_at: opts.nowIso,
       lead_temperature: temperature, hot_tier, recommended_status: recommendedStatus, should_exclude_from_call_list: temperature === 'EXCLUDED',
+      name_unconfirmed_hot: nameUnconfirmedHot, phone_source: phone ? 'detail_page' : null,
       owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? sc.reason : null, ai_comment: `${holdNote}${sc.reason}`,
       extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null, extracted_industry: category || null, extracted_area: address || null, extracted_official_url: official || null,
       hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary, hot_check_result: hotReject.hot_check_result,
@@ -410,9 +419,10 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     savedCandidateId = candidateId
 
     if (temperature === 'HOT' && alreadyImported) res.alreadyImported++
-    // 自動投入は HOT（店名＋電話＋住所が揃った場合のみ。店名未確定/住所なし/電話なしは temperature が HOLD に降格済み）
-    if (temperature === 'HOT' && autoImportAllowed(sc.tier, opts.mode) && nameValid && address && phone && isJapanPhone(phone) && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
-      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n連番URL探索で新規存在確認`, created_by_id: opts.userId }).select('id').single()
+    // 自動投入は HOT（電話＋住所が揃えば店名未確定でも可。電話なし/住所なしは temperature が HOLD に降格済み）
+    const effectiveTier = nameUnconfirmedHot ? 'HOT_B' : sc.tier
+    if (temperature === 'HOT' && autoImportAllowed(effectiveTier as any, opts.mode) && address && phoneOk && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
+      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
     }
@@ -539,8 +549,9 @@ export async function recorrectProbeNames(admin: any, opts: { limit?: number; no
       u.name = newName; u.extracted_shop_name = newName; u.search_title = newName.slice(0, 300)
       if (spot.phone) { u.phone_number = spot.phone; u.extracted_phone = spot.phone }
       if (spot.address) { u.address = spot.address; u.extracted_address = spot.address; u.extracted_area = spot.address }
-      // 店名＋電話＋住所が揃わなければHOTにしない（HOLD据え置き）
-      if (!(newName && newPhone && newAddr)) { u.recommended_status = 'HOLD'; if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null } }
+      // 新方針: 電話＋住所が揃えばHOT-B以上（店名ありなら通常HOT）。電話/住所欠けはHOLD
+      const phoneOk = !!newPhone && isValidJpPhone(String(newPhone))
+      if (!(phoneOk && newAddr)) { u.recommended_status = 'HOLD'; if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null } }
       await admin.from('lead_candidates').update(u).eq('id', row.id)
       updated++
       if (row.imported_to_cases && row.imported_case_id) {
@@ -552,12 +563,22 @@ export async function recorrectProbeNames(admin: any, opts: { limit?: number; no
       }
       if (samples.length < 10) samples.push({ url, name: newName, phone: newPhone, address: newAddr, parser_used: u.parser_used })
     } else {
-      // 再取得でも店名が取れない → 店名未確定のままHOLD
-      u.name = '店名未確定'; u.recommended_status = 'HOLD'
-      if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null }
-      u.ai_comment = `${isTabelog ? 'tabelog_detail' : 'jalan_spot_detail'}再取得でも店名抽出失敗（${sn.reason}）`
+      // 再取得でも店名が取れない → 店名未確定。電話＋住所あれば HOT-B、無ければHOLD（新方針）
+      u.name = '店名未確定'
+      if (spot.phone) { u.phone_number = spot.phone; u.extracted_phone = spot.phone }
+      if (spot.address) { u.address = spot.address; u.extracted_address = spot.address }
+      const phoneOk = !!newPhone && isValidJpPhone(String(newPhone))
+      if (phoneOk && newAddr) {
+        u.lead_temperature = 'HOT'; u.hot_tier = 'B'; u.recommended_status = 'HOT_B'; u.name_unconfirmed_hot = true
+        u.ai_comment = `${isTabelog ? 'tabelog_detail' : 'jalan_spot_detail'}: 店名未確定だが電話・住所ありのため営業可能候補(HOT-B)。営業前に店名確認推奨。`
+        updated++
+      } else {
+        u.recommended_status = 'HOLD'; u.name_unconfirmed_hot = false
+        if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null }
+        u.ai_comment = `${isTabelog ? 'tabelog_detail' : 'jalan_spot_detail'}再取得でも店名抽出失敗（${sn.reason}・${!phoneOk ? '電話なし' : '住所なし'}でHOLD）`
+        held++
+      }
       await admin.from('lead_candidates').update(u).eq('id', row.id)
-      held++
     }
   }
   return { scanned, updated, held, caseUpdated, samples }
