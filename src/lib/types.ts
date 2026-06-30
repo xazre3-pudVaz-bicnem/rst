@@ -437,6 +437,7 @@ export interface LeadImportSettings {
   regionalEnrichDailyCap: number   // 1日最大補完候補数（既定100）
   // Instagram Web検索
   iwEnabled: boolean
+  iwSearchMode: 'serper_free' | 'bing_advanced' | 'serper_paid' // 検索モード
   iwAutoImport: boolean        // HOT自動投入（初期OFF）
   iwRequirePhone: boolean      // 電話番号必須（初期OFF）
   iwPlacesRequired: boolean    // Google Places照合必須（初期OFF）

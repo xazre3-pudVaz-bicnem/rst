@@ -339,6 +339,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   regionalEnrichPerQuery: 5,
   regionalEnrichDailyCap: 100,
   iwEnabled: true,
+  iwSearchMode: 'serper_free' as 'serper_free' | 'bing_advanced' | 'serper_paid',
   iwAutoImport: false,
   iwRequirePhone: false,
   iwPlacesRequired: false,

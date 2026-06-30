@@ -278,7 +278,7 @@ export default function Leads() {
         body: JSON.stringify({
           settings: {
             // 全国検索: 地域・業種はクエリに入れない（areaPreset/industriesは送らない）
-            iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
+            iwAutoImport: settings.iwAutoImport, iwSearchMode: settings.iwSearchMode, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
             iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
             iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
             iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
@@ -532,7 +532,7 @@ export default function Leads() {
         regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
       })
       await AppConfigApi.set('instagram_web_auto', {
-        iwEnabled: settings.iwEnabled, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
+        iwEnabled: settings.iwEnabled, iwSearchMode: settings.iwSearchMode, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
         iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
         iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
         iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
@@ -1107,6 +1107,15 @@ export default function Leads() {
                 </div>
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwEnabled} onChange={(e) => saveSettings({ ...settings, iwEnabled: e.target.checked })} />Instagram Web検索を有効化</label>
+                  <div className="space-y-1">
+                    <Label>検索モード</Label>
+                    <select value={settings.iwSearchMode} onChange={(e) => saveSettings({ ...settings, iwSearchMode: e.target.value as any })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                      <option value="serper_free">Serper無料向け：簡易検索のみ（推奨）</option>
+                      <option value="bing_advanced">Bing向け：site:検索あり</option>
+                      <option value="serper_paid">有料Serper向け：高度検索あり</option>
+                    </select>
+                    <div className="text-[10px] text-muted-foreground">Serper無料枠は site:instagram.com や "完全一致" が使えません。簡易検索（例: Instagram 開業しました / #新規オープン Instagram）に自動でフォールバックします。</div>
+                  </div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
@@ -1726,6 +1735,12 @@ export default function Leads() {
                 )
                 : iwResult.skipped ? <div className="rounded bg-amber-50 p-2 text-[11px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">{iwResult.reason}</div> : (
                   <>
+                    {Number(iwResult.fallback ?? 0) > 0 && (
+                      <div className="rounded bg-sky-50 p-1.5 text-[10px] text-sky-800 dark:bg-sky-500/10 dark:text-sky-300">
+                        Serper無料枠では高度な検索式が使えないため、簡易検索に切り替えました（{iwResult.fallback}件）。
+                        {Array.isArray(iwResult.debug?.searchFallbacks) && iwResult.debug.searchFallbacks[0] && <div className="opacity-80">例）元: {iwResult.debug.searchFallbacks[0].from} → 再実行: {iwResult.debug.searchFallbacks[0].to}</div>}
+                      </div>
+                    )}
                     {iwResult.error && <div className="rounded bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">一部の検索でエラー（{iwResult.errorCount ?? 0}件）: {String(iwResult.error)}</div>}
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-muted px-1.5 py-0.5">クエリ {iwResult.queries ?? 0}</span>

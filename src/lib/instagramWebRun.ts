@@ -28,29 +28,38 @@ export function getDefaultIwSettings() {
     iwEnrichMaxQueries: 3,      // 1候補あたり追加検索の最大クエリ数
     iwEnrichPerQuery: 5,        // 補完1クエリの取得件数
     iwEnrichDailyCap: 100,      // 1日最大補完候補数
+    // 検索モード: serper_free=簡易クエリのみ / bing_advanced=site:検索 / serper_paid=高度検索
+    iwSearchMode: 'serper_free',
   }
 }
 
-// 全国検索クエリ（地域名・業種名を含めない。新店系ハッシュタグ/語のみ／国は日本に限定＝末尾に「日本」）
-export const NATIONAL_QUERIES = [
-  'site:instagram.com "#新規オープン" 日本',
-  'site:instagram.com "#ニューオープン" 日本',
-  'site:instagram.com "#開業" 日本',
-  'site:instagram.com "#開店" 日本',
-  'site:instagram.com "#開院" 日本',
-  'site:instagram.com "#独立開業" 日本',
-  'site:instagram.com "#グランドオープン" 日本',
-  'site:instagram.com "#プレオープン" 日本',
-  'site:instagram.com "#移転オープン" 日本',
-  'site:instagram.com "新規オープンしました" 日本',
-  'site:instagram.com "オープンしました" 日本',
-  'site:instagram.com "開業しました" 日本',
-  'site:instagram.com "開店しました" 日本',
-  'site:instagram.com "開院しました" 日本',
-  'site:instagram.com "本日オープン" 日本',
-  'site:instagram.com "グランドオープンしました" 日本',
-  'site:instagram.com "プレオープンしました" 日本',
+// 簡易クエリ（Serper無料枠向け。site:・完全一致クォート・「日本」を使わない）。日本判定は取得後の補完で行う。
+export const NATIONAL_QUERIES_SIMPLE = [
+  'Instagram 新規オープンしました', 'Instagram ニューオープン', 'Instagram オープンしました', 'Instagram 開業しました',
+  'Instagram 開店しました', 'Instagram 開院しました', 'Instagram プレオープン', 'Instagram グランドオープン',
+  'Instagram 移転オープン', 'Instagram 本日オープン', 'Instagram 新店 オープン', 'Instagram 独立開業',
+  '#新規オープン Instagram', '#ニューオープン Instagram', '#開業 Instagram', '#開店 Instagram',
+  '#開院 Instagram', '#独立開業 Instagram', '#グランドオープン Instagram', '#プレオープン Instagram',
 ]
+// 高度クエリ（Bing / 有料Serper向け。site:instagram.com＋完全一致）。「日本」は入れない。
+export const NATIONAL_QUERIES_ADVANCED = [
+  'site:instagram.com "#新規オープン"', 'site:instagram.com "#ニューオープン"', 'site:instagram.com "#開業"',
+  'site:instagram.com "#開店"', 'site:instagram.com "#開院"', 'site:instagram.com "#独立開業"',
+  'site:instagram.com "#グランドオープン"', 'site:instagram.com "#プレオープン"', 'site:instagram.com "#移転オープン"',
+  'site:instagram.com "新規オープンしました"', 'site:instagram.com "オープンしました"', 'site:instagram.com "開業しました"',
+  'site:instagram.com "開店しました"', 'site:instagram.com "開院しました"', 'site:instagram.com "本日オープン"',
+  'site:instagram.com "グランドオープンしました"', 'site:instagram.com "プレオープンしました"',
+]
+// 後方互換（既存参照用）。既定は簡易クエリ。
+export const NATIONAL_QUERIES = NATIONAL_QUERIES_SIMPLE
+
+/** site:・完全一致クォート・「日本」を外した簡易クエリへ変換（Serper無料枠/フォールバック用） */
+export function simplifyQuery(q: string): string {
+  let s = q.replace(/site:[^\s"']+/gi, '').replace(/["'”“]/g, '').replace(/\s+日本\s*$/u, '').replace(/\s+/g, ' ').trim()
+  // ハッシュタグは「#xxx Instagram」、それ以外は「Instagram xxx」に整える
+  if (!/instagram/i.test(s)) s = /^#/.test(s) ? `${s} Instagram` : `Instagram ${s}`
+  return s
+}
 
 // ---- Web検索（Serper優先・無ければBing） ----
 export function searchProvider(): 'serper' | 'bing' | null {
@@ -58,40 +67,55 @@ export function searchProvider(): 'serper' | 'bing' | null {
   if (process.env.BING_SEARCH_API_KEY) return 'bing'
   return null
 }
+// Serper無料枠で禁止されやすいパターンのエラーか
+function isFreePatternError(msg: string): boolean {
+  return /not allowed for free|pattern not allowed|free account/i.test(String(msg || ''))
+}
 
 interface WebResult { title: string; url: string; snippet: string }
 
-export async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null }> {
+export async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string }> {
   const prov = searchProvider()
-  // 504回避: 検索APIが固まっても8秒で打ち切る
-  const ctrl = new AbortController()
-  let timedOut = false
-  const to = setTimeout(() => { timedOut = true; ctrl.abort() }, 8000)
-  try {
-    if (prov === 'serper') {
-      const res = await fetch('https://google.serper.dev/search', {
-        method: 'POST', signal: ctrl.signal,
-        headers: { 'X-API-KEY': process.env.SERPER_API_KEY as string, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: query, gl: 'jp', hl: 'ja', num: Math.min(20, num) }),
-      })
-      clearTimeout(to)
-      const j: any = await res.json().catch(() => ({}))
-      if (!res.ok) return { results: [], error: String(j?.message || `HTTP ${res.status}`).slice(0, 200) }
-      const organic = Array.isArray(j.organic) ? j.organic : []
-      return { results: organic.map((o: any) => ({ title: o.title || '', url: o.link || '', snippet: o.snippet || '' })), error: null }
+  // 1回の検索（504回避: 8秒で打ち切り）
+  const doFetch = async (q: string): Promise<{ results: WebResult[]; error: string | null }> => {
+    const ctrl = new AbortController()
+    let timedOut = false
+    const to = setTimeout(() => { timedOut = true; ctrl.abort() }, 8000)
+    try {
+      if (prov === 'serper') {
+        const res = await fetch('https://google.serper.dev/search', {
+          method: 'POST', signal: ctrl.signal,
+          headers: { 'X-API-KEY': process.env.SERPER_API_KEY as string, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q, gl: 'jp', hl: 'ja', num: Math.min(20, num) }),
+        })
+        clearTimeout(to)
+        const j: any = await res.json().catch(() => ({}))
+        if (!res.ok) return { results: [], error: String(j?.message || `HTTP ${res.status}`).slice(0, 200) }
+        const organic = Array.isArray(j.organic) ? j.organic : []
+        return { results: organic.map((o: any) => ({ title: o.title || '', url: o.link || '', snippet: o.snippet || '' })), error: null }
+      }
+      if (prov === 'bing') {
+        const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${Math.min(20, num)}&mkt=ja-JP`
+        const res = await fetch(u, { headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY as string }, signal: ctrl.signal })
+        clearTimeout(to)
+        const j: any = await res.json().catch(() => ({}))
+        if (!res.ok) return { results: [], error: String(j?.error?.message || `HTTP ${res.status}`).slice(0, 200) }
+        const vals = j?.webPages?.value || []
+        return { results: vals.map((o: any) => ({ title: o.name || '', url: o.url || '', snippet: o.snippet || '' })), error: null }
+      }
+      return { results: [], error: '検索APIキー未設定（SERPER_API_KEY / BING_SEARCH_API_KEY）' }
+    } catch (e: any) { clearTimeout(to); return { results: [], error: timedOut ? 'timeout(8000ms・検索API応答遅延)' : String(e?.message || e).slice(0, 200) } }
+  }
+  const r1 = await doFetch(query)
+  // Serper無料枠で site:/完全一致が拒否された場合は簡易クエリへ自動フォールバック
+  if (r1.error && isFreePatternError(r1.error)) {
+    const simple = simplifyQuery(query)
+    if (simple && simple !== query) {
+      const r2 = await doFetch(simple)
+      return { results: r2.results, error: r2.error, usedQuery: simple, fallbackFrom: query }
     }
-    if (prov === 'bing') {
-      const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${Math.min(20, num)}&mkt=ja-JP`
-      const res = await fetch(u, { headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY as string }, signal: ctrl.signal })
-      clearTimeout(to)
-      const j: any = await res.json().catch(() => ({}))
-      if (!res.ok) return { results: [], error: String(j?.error?.message || `HTTP ${res.status}`).slice(0, 200) }
-      const vals = j?.webPages?.value || []
-      return { results: vals.map((o: any) => ({ title: o.name || '', url: o.url || '', snippet: o.snippet || '' })), error: null }
-    }
-    return { results: [], error: '検索APIキー未設定（SERPER_API_KEY / BING_SEARCH_API_KEY）' }
-  } catch (e: any) { return { results: [], error: timedOut ? 'timeout(8000ms・検索API応答遅延)' : String(e?.message || e).slice(0, 200) } }
-  finally { clearTimeout(to) }
+  }
+  return { results: r1.results, error: r1.error, usedQuery: query }
 }
 
 // ---- ルールベース粗選別（Anthropic判定の前に必ず実行） ----
@@ -456,7 +480,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, dup: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -496,8 +520,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     const since7 = new Date(Date.now() - 7 * 86400000).toISOString()
     const { data: recentRows } = await admin.from('ig_web_query_log').select('query').gte('last_run_at', since7).limit(5000)
     const recent = new Set<string>((recentRows || []).map((r: any) => String(r.query)))
-    let picked = NATIONAL_QUERIES.filter((q) => !recent.has(q)).slice(0, runQueryLimit)
-    if (picked.length === 0 && runQueryLimit > 0) picked = NATIONAL_QUERIES.slice(0, runQueryLimit)
+    // 検索モード＆プロバイダでクエリ集合を選択（Serperは無料枠でsite:/完全一致が拒否されるため簡易クエリ）
+    const provider = searchProvider()
+    const searchMode = s.iwSearchMode || 'serper_free'
+    const useAdvanced = (searchMode === 'bing_advanced' && provider === 'bing') || searchMode === 'serper_paid'
+    const querySet = useAdvanced ? NATIONAL_QUERIES_ADVANCED : NATIONAL_QUERIES_SIMPLE
+    debug.searchMode = searchMode; debug.querySet = useAdvanced ? 'advanced(site:)' : 'simple'
+    let picked = querySet.filter((q) => !recent.has(q)).slice(0, runQueryLimit)
+    if (picked.length === 0 && runQueryLimit > 0) picked = querySet.slice(0, runQueryLimit)
     // 補完: 1日の補完候補上限と、7日以内に実行済みの補完クエリ
     const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
       .eq('source', 'instagram_web_search').not('last_enriched_at', 'is', null).gte('last_enriched_at', startToday.toISOString())
@@ -526,14 +556,23 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       counts.queries++
       const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
       const q: any = { query, results: 0, igUrls: 0, rulePassed: 0, judged: 0, heuristic: 0, hot: 0, hold: 0, excluded: 0, areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0, error: null }
-      const { results, error } = await webSearch(query, perQuery)
+      const { results, error, usedQuery, fallbackFrom } = await webSearch(query, perQuery)
+      // 簡易クエリへ自動フォールバックした場合は記録（失敗ではない）
+      if (fallbackFrom) {
+        counts.fallback = (counts.fallback || 0) + 1
+        q.fallback = { from: fallbackFrom, to: usedQuery }
+        if (!debug.searchFallbacks) debug.searchFallbacks = []
+        if (debug.searchFallbacks.length < 5) debug.searchFallbacks.push({ from: fallbackFrom, to: usedQuery })
+      }
       if (error) {
         counts.error++; q.error = error
         const prov = searchProvider() || '検索API'
-        errorMessage = `${prov}検索の取得に失敗: ${error}（クエリ「${query}」）`
+        errorMessage = isFreePatternError(error)
+          ? `Serper無料枠では高度な検索式が使えません。簡易検索でも失敗: ${error}（クエリ「${usedQuery || query}」）。設定の検索モードを確認してください。`
+          : `${prov}検索の取得に失敗: ${error}（クエリ「${usedQuery || query}」）`
         if (!debug.searchErrors) debug.searchErrors = []
-        if (debug.searchErrors.length < 5) debug.searchErrors.push({ failed_step: 'webSearch', provider: prov, query, detail: error })
-        console.error('[instagram-web] webSearch error', { failed_step: 'webSearch', provider: prov, query, detail: error, timestamp: new Date().toISOString() })
+        if (debug.searchErrors.length < 5) debug.searchErrors.push({ failed_step: 'webSearch', provider: prov, query: usedQuery || query, detail: error })
+        console.error('[instagram-web] webSearch error', { failed_step: 'webSearch', provider: prov, query: usedQuery || query, detail: error, timestamp: new Date().toISOString() })
       }
 
       for (const r of results) {
