@@ -187,6 +187,12 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_list_url TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS candidate_block_text_short TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS detail_fetch_status TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS matched_keywords TEXT[];
+-- 自動投入の試行ログ
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS auto_insert_attempted BOOLEAN;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS auto_insert_success BOOLEAN;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS auto_insert_skipped_reason TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS auto_insert_error TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS imported_case_id UUID;
 -- 連番URL探索（sequential_id_probe）
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS url_template TEXT;
 ALTER TABLE source_sites ADD COLUMN IF NOT EXISTS id_padding INTEGER;

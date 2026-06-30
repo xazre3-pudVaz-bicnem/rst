@@ -197,7 +197,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
   const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
   let importedThisRun = 0
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0, dupImportSkip: 0 }
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0, dupImportSkip: 0, alreadyImported: 0, manualPending: 0, importFailed: 0 }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const enrichQueriesToLog = new Set<string>()
@@ -222,6 +222,31 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     let importedCount = importedToday || 0
+
+    // HOT候補の自動投入を一元処理し、結果（新規投入/既存投入済/手動待ち/失敗）を集計＋候補に記録。
+    // 戻り値: 候補の投入状態（UI表示用）。casesに実際に作成された場合のみ「今回投入済」。
+    async function autoImportHot(o: { candidateId: string | null; tier: HotTier; temperature: string; phone: string; alreadyImported: boolean; caseData: any }): Promise<string> {
+      if (o.temperature !== 'HOT') return o.temperature // HOLD/EXCLUDED はそのまま
+      let attempted = false, success = false, skip = '', errMsg = '', caseId: string | null = null
+      if (o.alreadyImported) { skip = '既に投入済'; counts.alreadyImported++ }
+      else if (!autoImportAllowed(o.tier, mode)) { skip = `手動投入待ち（${o.tier}は現モード対象外）`; counts.manualPending++ }
+      else if (!o.phone || !isJapanPhone(o.phone)) { skip = '手動投入待ち（電話番号なし）'; counts.manualPending++ }
+      else if (importedCount >= autoImportPerDay) { skip = '手動投入待ち（1日上限）'; counts.manualPending++ }
+      else if (importedThisRun >= autoImportPerRun) { skip = '手動投入待ち（1回上限）'; counts.manualPending++ }
+      else {
+        attempted = true
+        const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
+        if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
+        else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
+      }
+      if (o.candidateId) {
+        await admin.from('lead_candidates').update({
+          auto_insert_attempted: attempted, auto_insert_success: success, auto_insert_skipped_reason: skip || null, auto_insert_error: errMsg || null,
+          imported_case_id: caseId, ...(success ? { imported_to_cases: true, imported_at: nowIso } : {}),
+        }).eq('id', o.candidateId).then(() => {}, () => {})
+      }
+      return success ? '今回投入済' : o.alreadyImported ? '既に投入済' : skip || (errMsg ? '投入失敗' : '手動投入待ち')
+    }
 
     // 外部補完: 1日上限と7日以内の補完クエリ
     const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
@@ -411,14 +436,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             candidateId = ins?.id || null
           }
 
-          if (autoImportAllowed(dc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
-            const memo = [`【AI自動投入 / 店舗ディレクトリ】`, `店舗: ${name}`, `URL: ${item.url}`, `理由: ${dc.reason}`].join('\n')
-            const { data: created } = await admin.from('cases').insert({
-              name, address: address || '', phone1: phone, industry: info.industry || null,
-              status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: item.url, memo, created_by_id: userId,
-            }).select('id').single()
-            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
-          }
+          const importStatus = await autoImportHot({ candidateId, tier: dc.tier, temperature, phone, alreadyImported, caseData: {
+            name, address: address || '', phone1: phone, industry: info.industry || null,
+            status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: item.url,
+            memo: [`【AI自動投入 / 店舗ディレクトリ / ${dc.tier}】`, `店舗: ${name}`, `URL: ${item.url}`, `理由: ${dc.reason}`].join('\n'), created_by_id: userId,
+          } })
+          void importStatus
 
           if (!debug.sample || debug.sample.siteType !== 'local_directory_new_listing') {
             debug.sample = { siteType: 'local_directory_new_listing', site: site.name, detailUrl: item.url, shop_name: name, phone, address, open_date: open.text, industry: info.industry, temperature, reason: dc.reason }
@@ -559,11 +582,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
             candidateId = ins?.id || null
           }
-          if (autoImportAllowed(dc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
-            const memo = [`【AI自動投入 / ${diag.parser_used}】`, `店舗: ${name}`, `URL: ${detailUrl}`, `理由: ${dc.reason}`].join('\n')
-            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: detailUrl, memo, created_by_id: userId }).select('id').single()
-            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
-          }
+          await autoImportHot({ candidateId, tier: dc.tier, temperature, phone, alreadyImported, caseData: {
+            name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: detailUrl,
+            memo: [`【AI自動投入 / ${diag.parser_used} / ${dc.tier}】`, `店舗: ${name}`, `URL: ${detailUrl}`, `理由: ${dc.reason}`].join('\n'), created_by_id: userId,
+          } })
           if (!debug.sample || debug.sample.siteType !== stype) debug.sample = { siteType: stype, parser_used: diag.parser_used, site: site.name, detailUrl, shop_name: name, phone, address, open_date: open.text, industry: info.industry, matched: cand.matchedKeywords, temperature, reason: dc.reason }
         }
         diag.newArticles = used
@@ -752,17 +774,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
 
         // HOT自動投入（電話必須）
-        if (autoImportAllowed(sc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
-          const memo = [`【AI自動投入 / 地域メディア / ${sc.tier}】`, `記事: ${link.title}`, `URL: ${link.url}`, `理由: ${reason}`].join('\n')
-          const { data: created } = await admin.from('cases').insert({
-            name, address: payload.address || '', phone1: phone, industry: ex.industry || null,
-            status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: payload.website_url, source_urls: link.url, memo, created_by_id: userId,
-          }).select('id').single()
-          if (created?.id) {
-            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
-            counts.imported++; importedCount++; importedThisRun++
-          }
-        }
+        await autoImportHot({ candidateId, tier: sc.tier, temperature, phone, alreadyImported, caseData: {
+          name, address: payload.address || '', phone1: phone, industry: ex.industry || null,
+          status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: payload.website_url, source_urls: link.url,
+          memo: [`【AI自動投入 / 地域メディア / ${sc.tier}】`, `記事: ${link.title}`, `URL: ${link.url}`, `理由: ${reason}`].join('\n'), created_by_id: userId,
+        } })
 
         if (!debug.sample) debug.sample = { site: site.name, title: bestTitle, url: link.url, published_at: meta.published_at, extracted: ex, enrich, temperature, reason, matchedPlaceId }
       }
@@ -783,6 +799,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     }
     // 概算コスト（補完検索のSerper回数）
     debug.estSerperCost = Math.round(counts.enrichQueries * 0.5 * 10) / 10
+    // HOT件数と案件投入の整合性: HOT = 新規投入 + 既存投入済 + 手動投入待ち + 投入失敗
+    debug.importReconcile = {
+      hot: counts.hot, newImport: counts.imported, alreadyImported: counts.alreadyImported,
+      manualPending: counts.manualPending, importFailed: counts.importFailed,
+      sum: counts.imported + counts.alreadyImported + counts.manualPending + counts.importFailed,
+      ok: counts.hot === (counts.imported + counts.alreadyImported + counts.manualPending + counts.importFailed),
+    }
 
     await admin.from('auto_lead_runs').update({
       status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.sites,

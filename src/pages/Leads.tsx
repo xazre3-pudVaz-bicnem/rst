@@ -687,6 +687,16 @@ export default function Leads() {
   const sigBadge = (on: boolean, label: string) =>
     on ? <span className="rounded-sm bg-primary/10 px-1 text-[9px] text-primary">{label}</span> : null
 
+  // 自動投入の状態バッジ（HOT件数と投入数の整合性）
+  function importStatusBadge(c: LeadCandidate) {
+    if (c.imported_to_cases) return <span className="inline-flex items-center gap-0.5 text-green-600"><CheckCircle2 className="h-3 w-3" />{(c as any).imported_case_id ? '投入済' : '投入済'}</span>
+    if ((c as any).auto_insert_error) return <span className="text-red-600" title={(c as any).auto_insert_error}>投入失敗</span>
+    if ((c as any).auto_insert_skipped_reason) return <span className="text-amber-600" title={(c as any).auto_insert_skipped_reason}>{String((c as any).auto_insert_skipped_reason).startsWith('手動') ? '手動投入待ち' : (c as any).auto_insert_skipped_reason}</span>
+    if (c.lead_temperature === 'HOT') return <span className="text-amber-600">手動投入待ち</span>
+    if (c.lead_temperature === 'EXCLUDED') return <span className="text-zinc-500">EXCLUDED</span>
+    return <span className="text-muted-foreground">HOLD</span>
+  }
+
   // 補完の取得元ラベル（住所/電話をどこから取ったか）
   const enrSrcLabel = (s?: string | null): string => ({ google_places: 'Google Places', google_maps_url: 'Google Mapsリンク', official_site: '公式サイト', instagram_profile: 'IGプロフィール', snippet: '検索スニペット' } as Record<string, string>)[s || ''] || (s || '')
 
@@ -1496,12 +1506,26 @@ export default function Leads() {
                       <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {rmResult.hot ?? 0}</span>
                       <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {rmResult.hold ?? 0}</span>
                       <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {rmResult.excluded ?? 0}</span>
-                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {rmResult.imported ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases新規投入 {rmResult.imported ?? 0}</span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">既存投入済 {rmResult.alreadyImported ?? 0}</span>
+                      {Number(rmResult.manualPending ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">手動投入待ち {rmResult.manualPending}</span>}
+                      {Number(rmResult.importFailed ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">投入失敗 {rmResult.importFailed}</span>}
                       {Number(rmResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {rmResult.saveError}</span>}
                       <span className="rounded bg-muted px-1.5 py-0.5">詳細取得 {rmResult.detailFetches ?? 0}/{rmResult.debug?.maxDetailFetches ?? 20}</span>
                       {Number(rmResult.timeouts ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">タイムアウト {rmResult.timeouts}</span>}
                       {(Number(rmResult.deferredSites ?? 0) > 0 || Number(rmResult.deferredDetails ?? 0) > 0) && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">次回継続 サイト{rmResult.deferredSites ?? 0}/詳細{rmResult.deferredDetails ?? 0}</span>}
                     </div>
+                    {/* HOT件数と案件投入の整合性 */}
+                    {rmResult.debug?.importReconcile && (
+                      <div className={cn('rounded-md border p-2 text-[10px]', rmResult.debug.importReconcile.ok ? 'bg-green-50 dark:bg-green-500/10' : 'bg-amber-50 dark:bg-amber-500/10')}>
+                        <div className="font-bold">HOT判定と案件投入の整合性 {rmResult.debug.importReconcile.ok ? '✅ 一致' : '⚠ 不一致'}</div>
+                        <div className="text-muted-foreground">
+                          今回HOT判定 {rmResult.debug.importReconcile.hot}（HOT-A {rmResult.hotA ?? 0} / HOT-B {rmResult.hotB ?? 0}） =
+                          新規投入 {rmResult.debug.importReconcile.newImport} + 既存投入済 {rmResult.debug.importReconcile.alreadyImported} + 手動投入待ち {rmResult.debug.importReconcile.manualPending} + 投入失敗 {rmResult.debug.importReconcile.importFailed}
+                        </div>
+                        <div className="text-muted-foreground">※「cases新規投入」は今回新しく作成された案件数です（既存投入済は前回までに案件化済み）。</div>
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完検索 {rmResult.enrichQueries ?? 0}回</span>
                       <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完実行 {rmResult.enrichTried ?? 0}</span>
@@ -1966,7 +1990,7 @@ export default function Leads() {
                         })()}
                       </td>
                       <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.regional_media_newness_reason ?? ''}>{c.regional_media_newness_reason || c.ai_comment}</div></td>
-                      <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
+                      <td className="p-2 text-center">{importStatusBadge(c)}</td>
                       <td className="p-2 text-right">
                         <div className="flex flex-col items-end gap-1">
                           {!c.imported_to_cases && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>}
@@ -2033,7 +2057,7 @@ export default function Leads() {
                         <td className="p-2 text-center">{c.ig_auto_importable ? <span className="text-green-600">可</span> : <span className="text-muted-foreground">不可</span>}</td>
                         <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.instagram_newness_reason ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>{renderHotReject(c)}</td>
                         <td className="p-2 text-center">{c.instagram_permalink ? <a href={c.instagram_permalink} target="_blank" rel="noreferrer" className="text-primary hover:underline">投稿</a> : '—'}{c.instagram_account_url && <> / <a href={c.instagram_account_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">アカ</a></>}</td>
-                        <td className="p-2 text-center">{c.imported_to_cases ? <span className="text-green-600">投入済</span> : '—'}</td>
+                        <td className="p-2 text-center">{importStatusBadge(c)}</td>
                         <td className="p-2 text-right">
                           {!c.imported_to_cases && (
                             <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>
