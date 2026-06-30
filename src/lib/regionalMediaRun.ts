@@ -12,6 +12,7 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
 import { detectParserType, extractNewnessBlocks } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
+import { detectChain } from './chainFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -670,11 +671,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const japanOk = !isForeign && (!!prefecture || isJapanAddress(address) || !!ex.area || isJapanPhone(phone))
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: 新店記事＝新店根拠。openingDateは加点（必須にしない）
         const articleNew = !!ex.shop_name && (recentOk || strongOpening || !!ex.open_date)
+        const chA = detectChain(ex.shop_name || '', bestTitle || '')
         const sc = scoreCandidate({
           source: 'regional_media', isJapan: japanOk, hasShopName: !!ex.shop_name, hasPhone: !!phone && isJapanPhone(phone),
           hasArea: haveArea, hasOpeningDate: strongOpening || !!ex.open_date, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew: false, regionalNew: articleNew, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
-          isChain: !!ex.is_chain, isOrg: false, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
+          isChain: !!ex.is_chain || chA.definite, chainSuspect: chA.suspect && !chA.definite, isOrg: false, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
         }, mode)
         const tt = tierToTemperature(sc.tier)
         temperature = tt.temperature

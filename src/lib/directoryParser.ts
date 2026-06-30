@@ -6,6 +6,7 @@
 // ============================================================
 import { isForeignAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, type HotTier, type InjectMode } from './hotTier.js'
+import { detectChain } from './chainFilter.js'
 
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
@@ -182,7 +183,8 @@ export interface DirectoryClassify { temperature: string; hot_tier: 'A' | 'B' | 
 
 /** ディレクトリ/マーケットプレイス候補の判定（新規掲載＝新店根拠。営業向きならHOT_A/HOT_B）。 */
 export function classifyDirectoryCandidate(info: { shop_name: string; phone: string; address: string; open: OpenDate; isJapan: boolean }, mode: InjectMode = 'standard'): DirectoryClassify {
-  const isChain = CHAIN_HINT.test(info.shop_name)
+  const ch = detectChain(info.shop_name)
+  const isChain = CHAIN_HINT.test(info.shop_name) || ch.definite
   const isForeign = isForeignAddress(info.address)
   const hasPhone = !!info.phone && isJapanPhone(info.phone)
   const hasAddr = !!info.address
@@ -191,7 +193,7 @@ export function classifyDirectoryCandidate(info: { shop_name: string; phone: str
     source: 'regional_media', isJapan: info.isJapan, hasShopName: !!info.shop_name, hasPhone, hasArea: hasAddr,
     hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
     placesMatched: false, hasOfficial: false,
-    isChain, isOrg: isOrgNonStore(info.shop_name), isEventRecruit: false, isForeign, isDup: false, reviewMany: false,
+    isChain, chainSuspect: ch.suspect && !ch.definite, isOrg: isOrgNonStore(info.shop_name), isEventRecruit: false, isForeign, isDup: false, reviewMany: false,
   }, mode)
   const { temperature, hot_tier } = tierToTemperature(sc.tier)
   return { temperature, hot_tier, tier: sc.tier, score: sc.score, reason: sc.reason, priority: sc.priority, isChain, isForeign }

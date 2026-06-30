@@ -71,6 +71,25 @@ WHERE lead_temperature <> 'EXCLUDED'
   AND NOT (COALESCE(phone_number, '') <> '' AND has_google_opening_date IS TRUE);
 `
 
+// 大手チェーン/グループ会社を EXCLUDED に更新（マックスバリュ/小田急/リカーマウンテン/LAVA 等）
+const CHAIN_CLEANUP = `
+UPDATE lead_candidates SET
+  lead_temperature = 'EXCLUDED', hot_tier = NULL, should_exclude_from_call_list = TRUE,
+  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), '大手チェーン/グループ会社の可能性'),
+  hot_reject_summary = '大手チェーン/グループ会社のため営業対象外'
+WHERE lead_temperature <> 'EXCLUDED'
+  AND name ~ '(マックスバリュ|イオンモール|イオンタウン|まいばすけっと|ダイエー|マルエツ|ライフコーポレーション|ヤオコー|ベイシア|ウエルシア|スギ薬局|マツモトキヨシ|マツキヨ|ココカラファイン|ツルハ|サンドラッグ|クスリのアオキ|コスモス薬品|セブン-?イレブン|ファミリーマート|ローソン|ミニストップ|ニトリ|無印良品|業務スーパー|ドン・?キホーテ|ドンキホーテ|カインズ|コーナン|コメリ|ヤマダ電機|ビックカメラ|ヨドバシ|エディオン|ケーズデンキ|ユニクロ|ジーユー|リンガーハット|すき家|吉野家|松屋フーズ|ガスト|バーミヤン|ジョナサン|サイゼリヤ|コメダ|スターバックス|スタバ|ドトール|タリーズ|マクドナルド|ケンタッキー|モスバーガー|丸亀製麺|大戸屋|やよい軒|ほっともっと|日高屋|幸楽苑|リンガス|リカーマウンテン|やまや|カクヤス|リカマン|LAVA|ラバ|Rintosull|リントスル|chocoZAP|チョコザップ|エニタイム|カーブス|ゴールドジム|RIZAP|ライザップ|ティップネス|コナミスポーツ|快活CLUB|快活クラブ|コート・?ダジュール|カラオケ館|ビッグエコー|TSUTAYA|ゲオ|ブックオフ|ハードオフ|洋服の青山|小田急|東急|京王|西武|阪急|阪神|近鉄|名鉄|東武|京急|京成|JR東日本|JR西日本|JR東海|JR九州)';
+`
+// チェーン/大手の疑い（グループ/HD/支店/センター等）を HOLD に（現在HOTのみ）
+const CHAIN_SUSPECT_CLEANUP = `
+UPDATE lead_candidates SET
+  lead_temperature = 'HOLD', hot_tier = NULL,
+  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), 'チェーン/大手疑いのため手動確認'),
+  hot_reject_summary = 'チェーン/大手の疑いのため自動投入せず手動確認'
+WHERE lead_temperature = 'HOT'
+  AND name ~ '(グループ|ホールディングス|ホールディング|ＨＤ|本部|本社|支店|営業所|カンパニー|リテール|フーズ株式会社|[^ ]+センター$)';
+`
+
 async function main() {
   console.log('=== RST Google Places（全国・新店系／日本限定）セットアップ ===')
   if (!DB_URL) { console.error('✗ SUPABASE_DB_URL が未設定です（.env）。Connection string[URI] を設定して再実行してください。'); process.exit(1) }
@@ -87,6 +106,11 @@ async function main() {
     console.log('• 既存の法人/団体/研究会系候補を EXCLUDED に更新中...')
     const updOrg = await client.query(ORG_CLEANUP)
     console.log(`  ✓ 法人/団体/研究会系を除外: ${updOrg.rowCount}件`)
+    console.log('• 既存の大手チェーン/グループ会社候補を EXCLUDED に更新中...')
+    const updChain = await client.query(CHAIN_CLEANUP)
+    console.log(`  ✓ 大手チェーン/グループを除外: ${updChain.rowCount}件`)
+    const updSus = await client.query(CHAIN_SUSPECT_CLEANUP)
+    console.log(`  ✓ チェーン疑いをHOLDに: ${updSus.rowCount}件`)
     console.log('\n✅ セットアップ完了 — npm run build → RST「AI投入」Google Places タブで確認')
   } finally { await client.end() }
 }

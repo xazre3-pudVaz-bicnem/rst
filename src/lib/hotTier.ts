@@ -18,7 +18,8 @@ export interface TierInput {
   placesMatched: boolean   // Google Places一致
   hasOfficial: boolean     // 公式/予約/LINE
   // 明確な除外
-  isChain: boolean
+  isChain: boolean         // 明確な大手チェーン/グループ → EXCLUDED
+  chainSuspect?: boolean   // チェーン/大手の疑い → HOLD止まり（HOTにしない）
   isOrg: boolean
   isEventRecruit: boolean
   isForeign: boolean
@@ -44,7 +45,7 @@ export function scoreCandidate(f: TierInput, mode: InjectMode = 'standard'): Tie
   if (f.isForeign) return excluded('日本国外')
   if (f.isEventRecruit) return excluded('求人/イベント/ポップアップ等')
   if (f.isDup) return excluded('重複')
-  if (f.isChain) return excluded('大手チェーン')
+  if (f.isChain) return excluded('大手チェーン/グループ会社の可能性')
   if (f.isOrg) return excluded('法人/団体/研究会')
   if (f.reviewMany) return excluded('口コミ過多の既存人気店')
 
@@ -69,6 +70,8 @@ export function scoreCandidate(f: TierInput, mode: InjectMode = 'standard'): Tie
   if (f.hasPhone && f.hasArea && newness && f.isJapan && tier === 'HOLD') tier = 'HOT_B'
   // Google Places単体は誤爆が多い: openingDate/FUTURE が無ければ HOT_A にしない
   if (f.source === 'google_places' && !(f.hasOpeningDate || f.isFuture) && tier === 'HOT_A') tier = 'HOT_B'
+  // チェーン/大手の疑い: 電話・住所・新店根拠があってもHOTにせずHOLD止まり（手動確認）
+  if (f.chainSuspect && (tier === 'HOT_A' || tier === 'HOT_B')) { tier = 'HOLD'; r.push('チェーン/大手疑いのため手動確認') }
 
   const reasonHead = tier === 'HOT_A' ? 'HOT-A（優先架電）' : tier === 'HOT_B' ? 'HOT-B（通常架電）' : tier === 'HOLD' ? 'HOLD（要確認）' : 'EXCLUDED'
   const reason = `${reasonHead}：${r.join(' / ') || '根拠が弱い'}（スコア${s}）${!f.hasOpeningDate && (tier === 'HOT_A' || tier === 'HOT_B') ? '・openingDateなしだが営業可能' : ''}`

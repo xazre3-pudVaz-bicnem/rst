@@ -11,6 +11,7 @@ import { extractJpPhone } from './regionalParsers.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
+import { detectChain } from './chainFilter.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 const PROBE_TIMEOUT_MS = 8000
@@ -286,11 +287,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const facilityish = FACILITY_RE.test(`${name} ${category}`)
     const excludedFacility = facilityish && !(phone && isJapanPhone(phone))
 
+    const chP = detectChain(name)
     const sc = scoreCandidate({
       source: 'regional_media', isJapan, hasShopName: !!name, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
       placesMatched: false, hasOfficial: !!official,
-      isChain: false, isOrg: excludedFacility, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
+      isChain: chP.definite, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
     }, opts.mode)
     const { temperature, hot_tier } = tierToTemperature(sc.tier)
     if (temperature === 'HOT') { res.hot++; if (hot_tier === 'A') res.hotA++; else res.hotB++ }

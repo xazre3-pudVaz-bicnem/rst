@@ -9,6 +9,7 @@ import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from '.
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
+import { detectChain } from './chainFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -645,11 +646,12 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const japanOk = !foreignFinal && (!!prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: Instagram投稿の新店根拠＋電話/住所で営業可能ならHOT
         const igNew = !!(j.newness_type && j.newness_type !== 'unknown')
+        const ch = detectChain(j.shop_name || shop || '', `${r.title} ${r.snippet}`)
         const sc = scoreCandidate({
           source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone),
           hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew, regionalNew: false, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
-          isChain: false, isOrg: false, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
+          isChain: ch.definite, chainSuspect: ch.suspect && !ch.definite, isOrg: false, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
         }, iwMode)
         const tt = tierToTemperature(sc.tier)
         let temperature: string = tt.temperature
