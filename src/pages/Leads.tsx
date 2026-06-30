@@ -73,6 +73,10 @@ export default function Leads() {
   const [igRunning, setIgRunning] = useState(false)
   const [igResult, setIgResult] = useState<any>(null)
   const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw' | 'probe'>('places')
+  // メインビュー（架電対象リスト / 取得・投入 / 取得元管理 / 連番URL探索 / エラー・ログ / 設定）
+  const [mainView, setMainView] = useState<'list' | 'get' | 'manage' | 'probe' | 'errors' | 'settings'>('list')
+  const [devMode, setDevMode] = useState(false)
+  const [drawerCand, setDrawerCand] = useState<LeadCandidate | null>(null)
   const [probeResult, setProbeResult] = useState<any>(null)
   const [probeSites, setProbeSites] = useState<any[]>([])
   const [probing, setProbing] = useState(false)
@@ -668,6 +672,13 @@ export default function Leads() {
     return {
       todayImported: candidates.filter(today).length,
       hot: candidates.filter((c) => c.lead_temperature === 'HOT').length,
+      hotA: candidates.filter((c) => c.lead_temperature === 'HOT' && c.hot_tier === 'A').length,
+      hotB: candidates.filter((c) => c.lead_temperature === 'HOT' && c.hot_tier === 'B').length,
+      hold: candidates.filter((c) => c.lead_temperature === 'HOLD').length,
+      excluded: candidates.filter((c) => c.lead_temperature === 'EXCLUDED').length,
+      phone: candidates.filter((c) => !!c.phone_number).length,
+      address: candidates.filter((c) => !!c.address).length,
+      notImported: candidates.filter((c) => !c.imported_to_cases && c.lead_temperature === 'HOT').length,
       noPhone: candidates.filter((c) => !c.phone_normalized).length,
       dup: candidates.filter((c) => c.duplicate_of_case_id).length,
       gbp: candidates.filter((c) => c.is_new_gbp).length,
@@ -676,6 +687,13 @@ export default function Leads() {
       ad: candidates.filter((c) => c.is_new_ad_listing).length,
     }
   }, [candidates])
+  // 取得元エラーの集計（赤アラート用）
+  const sourceErrors = useMemo(() => {
+    const errs: { label: string; msg: string }[] = []
+    const add = (label: string, r: any) => { if (r && (r.error || r.ok === false)) errs.push({ label, msg: typeof r.error === 'string' ? r.error : 'エラーが発生しました' }) }
+    add('Google Places', gpResult); add('Instagram', igResult); add('地域メディア', rmResult); add('Instagram Web検索', iwResult); add('連番URL探索', probeResult)
+    return errs
+  }, [gpResult, igResult, rmResult, iwResult, probeResult])
 
   const inSource = useCallback((c: LeadCandidate, tab: 'places' | 'instagram' | 'regional' | 'iw' | 'probe') => {
     if (tab === 'instagram') return c.lead_source === 'instagram_hashtag'
@@ -810,8 +828,58 @@ export default function Leads() {
             </div>
           </div>
 
-          {/* 設定パネル */}
-          {showSettings && (
+          {/* エラーアラート（取得元にエラーがある時だけ） */}
+          {sourceErrors.length > 0 && (
+            <div className="rounded-lg border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200">
+              <div className="flex items-center justify-between">
+                <div className="font-bold">⚠ 取得処理でエラーがあります（{sourceErrors.length}件）</div>
+                <button onClick={() => setMainView('errors')} className="rounded border border-red-400 px-2 py-0.5 text-[11px] hover:bg-red-100 dark:hover:bg-red-500/20">詳細を見る</button>
+              </div>
+              {sourceErrors.slice(0, 2).map((e, i) => (
+                <div key={i} className="mt-0.5 line-clamp-1"><b>{e.label}</b>：{e.msg}</div>
+              ))}
+            </div>
+          )}
+
+          {/* ダッシュボード（営業上の主要数字のみ） */}
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+            {[
+              { label: '本日の新規投入', v: summary.todayImported, cls: 'text-green-600' },
+              { label: 'HOT-A 優先架電', v: summary.hotA, cls: 'text-red-600' },
+              { label: 'HOT-B 通常架電', v: summary.hotB, cls: 'text-orange-600' },
+              { label: 'HOLD 確認待ち', v: summary.hold, cls: 'text-slate-600 dark:text-slate-300' },
+              { label: '未投入(HOT)', v: summary.notImported, cls: 'text-amber-600' },
+              { label: '電話番号あり', v: summary.phone, cls: 'text-sky-600' },
+              { label: '住所あり', v: summary.address, cls: 'text-sky-600' },
+              { label: 'エラー', v: sourceErrors.length, cls: sourceErrors.length ? 'text-red-600' : 'text-muted-foreground' },
+            ].map((c) => (
+              <div key={c.label} className="rounded-lg border bg-card p-2 text-center">
+                <div className={cn('text-xl font-bold', c.cls)}>{c.v}</div>
+                <div className="text-[10px] text-muted-foreground">{c.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* メインタブ */}
+          <div className="flex flex-wrap gap-1 border-b pb-1">
+            {([['list', '架電対象リスト'], ['get', '取得・投入'], ['manage', '取得元管理'], ['probe', '連番URL探索'], ['errors', 'エラー/ログ'], ['settings', '設定']] as const).map(([k, lbl]) => (
+              <button key={k} onClick={() => { setMainView(k); if (k === 'probe') loadProbeSites() }} className={cn('rounded-t-md border-b-2 px-3 py-1.5 text-sm font-medium', mainView === k ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')}>
+                {lbl}{k === 'errors' && sourceErrors.length > 0 ? <span className="ml-1 rounded-full bg-red-500 px-1.5 text-[10px] text-white">{sourceErrors.length}</span> : ''}
+              </button>
+            ))}
+          </div>
+          {/* タブ説明 */}
+          <div className="rounded-md bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
+            {mainView === 'list' && '営業電話できる可能性が高い候補です。HOT-A / HOT-B を優先して確認してください。行をクリックすると詳細が開きます。'}
+            {mainView === 'get' && '新しい候補を各取得元（Google Places / Instagram Web / 地域メディア）から集めて、自動でHOT判定します。'}
+            {mainView === 'manage' && '巡回サイト（source_sites）の管理と、新店情報サイトの自動発見・登録を行います。'}
+            {mainView === 'probe' && 'じゃらん等の連番URLを確認し、新しく存在する掲載ページ（新規掲載候補）を探します。新規オープン確定ではありません。'}
+            {mainView === 'errors' && '取得処理の失敗理由・APIエラー・保存失敗・文字化け・SKIP理由などを確認します。'}
+            {mainView === 'settings' && 'HOT判定基準・自動投入モード/上限・API設定などを変更します。'}
+          </div>
+
+          {/* 設定パネル（設定タブ または 設定ボタン押下時） */}
+          {(showSettings || mainView === 'settings') && (
             <div className="grid gap-3 rounded-xl border bg-card p-3 md:grid-cols-2 lg:grid-cols-4">
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={settings.placesEnabled} onChange={(e) => saveSettings({ ...settings, placesEnabled: e.target.checked })} />
@@ -1052,6 +1120,8 @@ export default function Leads() {
             </div>
           )}
 
+          {/* ===== 取得・投入タブ ===== */}
+          {mainView === 'get' && (<>
           {/* Google Places API パネル */}
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1704,6 +1774,10 @@ export default function Leads() {
             )}
           </div>
 
+          </>)}
+
+          {/* ===== 架電対象リストタブ（集計カード〜サブタブ） ===== */}
+          {mainView === 'list' && (<>
           {/* 集計カード */}
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
             {card(<Upload className="h-4 w-4 text-white" />, '本日の自動投入', summary.todayImported, 'bg-primary')}
@@ -1728,9 +1802,10 @@ export default function Leads() {
               </button>
             ))}
           </div>
+          </>)}
 
-          {/* 連番URL探索タブ専用パネル */}
-          {sourceTab === 'probe' && (
+          {/* ===== 連番URL探索タブ ===== */}
+          {mainView === 'probe' && (
             <div className="mt-2 space-y-2 rounded-lg border bg-card p-3 text-xs">
               <div className="rounded border border-amber-200 bg-amber-50 p-1.5 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                 ※ 連番URL探索は、各サイト上で新しく存在確認できた掲載ページ（<b>新規掲載候補</b>）を検出する機能です。<b>実際の開業日を保証するものではありません</b>。営業投入前に電話番号・住所・業種・新規性を確認してください。
@@ -1788,8 +1863,8 @@ export default function Leads() {
             </div>
           )}
 
-          {/* 巡回サイト管理（地域メディアタブ） */}
-          {sourceTab === 'regional' && (
+          {/* ===== 取得元管理タブ（巡回サイト管理 / 自動発見） ===== */}
+          {mainView === 'manage' && (
             <div className="rounded-xl border bg-card p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-sm font-bold">
@@ -1913,6 +1988,8 @@ export default function Leads() {
             </div>
           )}
 
+          {/* ===== 架電対象リストタブ（フィルタ＋一覧） ===== */}
+          {mainView === 'list' && (<>
           {/* フィルタ */}
           <div className="flex flex-wrap gap-1">
             {FILTERS.map((f) => (
@@ -1960,7 +2037,7 @@ export default function Leads() {
                 </thead>
                 <tbody>
                   {filtered.map((c) => (
-                    <tr key={c.id} className="border-t align-top">
+                    <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[150px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
@@ -2008,7 +2085,7 @@ export default function Leads() {
                         })()}
                       </td>
                       <td className="p-2 text-center">{c.match_confidence ?? '—'}</td>
-                      <td className="p-2 text-right">
+                      <td className="p-2 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col items-end gap-1">
                           {!c.imported_to_cases && c.lead_temperature !== 'EXCLUDED' && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('投入しました'))}>投入</Button>}
                           {c.imported_to_cases && <span className="text-green-600">投入済</span>}
@@ -2043,7 +2120,7 @@ export default function Leads() {
                 </thead>
                 <tbody>
                   {filtered.map((c) => (
-                    <tr key={c.id} className="border-t align-top">
+                    <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[160px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
@@ -2083,7 +2160,7 @@ export default function Leads() {
                       </td>
                       <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.regional_media_newness_reason ?? ''}>{c.regional_media_newness_reason || c.ai_comment}</div></td>
                       <td className="p-2 text-center">{importStatusBadge(c)}</td>
-                      <td className="p-2 text-right">
+                      <td className="p-2 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col items-end gap-1">
                           {!c.imported_to_cases && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>}
                           <Button size="sm" variant="ghost" className="h-6 text-2xs text-fuchsia-700 dark:text-fuchsia-300" onClick={() => reenrichRegional(c)}>再補完</Button>
@@ -2121,7 +2198,7 @@ export default function Leads() {
                       : klass === 'excluded' ? ['EXCLUDED', 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700']
                       : ['HOLD', 'bg-slate-100 text-slate-600 dark:bg-slate-700']
                     return (
-                      <tr key={c.id} className="border-t align-top">
+                      <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                         <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', badge[1])}>{badge[0]}</span></td>
                         <td className="max-w-[160px] p-2">
                           <div className="font-medium">{c.extracted_shop_name || c.name}</div>
@@ -2150,7 +2227,7 @@ export default function Leads() {
                         <td className="max-w-[260px] p-2"><div className="line-clamp-3 text-muted-foreground" title={c.instagram_newness_reason ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>{renderHotReject(c)}</td>
                         <td className="p-2 text-center">{c.instagram_permalink ? <a href={c.instagram_permalink} target="_blank" rel="noreferrer" className="text-primary hover:underline">投稿</a> : '—'}{c.instagram_account_url && <> / <a href={c.instagram_account_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">アカ</a></>}</td>
                         <td className="p-2 text-center">{importStatusBadge(c)}</td>
-                        <td className="p-2 text-right">
+                        <td className="p-2 text-right" onClick={(e) => e.stopPropagation()}>
                           {!c.imported_to_cases && (
                             <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('casesへ投入しました'))}>投入</Button>
                           )}
@@ -2182,7 +2259,7 @@ export default function Leads() {
                 </thead>
                 <tbody>
                   {filtered.map((c) => (
-                    <tr key={c.id} className="border-t align-top">
+                    <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2">
                         <span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span>
                       </td>
@@ -2270,7 +2347,7 @@ export default function Leads() {
                           ? <span className="inline-flex items-center gap-0.5 text-green-600"><CheckCircle2 className="h-3 w-3" />投入済</span>
                           : <span className="text-muted-foreground">未投入</span>}
                       </td>
-                      <td className="p-2 text-right">
+                      <td className="p-2 text-right" onClick={(e) => e.stopPropagation()}>
                         {c.imported_to_cases ? (
                           <span className="text-[9px] text-muted-foreground">{c.imported_at ? moment(c.imported_at).format('MM/DD HH:mm') : ''}</span>
                         ) : c.duplicate_of_case_id ? (
@@ -2290,6 +2367,61 @@ export default function Leads() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          </>)}
+
+          {/* ===== エラー/ログタブ ===== */}
+          {mainView === 'errors' && (
+            <div className="space-y-2 rounded-xl border bg-card p-3 text-xs">
+              <div className="font-bold">取得処理のエラー / ログ</div>
+              {sourceErrors.length === 0 ? <div className="text-muted-foreground">現在エラーはありません。各取得元を実行するとここに失敗理由・APIエラー・保存失敗などが表示されます。</div> : (
+                sourceErrors.map((e, i) => (
+                  <div key={i} className="rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
+                    <div className="font-bold">{e.label} でエラー</div>
+                    <div>原因/詳細：{e.msg}</div>
+                    <div className="mt-0.5 text-[10px] opacity-80">対応：APIキー・レート制限・設定を確認し、各タブの「実行」で再試行してください。</div>
+                  </div>
+                ))
+              )}
+              <label className="mt-1 flex items-center gap-2 text-[11px]">
+                <input type="checkbox" checked={devMode} onChange={(e) => setDevMode(e.target.checked)} />開発者モード（HTML文字数・parser_used・APIレスポンス・SKIP内訳などのデバッグ情報を表示）
+              </label>
+              {devMode && (
+                <div className="space-y-1 text-[10px] text-muted-foreground">
+                  <div>Google Places debug: {gpResult ? `取得${gpResult.fetched ?? 0} / 保存${gpResult.saved ?? 0} / SKIP${gpResult.skipped ?? 0}` : '—'}</div>
+                  <div>Instagram Web debug: {iwResult ? `クエリ${iwResult.queries ?? 0} / 取得${iwResult.results ?? 0} / 保存${iwResult.saved ?? 0} / 検索失敗${iwResult.errorCount ?? 0}` : '—'}</div>
+                  <div>地域メディア debug: {rmResult ? `サイト${rmResult.sites ?? 0} / 保存${rmResult.saved ?? 0} / HOT${rmResult.hot ?? 0}` : '—'}</div>
+                  <div>連番URL探索 debug: {probeResult ? `probed${probeResult.probed ?? 0} / valid${probeResult.valid ?? 0} / 文字化け${probeResult.mojibake ?? 0}` : '—'}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 候補 詳細ドロワー */}
+          {drawerCand && (
+            <div className="fixed inset-0 z-50 flex justify-end" onClick={() => setDrawerCand(null)}>
+              <div className="absolute inset-0 bg-black/30" />
+              <div className="relative h-full w-full max-w-md overflow-y-auto border-l bg-card p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className={cn('rounded px-2 py-0.5 font-bold', LEAD_TEMP_COLORS[drawerCand.lead_temperature])}>{drawerCand.lead_temperature === 'HOT' && drawerCand.hot_tier ? `HOT-${drawerCand.hot_tier}` : drawerCand.lead_temperature}</span>
+                  <button onClick={() => setDrawerCand(null)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
+                </div>
+                <div className="text-base font-bold">{drawerCand.name}</div>
+                <div className="mb-2 text-muted-foreground">{drawerCand.industry || '業種不明'}{drawerCand.extracted_area ? ` ・ ${drawerCand.extracted_area}` : ''}</div>
+                <dl className="space-y-1">
+                  {[['電話番号', drawerCand.phone_number], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (
+                    <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2 break-words">{v ? String(v) : '—'}</dd></div>
+                  ))}
+                  {[['元URL', (drawerCand as any).source_detail_url || (drawerCand as any).source_article_url], ['Instagram', drawerCand.instagram_url], ['Google Maps', (drawerCand as any).enriched_google_maps_url || (drawerCand as any).map_url], ['公式', drawerCand.official_url || drawerCand.website_url]].map(([k, v]) => v ? (
+                    <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2"><a href={String(v)} target="_blank" rel="noreferrer" className="break-all text-primary hover:underline">{String(v).slice(0, 60)}</a></dd></div>
+                  ) : null)}
+                </dl>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {!drawerCand.imported_to_cases && drawerCand.lead_temperature !== 'EXCLUDED' && <Button size="sm" onClick={() => { handleManualImport(drawerCand); setDrawerCand(null) }}>{drawerCand.lead_temperature === 'HOT' ? '案件投入' : '手動投入'}</Button>}
+                  {drawerCand.lead_temperature === 'EXCLUDED' && <Button size="sm" variant="outline" onClick={() => { handleManualImport(drawerCand, true); setDrawerCand(null) }}>除外解除して投入</Button>}
+                </div>
+              </div>
             </div>
           )}
         </div>
