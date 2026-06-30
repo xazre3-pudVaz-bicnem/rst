@@ -4,6 +4,7 @@ import {
 import { phoneDigits, normalizeAddress, normalizeUrl } from './utils.js'
 import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
+import { scoreCandidate, tierToTemperature } from './hotTier.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -273,6 +274,20 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   else if (raw.is_new_corporation && countOk) temperature = 'WARM'
   else temperature = 'HOLD'                                    // 1〜5で根拠不足/口コミ古い等
 
+  // 営業向きHOT判定（HOT_A/HOT_B）: EXCLUDED/WARM以外を tier 化。Google Places単体は openingDate/FUTURE が無ければHOT_Aにしない。
+  let hot_tier: 'A' | 'B' | null = null
+  if (temperature === 'HOT' || temperature === 'HOLD') {
+    const sc = scoreCandidate({
+      source: 'google_places', isJapan: japanConfirmed, hasShopName: !!name, hasPhone: hasJapanPhone,
+      hasArea: addrIsJapan || !!address, hasOpeningDate: openingWithin90 || hasOpeningDate, isFuture: futureOpening,
+      igNew: false, regionalNew: false, newListing: fromNewOpenQuery, placesMatched: !!raw.place_id, hasOfficial: hasWebsite,
+      isChain: nonReachable, isOrg: orgLike, isEventRecruit: excludedName, isForeign, isDup, reviewMany: veryHigh,
+    }, (opts?.aiInjectMode as any) || 'standard')
+    const tt = tierToTemperature(sc.tier)
+    temperature = tt.temperature as LeadTemperature
+    hot_tier = tt.hot_tier
+  }
+
   const exclusionReasons: string[] = []
   if (isForeign) exclusionReasons.push('日本国外の候補のため除外')
   else if (orgLike && temperature === 'EXCLUDED') exclusionReasons.push('法人/団体/研究会系のため除外（新店営業対象ではない可能性が高い）')
@@ -376,6 +391,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     hot_missing_requirements: hotReject.hot_missing_requirements,
     hot_blocking_reason: hotReject.hot_blocking_reason,
     hot_required_score: hotReject.hot_required_score,
+    hot_tier,
+    recommended_status: hot_tier ? (hot_tier === 'A' ? 'HOT_A' : 'HOT_B') : temperature,
   }
 }
 

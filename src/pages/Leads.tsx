@@ -386,6 +386,7 @@ export default function Leads() {
             placesMaxQueriesPerDay: settings.placesMaxQueriesPerDay,
             placesPerQuery: settings.placesPerQuery,
             placesMaxDetailsPerDay: settings.placesMaxDetailsPerDay,
+            aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
             hotMaxReviews: settings.hotMaxReviews,
             warmMaxReviews: settings.warmMaxReviews,
             exclude100: settings.exclude100,
@@ -786,6 +787,20 @@ export default function Leads() {
                   <div className="space-y-1"><Label>1日最大Place Details件数</Label><Input type="number" min={1} value={settings.placesMaxDetailsPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxDetailsPerDay: Math.max(1, Number(e.target.value) || 100) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日あたりの投入上限</Label><Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" /></div>
                 </div>
+                {/* 自動投入モード（HOT_A/HOT_B）＋投入上限 */}
+                <div className="mt-2 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-1">
+                    <Label>自動投入モード</Label>
+                    <select value={settings.aiInjectMode} onChange={(e) => saveSettings({ ...settings, aiInjectMode: e.target.value as any })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                      <option value="strict">厳格（HOT-Aのみ投入）</option>
+                      <option value="standard">標準（HOT-A + HOT-B 投入）</option>
+                      <option value="aggressive">攻め（HOT-A + HOT-B 投入・HOLDを上位表示）</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1"><Label>1回の自動投入上限</Label><Input type="number" min={1} value={settings.autoImportPerRun} onChange={(e) => saveSettings({ ...settings, autoImportPerRun: Math.max(1, Number(e.target.value) || 50) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日の自動投入上限</Label><Input type="number" min={1} value={settings.autoImportPerDay} onChange={(e) => saveSettings({ ...settings, autoImportPerDay: Math.max(1, Number(e.target.value) || 200) })} className="h-8" /></div>
+                  <div className="flex items-end text-[10px] text-muted-foreground">自動投入は HOT-A（優先架電）+ HOT-B（通常架電）。EXCLUDEDは投入しません。電話＋住所＋新店根拠＋日本国内なら原則HOT-B以上。</div>
+                </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">※検索クエリに地域名・業種名を入れません（新店系ワードのみ全国横断）。エリア・業種は取得後に formattedAddress / primaryType から抽出。同一place_idは30日以内再取得しない。</div>
                 {/* GBP登録日は取得できない旨の注意書き */}
                 <div className="mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
@@ -1034,6 +1049,8 @@ export default function Leads() {
                   <span className="rounded bg-muted px-1.5 py-0.5">クエリ {gpResult.queries ?? 0}</span>
                   <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">API取得 {gpResult.fetched ?? 0}</span>
                   <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
+                  <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {gpResult.hotA ?? 0}</span>
+                  <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {gpResult.hotB ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {gpResult.hold ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {gpResult.excluded ?? 0}</span>
                   <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">DB保存 {gpResult.saved ?? 0}</span>
@@ -1750,7 +1767,7 @@ export default function Leads() {
                 <tbody>
                   {filtered.map((c) => (
                     <tr key={c.id} className="border-t align-top">
-                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature}</span></td>
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[150px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
                         <div className="text-[9px] text-muted-foreground">{c.extracted_industry || '—'}{c.newness_type ? ` / ${c.newness_type}` : ''}</div>
@@ -1833,7 +1850,7 @@ export default function Leads() {
                 <tbody>
                   {filtered.map((c) => (
                     <tr key={c.id} className="border-t align-top">
-                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature}</span></td>
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
                       <td className="max-w-[160px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
                         {c.extracted_industry && <div className="text-[9px] text-muted-foreground">{c.extracted_industry}</div>}
@@ -1973,7 +1990,7 @@ export default function Leads() {
                   {filtered.map((c) => (
                     <tr key={c.id} className="border-t align-top">
                       <td className="p-2">
-                        <span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature}</span>
+                        <span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span>
                       </td>
                       <td className="p-2">
                         <div className="font-medium">{c.name}</div>

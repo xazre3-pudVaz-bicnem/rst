@@ -11,6 +11,7 @@ import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from '.
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
 import { detectParserType, extractNewnessBlocks } from './regionalParsers.js'
+import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -191,7 +192,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const enrichPerQuery = Math.max(1, Math.min(10, Number(s.regionalEnrichPerQuery) || 5))
   const enrichDailyCap = Math.max(0, Number(s.regionalEnrichDailyCap) || 100)
 
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0 }
+  const mode: InjectMode = (s.aiInjectMode === 'strict' || s.aiInjectMode === 'aggressive') ? s.aiInjectMode : 'standard'
+  const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
+  const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
+  let importedThisRun = 0
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0, dupImportSkip: 0 }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const enrichQueriesToLog = new Set<string>()
@@ -313,9 +318,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (phone) counts.phoneYes++
 
           const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
-          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan })
+          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan }, mode)
           const temperature = dc.temperature
-          if (temperature === 'HOT') { counts.hot++; diag.hot++ }
+          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dc.hot_tier === 'A') counts.hotA++; else counts.hotB++ }
           else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded++ }
           else { counts.hold++; diag.hold++ }
           counts.candidates++
@@ -344,7 +349,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             source_site_type: 'local_directory_new_listing', source_media_family: site.media_family || null, source_site_name: site.name,
             source_listing_url: crawlUrl, source_detail_url: item.url, source_article_url: item.url,
             search_title: item.title?.slice(0, 300) || name, search_snippet: info.excerpt?.slice(0, 500) || null,
-            lead_temperature: temperature, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
+            lead_temperature: temperature, hot_tier: dc.hot_tier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
             owner_reachability_score: phone ? 70 : 35, auto_import_reason: temperature === 'HOT' ? dc.reason : null, ai_comment: dc.reason,
             regional_media_newness_reason: newnessReason, regional_media_detected_at: nowIso,
             newness_type: 'new_listing_open',
@@ -388,13 +393,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             candidateId = ins?.id || null
           }
 
-          if (temperature === 'HOT' && phone && candidateId && !alreadyImported && importedCount < dailyCap) {
+          if (autoImportAllowed(dc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
             const memo = [`【AI自動投入 / 店舗ディレクトリ】`, `店舗: ${name}`, `URL: ${item.url}`, `理由: ${dc.reason}`].join('\n')
             const { data: created } = await admin.from('cases').insert({
               name, address: address || '', phone1: phone, industry: info.industry || null,
-              status: DEFAULT_STATUS, hp1: official, instagram, source_urls: item.url, memo, created_by_id: userId,
+              status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: item.url, memo, created_by_id: userId,
             }).select('id').single()
-            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++ }
+            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
           }
 
           if (!debug.sample || debug.sample.siteType !== 'local_directory_new_listing') {
@@ -470,9 +475,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (matchedPlaceId) counts.placeMatched++
 
           const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
-          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan })
+          const dc = classifyDirectoryCandidate({ shop_name: info.shop_name, phone, address, open, isJapan }, mode)
           const temperature = dc.temperature
-          if (temperature === 'HOT') { counts.hot++; diag.hot++ }
+          if (temperature === 'HOT') { counts.hot++; diag.hot++; if (dc.hot_tier === 'A') counts.hotA++; else counts.hotB++ }
           else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded++ }
           else { counts.hold++; diag.hold++ }
           counts.candidates++
@@ -500,7 +505,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             source_list_url: crawlUrl, source_listing_url: crawlUrl, source_detail_url: detailUrl, source_article_url: detailUrl,
             search_title: name.slice(0, 300), search_snippet: cand.blockText, candidate_block_text_short: cand.blockText, detail_fetch_status: detailStatus,
             matched_keywords: cand.matchedKeywords, newness_type: stype === 'marketplace_listing' ? 'marketplace_new_listing' : 'generic_new_block',
-            lead_temperature: temperature, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
+            lead_temperature: temperature, hot_tier: dc.hot_tier, recommended_status: dc.tier, is_new_gbp: !!matchedPlaceId, should_exclude_from_call_list: temperature === 'EXCLUDED',
             owner_reachability_score: phone ? 70 : 35, auto_import_reason: temperature === 'HOT' ? dc.reason : null, ai_comment: dc.reason,
             regional_media_newness_reason: newnessReason, regional_media_detected_at: nowIso,
             extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null,
@@ -536,10 +541,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
             candidateId = ins?.id || null
           }
-          if (temperature === 'HOT' && phone && candidateId && !alreadyImported && importedCount < dailyCap) {
+          if (autoImportAllowed(dc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
             const memo = [`【AI自動投入 / ${diag.parser_used}】`, `店舗: ${name}`, `URL: ${detailUrl}`, `理由: ${dc.reason}`].join('\n')
-            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, hp1: official, instagram, source_urls: detailUrl, memo, created_by_id: userId }).select('id').single()
-            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++ }
+            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: detailUrl, memo, created_by_id: userId }).select('id').single()
+            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
           }
           if (!debug.sample || debug.sample.siteType !== stype) debug.sample = { siteType: stype, parser_used: diag.parser_used, site: site.name, detailUrl, shop_name: name, phone, address, open_date: open.text, industry: info.industry, matched: cand.matchedKeywords, temperature, reason: dc.reason }
         }
@@ -635,17 +640,23 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const haveArea = !!(areaMerged || address)
         const strongOpening = !!enrich?.has_opening  // Google openingDate / FUTURE_OPENING
         const openNote = strongOpening ? `Google開業日(${enrich.opening_raw}${enrich.business_status === 'FUTURE_OPENING' ? '・開業予定' : ''})` : ''
-        // 日本国外は除外（海外住所/海外電話）。HOTは日本の住所/都道府県＋日本の電話が必須
+        // 日本国外は除外（海外住所/海外電話）
         const isForeign = isForeignAddress(address) || isForeignText(`${ex.shop_name || ''} ${bestTitle || ''}`) || (!!phone && !isJapanPhone(phone))
         const japanOk = !isForeign && (!!prefecture || isJapanAddress(address) || !!ex.area || isJapanPhone(phone))
-        if (isForeign) { temperature = 'EXCLUDED'; reason = '日本国外の候補のため除外。' }
-        else if (!ex.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
-        else if (!recentOk && !strongOpening) { temperature = 'HOLD'; reason = `記事公開が${Math.round((now - publishedMs) / 86400000)}日前で対象期間外のためHOLD。` }
-        else if (phone && japanOk && isJapanPhone(phone) && (haveArea || strongOpening)) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話${haveArea ? '・住所' : ''}${openNote ? '・' + openNote : ''}を確認したためHOT。` }
-        else if (phone || reservationVal || lineVal || officialVal || instagramVal || strongOpening) { temperature = 'HOLD'; reason = `新店記事。${phone ? '電話は取得' : '予約/公式/LINE/Instagram/開業日のみ取得'}${openNote ? '（' + openNote + '）' : ''}・連絡先/住所が弱いためHOLD（要確認）。` }
-        else { temperature = 'HOLD'; reason = '外部補完でも電話・住所・開業日が取得できずHOLD（自動投入しない）。' }
+        // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: 新店記事＝新店根拠。openingDateは加点（必須にしない）
+        const articleNew = !!ex.shop_name && (recentOk || strongOpening || !!ex.open_date)
+        const sc = scoreCandidate({
+          source: 'regional_media', isJapan: japanOk, hasShopName: !!ex.shop_name, hasPhone: !!phone && isJapanPhone(phone),
+          hasArea: haveArea, hasOpeningDate: strongOpening || !!ex.open_date, isFuture: enrich?.business_status === 'FUTURE_OPENING',
+          igNew: false, regionalNew: articleNew, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
+          isChain: !!ex.is_chain, isOrg: false, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
+        }, mode)
+        const tt = tierToTemperature(sc.tier)
+        temperature = tt.temperature
+        const hotTier = tt.hot_tier
+        reason = sc.reason
 
-        if (temperature === 'HOT') { counts.hot++; diag.hot++ }
+        if (temperature === 'HOT') { counts.hot++; diag.hot++; if (hotTier === 'A') counts.hotA++; else counts.hotB++ }
         else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded = (diag.excluded || 0) + 1 }
         else { counts.hold++; diag.hold++ }
         counts.candidates++
@@ -676,9 +687,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
           hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
           hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
-          lead_temperature: temperature, is_new_gbp: placeMatched,
+          lead_temperature: temperature, hot_tier: hotTier, recommended_status: sc.tier, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',
-          owner_reachability_score: phone ? 70 : 30,
+          owner_reachability_score: phone ? 70 : 30, parser_used: 'article_link_parser', source_list_url: crawlUrl,
           auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason,
           // 記事由来（元情報）
           source_article_url: link.url, source_article_title: bestTitle, source_site_name: site.name,
@@ -723,15 +734,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
 
         // HOT自動投入（電話必須）
-        if (temperature === 'HOT' && phone && candidateId && !alreadyImported && importedCount < dailyCap) {
-          const memo = [`【AI自動投入 / 地域メディア】`, `記事: ${link.title}`, `URL: ${link.url}`, `理由: ${reason}`].join('\n')
+        if (autoImportAllowed(sc.tier, mode) && phone && candidateId && !alreadyImported && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
+          const memo = [`【AI自動投入 / 地域メディア / ${sc.tier}】`, `記事: ${link.title}`, `URL: ${link.url}`, `理由: ${reason}`].join('\n')
           const { data: created } = await admin.from('cases').insert({
             name, address: payload.address || '', phone1: phone, industry: ex.industry || null,
-            status: DEFAULT_STATUS, hp1: payload.website_url, source_urls: link.url, memo, created_by_id: userId,
+            status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: payload.website_url, source_urls: link.url, memo, created_by_id: userId,
           }).select('id').single()
           if (created?.id) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
-            counts.imported++; importedCount++
+            counts.imported++; importedCount++; importedThisRun++
           }
         }
 

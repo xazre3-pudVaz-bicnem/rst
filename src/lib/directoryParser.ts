@@ -4,7 +4,8 @@
 // 記事本文は保存しない（短い抜粋・抽出結果のみ）。
 // 他の地域ディレクトリにも拡張できるよう media_family ごとに設定を持つ。
 // ============================================================
-import { isForeignAddress, isJapanPhone } from './japanFilter.js'
+import { isForeignAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
+import { scoreCandidate, tierToTemperature, type HotTier, type InjectMode } from './hotTier.js'
 
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
@@ -177,23 +178,21 @@ export function extractDirectoryShopInfo(html: string, fallbackTitle = ''): Dire
   return { shop_name, phone, address, industry, hours, holiday, official_url, instagram_url, map_url, open, excerpt }
 }
 
-export interface DirectoryClassify { temperature: 'HOT' | 'HOLD' | 'EXCLUDED'; reason: string; isChain: boolean; isForeign: boolean }
+export interface DirectoryClassify { temperature: string; hot_tier: 'A' | 'B' | null; tier: HotTier; score: number; reason: string; priority: 'high' | 'normal' | null; isChain: boolean; isForeign: boolean }
 
-/** ディレクトリ候補の判定（記事公開日ではなく OPEN表記・電話・住所で判定）。 */
-export function classifyDirectoryCandidate(info: { shop_name: string; phone: string; address: string; open: OpenDate; isJapan: boolean }): DirectoryClassify {
+/** ディレクトリ/マーケットプレイス候補の判定（新規掲載＝新店根拠。営業向きならHOT_A/HOT_B）。 */
+export function classifyDirectoryCandidate(info: { shop_name: string; phone: string; address: string; open: OpenDate; isJapan: boolean }, mode: InjectMode = 'standard'): DirectoryClassify {
   const isChain = CHAIN_HINT.test(info.shop_name)
   const isForeign = isForeignAddress(info.address)
   const hasPhone = !!info.phone && isJapanPhone(info.phone)
   const hasAddr = !!info.address
   const hasOpen = info.open.confidence === 'high' || info.open.confidence === 'mid'
-  let temperature: DirectoryClassify['temperature'] = 'HOLD'
-  let reason = ''
-  if (isForeign) { temperature = 'EXCLUDED'; reason = '日本国外の候補のため除外。' }
-  else if (isChain) { temperature = 'EXCLUDED'; reason = '大手チェーンの可能性が高いため除外。' }
-  else if (!info.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
-  else if (info.open.confidence === 'low') { temperature = 'HOLD'; reason = `OPEN日(${info.open.text})が現在から不自然なためHOLD（要確認）。` }
-  else if (hasPhone && hasAddr && hasOpen && info.isJapan) { temperature = 'HOT'; reason = `新規掲載＋OPEN表記(${info.open.text})・電話・住所を確認したためHOT。` }
-  else if (hasAddr || hasOpen || hasPhone) { temperature = 'HOLD'; reason = `新規掲載店舗。${hasOpen ? `OPEN表記(${info.open.text})` : ''}${hasAddr ? '・住所あり' : ''}${hasPhone ? '・電話あり' : '・電話なし'}・HOT条件未達のためHOLD（要確認）。` }
-  else { temperature = 'HOLD'; reason = '新規掲載順だがOPEN日・連絡先が弱いためHOLD。' }
-  return { temperature, reason, isChain, isForeign }
+  const sc = scoreCandidate({
+    source: 'regional_media', isJapan: info.isJapan, hasShopName: !!info.shop_name, hasPhone, hasArea: hasAddr,
+    hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
+    placesMatched: false, hasOfficial: false,
+    isChain, isOrg: isOrgNonStore(info.shop_name), isEventRecruit: false, isForeign, isDup: false, reviewMany: false,
+  }, mode)
+  const { temperature, hot_tier } = tierToTemperature(sc.tier)
+  return { temperature, hot_tier, tier: sc.tier, score: sc.score, reason: sc.reason, priority: sc.priority, isChain, isForeign }
 }

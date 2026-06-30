@@ -325,6 +325,7 @@ export interface LeadCandidate {
   hot_missing_requirements?: string[] | null
   hot_blocking_reason?: string | null
   hot_required_score?: number | null
+  hot_tier?: 'A' | 'B' | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -386,6 +387,7 @@ export interface ClassifyOpts {
   exclude100?: boolean     // 口コミ100件以上は自動除外（既定true）
   unknownHold?: boolean    // 口コミ件数不明はHOLD（既定true）
   hotRequiredScore?: number // HOT基準点（既定75）
+  aiInjectMode?: 'strict' | 'standard' | 'aggressive' // 自動投入モード
 }
 
 /** AI投入リストの設定（localStorage） */
@@ -411,6 +413,10 @@ export interface LeadImportSettings {
   placesMaxQueriesPerDay: number // 既定30
   placesPerQuery: number         // 既定20
   placesMaxDetailsPerDay: number // 既定100
+  // 自動投入モード・上限
+  aiInjectMode: 'strict' | 'standard' | 'aggressive'
+  autoImportPerRun: number       // 既定50
+  autoImportPerDay: number       // 既定200
   // Instagram新店取得
   igEnabled: boolean        // Instagram取得ON/OFF
   igAutoImport: boolean     // IG単体HOT候補をcasesへ自動投入（初期OFF）

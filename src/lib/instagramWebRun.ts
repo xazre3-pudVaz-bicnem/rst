@@ -8,6 +8,7 @@ import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './google
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose } from './enrichProfile.js'
+import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -455,7 +456,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, dup: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, dup: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -515,6 +516,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     const nowIso = new Date().toISOString()
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     let importedCount = importedToday || 0
+    const iwMode: InjectMode = (s.aiInjectMode === 'strict' || s.aiInjectMode === 'aggressive') ? s.aiInjectMode : 'standard'
+    const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
+    const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
+    let importedThisRun = 0
 
     for (const query of picked) {
       if (Date.now() - startMs > TIME_BUDGET) { debug.stoppedEarly = true; break }
@@ -589,20 +594,23 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (area) { counts.areaKnown++; q.areaKnown++ } else { counts.areaUnknown++; q.areaUnknown++ }
         if (industry) { counts.industryKnown++; q.industryKnown++ } else { counts.industryUnknown++; q.industryUnknown++ }
 
-        // 温度: 全国化でも甘くしない。HOTは電話＋エリア(住所/市区町村)が必須
-        let temperature: string = j.recommended_status || 'HOLD'
         // 日本国外は除外（補完後の住所/電話で海外と判明した場合も）
         const foreignFinal = j.is_foreign || isForeignAddress(addressVal) || (!!finalPhone && !isJapanPhone(finalPhone))
-        if (foreignFinal) temperature = 'EXCLUDED'
-        // HOTは日本の住所/都道府県＋日本の電話番号が必須
         const japanOk = !foreignFinal && (!!prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
-        if (temperature === 'HOT') {
-          if (!finalPhone || !area) temperature = 'HOLD'
-          if (!japanOk || (finalPhone && !isJapanPhone(finalPhone))) temperature = 'HOLD'
-          if (s.iwRequirePhone && !finalPhone) temperature = 'HOLD'
-          if (s.iwPlacesRequired && !placeMatched) temperature = 'HOLD'
-        }
-        if (temperature === 'HOT') { counts.hot++; q.hot++ }
+        // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: Instagram投稿の新店根拠＋電話/住所で営業可能ならHOT
+        const igNew = !!(j.newness_type && j.newness_type !== 'unknown')
+        const sc = scoreCandidate({
+          source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone),
+          hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
+          igNew, regionalNew: false, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
+          isChain: false, isOrg: false, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
+        }, iwMode)
+        const tt = tierToTemperature(sc.tier)
+        let temperature: string = tt.temperature
+        const hotTier = tt.hot_tier
+        // 設定: 電話必須/Places必須が有効なら未充足はHOLDに戻す
+        if (temperature === 'HOT' && ((s.iwRequirePhone && !finalPhone) || (s.iwPlacesRequired && !placeMatched))) temperature = 'HOLD'
+        if (temperature === 'HOT') { counts.hot++; q.hot++; if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }
         else if (temperature === 'EXCLUDED') { counts.excluded++; q.excluded++ }
         else { counts.hold++; q.hold++ }
 
@@ -636,7 +644,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
           hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
           hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
-          lead_temperature: temperature, recommended_status: j.recommended_status || temperature,
+          lead_temperature: temperature, hot_tier: hotTier, recommended_status: sc.tier,
           is_new_instagram: true, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',
           owner_reachability_score: finalPhone ? 65 : 30,
@@ -675,13 +683,13 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (insErr) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(insErr.message) } else counts.saved++
         const candidateId = ins?.id || null
 
-        if (s.iwAutoImport && temperature === 'HOT' && finalPhone && candidateId && importedCount < dailyCap) {
-          const memo = [`【AI自動投入 / Instagram Web(全国)】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
+        if (s.iwAutoImport && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
+          const memo = [`【AI自動投入 / Instagram Web(全国) / ${sc.tier}】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
           const { data: created } = await admin.from('cases').insert({
             name, address: addressVal || '', phone1: finalPhone, industry,
-            status: DEFAULT_STATUS, hp1: officialVal || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
+            status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: officialVal || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
           }).select('id').single()
-          if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++ }
+          if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
         }
 
         if (!debug.sample) debug.sample = { query, url: r.url, title: r.title, snippet: r.snippet, rule: rf.result, judgement: j, area, temperature }

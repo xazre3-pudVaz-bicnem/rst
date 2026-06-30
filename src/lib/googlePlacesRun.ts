@@ -265,11 +265,15 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   const rotation = rawSettings?.rotation ?? def.rotation
   const autoImport = rawSettings?.autoImport ?? def.autoImport
   const dailyCap = Math.max(1, Number(rawSettings?.dailyCap) || def.dailyCap)
+  const aiInjectMode = (rawSettings?.aiInjectMode === 'strict' || rawSettings?.aiInjectMode === 'aggressive') ? rawSettings.aiInjectMode : 'standard'
+  const autoImportPerRun = Math.max(1, Number(rawSettings?.autoImportPerRun) || 50)
+  const autoImportPerDay = Math.max(1, Number(rawSettings?.autoImportPerDay) || 200)
   const opts = {
     hotMaxReviews: Number(rawSettings?.hotMaxReviews) > 0 ? Number(rawSettings.hotMaxReviews) : 5,
     warmMaxReviews: Number(rawSettings?.warmMaxReviews) > 0 ? Number(rawSettings.warmMaxReviews) : 15,
     exclude100: rawSettings?.exclude100 ?? true,
     unknownHold: rawSettings?.unknownHold ?? true,
+    aiInjectMode,
   }
 
   // 全国・新店系ワード検索（既定ON）。falseで旧エリア×業種ローテーション
@@ -312,7 +316,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
     dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
-    detailFailed: 0, judged: 0, skipped: 0,
+    detailFailed: 0, judged: 0, skipped: 0, hotA: 0, hotB: 0,
     countryJP: 0, countryNonJP: 0, addressCompMissing: 0, japanByAddrOnly: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
@@ -499,7 +503,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         if (classified.oldest_review_is_recent) counts.oldestRecent++
         if (orgLike && temp === 'EXCLUDED') counts.orgFiltered++
         if (chainish && temp === 'EXCLUDED') counts.chainExcluded++
-        if (temp === 'HOT') { counts.hot++; qstat.hot++ }
+        if (temp === 'HOT') { counts.hot++; qstat.hot++; if (classified.hot_tier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }
         else if (temp === 'EXCLUDED') { counts.excluded++; qstat.excluded++ }
         else { counts.hold++; qstat.hold++ }
         if (dupHit) { counts.duplicate++; qReason('既存案件と重複') }
@@ -588,10 +592,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           result: temp, saved: savedOk, exclusion: classified.exclusion_reason || null, saveError: saveErrMsg || null,
         })
 
-        // HOT自動投入
-        if (autoImport && temp === 'HOT' && !classified.duplicate_of_case_id && !alreadyImported && importedCount < dailyCap && candidateId) {
+        // HOT自動投入（HOT_A / HOT_B。strictモードはHOT_Aのみ。1回/1日上限）
+        const tierAllows = classified.hot_tier === 'A' || (classified.hot_tier === 'B' && aiInjectMode !== 'strict')
+        if (autoImport && temp === 'HOT' && tierAllows && !classified.duplicate_of_case_id && !alreadyImported && importedCount < autoImportPerDay && (counts.imported < autoImportPerRun) && candidateId) {
           const memo = [
-            `【AI自動投入 / GBP】`,
+            `【AI自動投入 / GBP / ${classified.recommended_status || temp}】`,
             `投入理由: ${classified.auto_import_reason || ''}`,
             `AIコメント: ${classified.ai_comment || ''}`,
             `口コミ: ${payload.user_rating_count ?? '不明'} / 最古口コミ: ${classified.oldest_review_days_ago ?? '不明'}日前`,
@@ -599,7 +604,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           ].join('\n')
           const { data: created, error: caseErr } = await admin.from('cases').insert({
             name: classified.name, address: classified.address || '', phone1: classified.phone_number || '',
-            industry: classified.industry || null, status: DEFAULT_STATUS, hp1: payload.website_url,
+            industry: classified.industry || null, status: DEFAULT_STATUS, priority: classified.hot_tier === 'A' ? '高' : '中', hp1: payload.website_url,
             instagram: classified.instagram_url || null, source_urls: 'AI自動投入', memo, created_by_id: userId,
           }).select('id').single()
           if (caseErr) recordSaveError('case insert: ' + caseErr.message)
