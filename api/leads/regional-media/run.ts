@@ -117,7 +117,14 @@ export default async function handler(req: any, res: any) {
     const b = body.updateProbeSite
     const u: any = {}
     if (b.name != null) u.name = String(b.name).slice(0, 80)
-    if (b.url_template != null) u.url_template = String(b.url_template).slice(0, 300)
+    if (b.url_template != null) {
+      u.url_template = String(b.url_template).slice(0, 300)
+      const norm = String(b.url_template).replace(/\{ID\}/g, '').replace(/\/+$/, '')
+      u.normalized_url_template = norm
+      u.source_key = `${norm}|${b.parser_type || 'generic_detail_page'}`
+    }
+    if (b.region_label != null) u.region_label = String(b.region_label).slice(0, 40)
+    if (b.prefecture != null) u.prefecture = String(b.prefecture).slice(0, 20)
     if (b.parser_type != null) u.parser_type = String(b.parser_type)
     if (b.id_padding != null) u.id_padding = Number(b.id_padding)
     if (b.scan_direction != null) u.scan_direction = b.scan_direction === 'backward' ? 'backward' : 'forward'
@@ -134,19 +141,30 @@ export default async function handler(req: any, res: any) {
     if (Object.keys(u).length) { u.updated_at = new Date().toISOString(); await admin.from('source_sites').update(u).eq('id', b.id) }
     return res.status(200).json({ ok: true })
   }
-  // 連番探索ソースを新規追加
+  // 連番探索ソースを新規追加（必ずINSERT。同一ドメインの既存ソースを上書きしない）
   if (body?.createProbeSite) {
     const b = body.createProbeSite
     const name = String(b.name || '').trim()
     const url_template = String(b.url_template || '').trim()
     if (!name || !url_template.includes('{ID}')) return res.status(400).json({ ok: false, error: 'サイト名・URLテンプレート（{ID}を含む）は必須です' })
-    let base_url = url_template
-    try { base_url = new URL(url_template.replace('{ID}', '1')).origin } catch { /* noop */ }
+    // 正規化URLテンプレート（{ID}除去・末尾スラッシュ整理）でソースを一意化。base_url もこれにして地域別を別ソースに
+    const normalized = url_template.replace(/\{ID\}/g, '').replace(/\/+$/, '')
+    const parser_type = String(b.parser_type || 'generic_detail_page')
+    const source_key = `${normalized}|${parser_type}`
+    // 重複チェック（同一URLテンプレートのみ。同一ドメインでもパスが違えば別ソース）。force_add でなければ既存を案内
+    const { data: dupN } = await admin.from('source_sites').select('id,name').eq('normalized_url_template', normalized).limit(1)
+    const { data: dupB } = (dupN && dupN[0]) ? { data: dupN } as any : await admin.from('source_sites').select('id,name').eq('base_url', normalized).limit(1)
+    const dup = (dupN && dupN[0]) ? dupN[0] : (dupB && dupB[0]) ? dupB[0] : null
+    if (dup && !b.force_add) {
+      return res.status(200).json({ ok: false, duplicate: true, existingId: dup.id, existingName: dup.name, error: '同じURLテンプレートのソースが既に存在します' })
+    }
     const startId = Number(b.start_probe_id) || 1
     const row: any = {
-      name: name.slice(0, 80), base_url, list_url: base_url, source_type: 'sequential_id_probe',
-      media_family: String(b.media_family || 'other'), parser_type: String(b.parser_type || 'generic_detail_page'), category_label: '店舗新着',
-      url_template: url_template.slice(0, 300), id_padding: Number(b.id_padding) || 0,
+      name: name.slice(0, 80), base_url: normalized, list_url: normalized, source_type: 'sequential_id_probe',
+      media_family: String(b.media_family || 'other'), parser_type, category_label: '店舗新着',
+      url_template: url_template.slice(0, 300), normalized_url_template: normalized, source_key,
+      region_label: b.region_label ? String(b.region_label).slice(0, 40) : null, prefecture: b.prefecture ? String(b.prefecture).slice(0, 20) : null,
+      id_padding: Number(b.id_padding) || 0,
       start_probe_id: startId, current_probe_id: startId, scan_direction: b.scan_direction === 'backward' ? 'backward' : 'forward',
       forward_scan_count: Math.max(1, Math.min(100, Number(b.forward_scan_count) || 20)), probe_batch_size: Math.max(1, Math.min(100, Number(b.forward_scan_count) || 20)),
       max_probe_per_run: Math.max(1, Math.min(100, Number(b.max_probe_per_run) || 20)), max_consecutive_not_found: 10, backfill_scan_count: 5, probe_mode: b.probe_mode === 'advance' ? 'advance' : 'safe',
@@ -154,7 +172,7 @@ export default async function handler(req: any, res: any) {
       is_active: b.is_active === true || b.is_active === 'true', probe_enabled: true, reliability_score: 60, crawl_interval_hours: 24,
       created_by: 'manual_probe', updated_at: new Date().toISOString(),
     }
-    const { data, error } = await admin.from('source_sites').upsert(row, { onConflict: 'base_url' }).select('id').single()
+    const { data, error } = await admin.from('source_sites').insert(row).select('id').single()
     if (error) return res.status(400).json({ ok: false, error: error.message })
     return res.status(200).json({ ok: true, id: data?.id })
   }

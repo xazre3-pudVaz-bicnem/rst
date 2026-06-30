@@ -237,21 +237,30 @@ export default function Leads() {
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
-  const DEFAULT_PROBE_FORM = { name: '', url_template: '', start_probe_id: '', id_padding: 12, scan_direction: 'forward', forward_scan_count: 20, max_probe_per_run: 20, parser_type: 'generic_detail_page', probe_mode: 'safe', valid_page_pattern: '', invalid_page_pattern: '', is_active: false }
+  const DEFAULT_PROBE_FORM = { name: '', url_template: '', region_label: '', prefecture: '', start_probe_id: '', id_padding: 12, scan_direction: 'forward', forward_scan_count: 20, max_probe_per_run: 20, parser_type: 'generic_detail_page', probe_mode: 'safe', valid_page_pattern: '', invalid_page_pattern: '', is_active: false }
   function openAddProbe() { setProbeFormEditId(null); setProbeForm({ ...DEFAULT_PROBE_FORM }); setProbeFormTest(null); setProbeFormOpen(true) }
-  function openEditProbe(st: any) { setProbeFormEditId(st.id); setProbeForm({ name: st.name || '', url_template: st.url_template || '', start_probe_id: String(st.start_probe_id ?? st.current_probe_id ?? ''), id_padding: st.id_padding ?? 12, scan_direction: st.scan_direction || 'forward', forward_scan_count: st.forward_scan_count ?? 20, max_probe_per_run: st.max_probe_per_run ?? 20, parser_type: st.parser_type || 'generic_detail_page', probe_mode: st.probe_mode || 'safe', valid_page_pattern: st.valid_page_pattern || '', invalid_page_pattern: st.invalid_page_pattern || '', is_active: !!st.is_active, current_probe_id: st.current_probe_id, last_checked_id: st.last_checked_id, last_valid_id: st.last_valid_id }); setProbeFormTest(null); setProbeFormOpen(true) }
+  function openEditProbe(st: any) { setProbeFormEditId(st.id); setProbeForm({ name: st.name || '', url_template: st.url_template || '', region_label: st.region_label || '', prefecture: st.prefecture || '', start_probe_id: String(st.start_probe_id ?? st.current_probe_id ?? ''), id_padding: st.id_padding ?? 12, scan_direction: st.scan_direction || 'forward', forward_scan_count: st.forward_scan_count ?? 20, max_probe_per_run: st.max_probe_per_run ?? 20, parser_type: st.parser_type || 'generic_detail_page', probe_mode: st.probe_mode || 'safe', valid_page_pattern: st.valid_page_pattern || '', invalid_page_pattern: st.invalid_page_pattern || '', is_active: !!st.is_active, current_probe_id: st.current_probe_id, last_checked_id: st.last_checked_id, last_valid_id: st.last_valid_id }); setProbeFormTest(null); setProbeFormOpen(true) }
   function probePreviewUrl() { const f = probeForm; if (!f?.url_template?.includes('{ID}')) return ''; const id = String(f.start_probe_id || '0'); const padded = Number(f.id_padding) > 0 ? id.padStart(Number(f.id_padding), '0') : id; return f.url_template.replace('{ID}', padded) }
   async function testProbeForm() {
     const f = probeForm
     const json = await regionalApi({ probeTestUrl: { url_template: f.url_template, id_padding: f.id_padding, parser_type: f.parser_type, valid_page_pattern: f.valid_page_pattern, invalid_page_pattern: f.invalid_page_pattern, id: Number(f.start_probe_id) || undefined } })
     if (json?.ok) { setProbeFormTest(json); toast[json.summary?.parserOk ? 'success' : 'error'](`テスト: ${json.summary?.parserOk ? '保存可能' : '抽出NG'}`) } else toast.error(json?.error || 'テストに失敗しました')
   }
-  async function saveProbeForm() {
+  async function saveProbeForm(forceAdd = false) {
     const f = probeForm
     if (!f.name?.trim() || !f.url_template?.includes('{ID}')) { toast.error('サイト名・URLテンプレート（{ID}を含む）は必須です'); return }
-    const payload = { name: f.name, url_template: f.url_template, parser_type: f.parser_type, id_padding: Number(f.id_padding) || 0, scan_direction: f.scan_direction, forward_scan_count: Number(f.forward_scan_count) || 20, max_probe_per_run: Number(f.max_probe_per_run) || 20, probe_mode: f.probe_mode, valid_page_pattern: f.valid_page_pattern || null, invalid_page_pattern: f.invalid_page_pattern || null, is_active: f.is_active, start_probe_id: Number(f.start_probe_id) || 1 }
-    const json = probeFormEditId ? await regionalApi({ updateProbeSite: { id: probeFormEditId, ...payload } }) : await regionalApi({ createProbeSite: payload })
-    if (json?.ok) { toast.success(probeFormEditId ? '更新しました' : '連番ソースを追加しました'); setProbeFormOpen(false); loadProbeSites() } else toast.error(json?.error || '保存に失敗しました')
+    const payload: any = { name: f.name, url_template: f.url_template, region_label: f.region_label || null, prefecture: f.prefecture || null, parser_type: f.parser_type, id_padding: Number(f.id_padding) || 0, scan_direction: f.scan_direction, forward_scan_count: Number(f.forward_scan_count) || 20, max_probe_per_run: Number(f.max_probe_per_run) || 20, probe_mode: f.probe_mode, valid_page_pattern: f.valid_page_pattern || null, invalid_page_pattern: f.invalid_page_pattern || null, is_active: f.is_active, start_probe_id: Number(f.start_probe_id) || 1 }
+    if (probeFormEditId) {
+      const json = await regionalApi({ updateProbeSite: { id: probeFormEditId, ...payload } })
+      if (json?.ok) { toast.success('更新しました'); setProbeFormOpen(false); loadProbeSites() } else toast.error(json?.error || '更新に失敗しました')
+      return
+    }
+    const json = await regionalApi({ createProbeSite: { ...payload, force_add: forceAdd } })
+    if (json?.ok) { toast.success('連番ソースを追加しました'); setProbeFormOpen(false); loadProbeSites() }
+    else if (json?.duplicate) {
+      if (window.confirm(`同じURLテンプレートのソース「${json.existingName}」が既に存在します。\nOK＝それでも別ソースとして追加 / キャンセル＝中止（編集する場合は一覧の編集ボタンから）`)) saveProbeForm(true)
+    }
+    else toast.error(json?.error || '保存に失敗しました')
   }
   async function testProbe(id: string) {
     setProbing(true)
@@ -1858,6 +1867,7 @@ export default function Leads() {
                 <Button size="sm" onClick={runProbeAll} disabled={probing}>{probing ? '探索中...' : '全ソースを探索（前回の続きから）'}</Button>
                 <Button size="sm" variant="outline" onClick={openAddProbe}>＋ 連番ソースを追加</Button>
                 <button onClick={loadProbeSites} className="text-[10px] text-primary hover:underline">再読込</button>
+                <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground"><input type="checkbox" checked={devMode} onChange={(e) => setDevMode(e.target.checked)} />開発者モード（source_id等を表示）</label>
               </div>
               {probeResult && (
                 <div className="flex flex-wrap gap-1.5 text-[10px]">
@@ -1890,6 +1900,7 @@ export default function Leads() {
                   <div key={st.id} className="rounded border bg-muted/30 p-2 text-[10px]">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold">{st.name}</span>
+                      {st.region_label && <span className="rounded bg-sky-100 px-1 text-[9px] text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">{st.region_label}</span>}
                       <span className={cn('rounded px-1 text-[9px]', st.is_active ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700')}>{st.is_active ? '有効' : '無効'}</span>
                       <span className="rounded bg-indigo-100 px-1 text-[9px] text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">{st.parser_type || 'generic_detail_page'}</span>
                       <span className="truncate text-muted-foreground" title={st.url_template}>{st.url_template}</span>
@@ -1898,6 +1909,7 @@ export default function Leads() {
                       <b className="text-foreground">最後に有効だったID {st.last_valid_id ?? st.last_found_id ?? '-'}</b> ・ 前回最終確認 {st.last_checked_id ?? '-'} ・ <b className="text-foreground">次回開始ID {st.current_probe_id ?? st.start_probe_id ?? '-'}</b> ・ モード {st.probe_mode === 'advance' ? '先行探索' : '安全確認'} ・ padding{st.id_padding ?? 0} ・ 連続not_found {st.consecutive_not_found_count ?? 0} ・ 累計 valid{st.total_valid_count ?? 0}/invalid{st.total_invalid_count ?? 0}
                     </div>
                     <div className="text-[9px] text-muted-foreground">基準: {st.probe_mode === 'advance' ? '最後に確認したIDの次から（先行）' : '最後に有効だったIDの次から再確認（安全・invalid範囲も再確認）'}{(st.last_valid_id != null && st.last_checked_id != null && st.last_checked_id > st.last_valid_id) ? ` ・ invalid再確認対象: ${Number(st.last_valid_id) + 1}〜${st.last_checked_id}` : ''}</div>
+                    {devMode && <div className="mt-0.5 rounded bg-muted/40 p-1 text-[9px] text-muted-foreground"><div>source_id: {st.id}</div><div className="break-all">source_key: {st.source_key || '—'}</div><div className="break-all">normalized: {st.normalized_url_template || '—'}</div><div>created: {st.created_at ? moment(st.created_at).format('MM/DD HH:mm') : '—'} / updated: {st.updated_at ? moment(st.updated_at).format('MM/DD HH:mm') : '—'}</div></div>}
                     {st.probe_result_summary && <div className="text-muted-foreground">最終結果: {st.probe_result_summary}</div>}
                     {/* parser テスト結果（既知URL） */}
                     {probeTests[st.id] && (
@@ -2473,12 +2485,16 @@ export default function Leads() {
               <div className="absolute inset-0 bg-black/40" />
               <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
                 <div className="mb-2 flex items-center justify-between">
-                  <div className="text-sm font-bold">{probeFormEditId ? '連番ソースを編集' : '連番ソースを追加'}</div>
+                  <div className="text-sm font-bold">{probeFormEditId ? `連番ソースを編集：${probeForm.name || ''}` : '連番ソースを追加'}</div>
                   <button onClick={() => setProbeFormOpen(false)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
                 </div>
                 <div className="space-y-2">
                   <div><Label>サイト名</Label><Input value={probeForm.name} onChange={(e) => setProbeForm({ ...probeForm, name: e.target.value })} placeholder="じゃらん観光スポット" className="h-8" /></div>
-                  <div><Label>URLテンプレート（{'{ID}'} に連番IDを差し込み）</Label><Input value={probeForm.url_template} onChange={(e) => setProbeForm({ ...probeForm, url_template: e.target.value })} placeholder="https://www.jalan.net/kankou/spt_guide{ID}/" className="h-8 font-mono" /></div>
+                  <div><Label>URLテンプレート（{'{ID}'} に連番IDを差し込み）</Label><Input value={probeForm.url_template} onChange={(e) => setProbeForm({ ...probeForm, url_template: e.target.value })} placeholder="https://tabelog.com/saitama/A1101/A110102/{ID}" className="h-8 font-mono" /></div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><Label>地域ラベル</Label><Input value={probeForm.region_label} onChange={(e) => setProbeForm({ ...probeForm, region_label: e.target.value })} placeholder="埼玉" className="h-8" /></div>
+                    <div><Label>都道府県</Label><Input value={probeForm.prefecture} onChange={(e) => setProbeForm({ ...probeForm, prefecture: e.target.value })} placeholder="埼玉県" className="h-8" /></div>
+                  </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div><Label>開始ID</Label><Input value={probeForm.start_probe_id} onChange={(e) => setProbeForm({ ...probeForm, start_probe_id: e.target.value })} placeholder="231369" className="h-8" /></div>
                     <div><Label>ID桁数</Label><Input type="number" value={probeForm.id_padding} onChange={(e) => setProbeForm({ ...probeForm, id_padding: Number(e.target.value) })} className="h-8" /></div>
@@ -2510,7 +2526,7 @@ export default function Leads() {
                   <details className="text-[10px] text-muted-foreground"><summary className="cursor-pointer">入力例（じゃらん）</summary><div className="mt-1">サイト名: じゃらん観光スポット / URL: https://www.jalan.net/kankou/spt_guide{'{ID}'}/ / 開始ID: 231369 / ID桁数: 12 / parser: jalan_spot_detail / 有効: 名称, 所在地, お問い合わせ / 無効: 該当観光スポット情報は存在しません, 404</div></details>
                   <div className="flex justify-end gap-2 pt-1">
                     <Button size="sm" variant="outline" onClick={testProbeForm} disabled={!probeForm.url_template?.includes('{ID}')}>このURLでテスト</Button>
-                    <Button size="sm" onClick={saveProbeForm}>{probeFormEditId ? '更新' : '保存'}</Button>
+                    <Button size="sm" onClick={() => saveProbeForm(false)}>{probeFormEditId ? '更新する' : '追加する'}</Button>
                   </div>
                 </div>
               </div>
