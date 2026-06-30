@@ -224,6 +224,41 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true, activeCount: count || 0 })
   }
 
+  // HOLD救済: 電話番号が無いHOLD候補に対し Places/公式/検索 で電話を補完し、取れたらHOTへ昇格（全ソース横断・架電リスト増強）
+  if (body?.rescueHolds) {
+    const limit = Math.min(300, Number(body.rescueHolds.limit) || 80)
+    const { data: rows } = await admin.from('lead_candidates')
+      .select('id,name,extracted_shop_name,extracted_shop_name_from_article,extracted_area,extracted_area_from_article,extracted_industry,extracted_prefecture,extracted_city,address,phone_number,is_chain_store,duplicate_of_case_id,has_google_opening_date,match_confidence,imported_to_cases,imported_case_id')
+      .eq('lead_temperature', 'HOLD').is('phone_number', null)
+      .not('address', 'is', null).not('name', 'is', null)
+      .limit(limit)
+    let scanned = 0, enriched = 0, phoneFound = 0, promotedHot = 0
+    for (const cand of (rows || [])) {
+      scanned++
+      if (cand.is_chain_store || cand.duplicate_of_case_id) continue
+      const shop = cand.extracted_shop_name_from_article || cand.extracted_shop_name || cand.name || ''
+      if (!shop || shop === '店名未確定') continue
+      const areaHint = cand.extracted_area_from_article || cand.extracted_area || cand.address || ''
+      const e = await enrichCandidate(process.env.GOOGLE_MAPS_API_KEY || null, { shop, username: '', areaHint, industry: cand.extracted_industry || '', havePhone: '', haveAddress: cand.address || '' }, { maxQueries: 3, perQuery: 5 })
+      enriched++
+      const phone = e.phone || null
+      if (!phone || !isJapanPhone(phone) || !isValidJpPhone(phone)) continue  // 地域矛盾・不正電話は enrichCandidate 側で除外済み
+      phoneFound++
+      const prefecture = cand.extracted_prefecture || e.prefecture || null
+      const area = cand.extracted_area || [prefecture, e.city].filter(Boolean).join('') || null
+      const rc = recomputeRmHot(cand, { phone, address: cand.address || e.address || null, prefecture, area, hasOpening: e.has_opening || cand.has_google_opening_date, placeMatched: !!e.place_id, confidence: e.confidence ?? cand.match_confidence ?? 0 })
+      const u: any = {
+        phone_number: phone, extracted_phone: phone, phone_source: 'enrich_rescue', address: cand.address || e.address || null,
+        lead_temperature: rc.temperature, hot_tier: rc.temperature === 'HOT' ? 'B' : null,
+        should_exclude_from_call_list: rc.temperature === 'EXCLUDED', enriched_phone: phone, last_enriched_at: new Date().toISOString(),
+        ai_comment: `HOLD救済: ${e.place_id ? 'Google Places' : '検索/公式'}で電話補完→${rc.temperature}。`,
+      }
+      await admin.from('lead_candidates').update(u).eq('id', cand.id)
+      if (rc.temperature === 'HOT') promotedHot++
+    }
+    return res.status(200).json({ ok: true, scanned, enriched, phoneFound, promotedHot })
+  }
+
   // 連番探索（食べログ/じゃらん）由来候補を source_detail_url から再取得して正式店名・電話・住所を再抽出
   if (body?.recorrectProbe) {
     try {

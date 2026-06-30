@@ -41,6 +41,26 @@ const JAPAN_RECTANGLE = {
   high: { latitude: 46.0, longitude: 154.0 },
 }
 
+// 全国を地域ブロックに分割（locationRestrictionをブロック単位にして、東京偏重を避け地方の開業前GBPまで網羅）。
+// 各クエリにブロックを割り当て、実行ごとにローテーションで全国をカバーする。
+export const REGION_RECTANGLES: { key: string; name: string; rect: { low: { latitude: number; longitude: number }; high: { latitude: number; longitude: number } } }[] = [
+  { key: 'hokkaido', name: '北海道', rect: { low: { latitude: 41.3, longitude: 139.3 }, high: { latitude: 45.6, longitude: 146.0 } } },
+  { key: 'tohoku_n', name: '北東北', rect: { low: { latitude: 39.4, longitude: 139.4 }, high: { latitude: 41.6, longitude: 142.1 } } },
+  { key: 'tohoku_s', name: '南東北', rect: { low: { latitude: 37.0, longitude: 139.2 }, high: { latitude: 39.5, longitude: 141.7 } } },
+  { key: 'kita_kanto', name: '北関東', rect: { low: { latitude: 35.9, longitude: 138.4 }, high: { latitude: 37.1, longitude: 140.9 } } },
+  { key: 'tokyo', name: '東京・神奈川', rect: { low: { latitude: 35.1, longitude: 138.9 }, high: { latitude: 35.95, longitude: 140.3 } } },
+  { key: 'chiba_saitama', name: '千葉・埼玉', rect: { low: { latitude: 35.0, longitude: 138.8 }, high: { latitude: 36.3, longitude: 140.9 } } },
+  { key: 'koshinetsu', name: '甲信越', rect: { low: { latitude: 35.2, longitude: 137.3 }, high: { latitude: 38.6, longitude: 139.9 } } },
+  { key: 'tokai', name: '東海', rect: { low: { latitude: 34.5, longitude: 136.4 }, high: { latitude: 35.9, longitude: 138.9 } } },
+  { key: 'hokuriku', name: '北陸', rect: { low: { latitude: 35.4, longitude: 135.9 }, high: { latitude: 37.6, longitude: 137.7 } } },
+  { key: 'kansai', name: '関西', rect: { low: { latitude: 33.4, longitude: 134.3 }, high: { latitude: 35.7, longitude: 136.5 } } },
+  { key: 'chugoku', name: '中国', rect: { low: { latitude: 33.8, longitude: 130.9 }, high: { latitude: 35.6, longitude: 134.4 } } },
+  { key: 'shikoku', name: '四国', rect: { low: { latitude: 32.7, longitude: 132.0 }, high: { latitude: 34.4, longitude: 134.8 } } },
+  { key: 'kyushu_n', name: '北部九州', rect: { low: { latitude: 32.6, longitude: 129.3 }, high: { latitude: 34.0, longitude: 131.9 } } },
+  { key: 'kyushu_s', name: '南九州', rect: { low: { latitude: 30.9, longitude: 130.2 }, high: { latitude: 32.9, longitude: 132.1 } } },
+  { key: 'okinawa', name: '沖縄', rect: { low: { latitude: 24.0, longitude: 122.9 }, high: { latitude: 27.9, longitude: 131.4 } } },
+]
+
 /** addressComponents優先で日本国内のplaceか判定（formattedAddress/電話でフォールバック）。 */
 export function isJapanPlace(p: any): { isJapan: boolean; decided: boolean; country: string; basis: string } {
   const comps = Array.isArray(p?.addressComponents) ? p.addressComponents : []
@@ -169,16 +189,16 @@ export function phoneOf(p: any): string {
   return p.nationalPhoneNumber || p.internationalPhoneNumber || ''
 }
 
-/** 第1段階: 軽い検索（1ページ）。pageToken指定で次ページ。nextPageToken も返す。 */
-export async function searchLight(apiKey: string, query: string, maxResultCount: number, pageToken?: string): Promise<{ status: number; places: any[]; error: string | null; nextPageToken: string | null }> {
+/** 第1段階: 軽い検索（1ページ）。pageToken指定で次ページ。nextPageToken も返す。rect指定で地域ブロック検索。 */
+export async function searchLight(apiKey: string, query: string, maxResultCount: number, pageToken?: string, rect?: any): Promise<{ status: number; places: any[]; error: string | null; nextPageToken: string | null }> {
   try {
     const body: any = {
       textQuery: query, languageCode: 'ja', regionCode: 'JP',
       pageSize: Math.max(1, Math.min(20, maxResultCount)),
       // オープン予定（future opening）のビジネスも検索対象に含める（新店を取りこぼさない）
       includeFutureOpeningBusinesses: true,
-      // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。
-      locationRestriction: { rectangle: JAPAN_RECTANGLE },
+      // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。地域ブロック指定で全国を網羅。
+      locationRestriction: { rectangle: rect || JAPAN_RECTANGLE },
     }
     if (pageToken) body.pageToken = pageToken
     const res = await fetch(SEARCH_ENDPOINT, {
@@ -197,11 +217,11 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
 }
 
 /** 1クエリを複数ページ取得（nextPageTokenを辿る）。重複place_idは除外。 */
-export async function searchPaged(apiKey: string, query: string, perPage: number, maxPages: number, resultLimit: number): Promise<{ status: number; places: any[]; error: string | null; pages: number; apiReturned: number }> {
+export async function searchPaged(apiKey: string, query: string, perPage: number, maxPages: number, resultLimit: number, rect?: any): Promise<{ status: number; places: any[]; error: string | null; pages: number; apiReturned: number }> {
   const seen = new Set<string>(); const out: any[] = []
   let token: string | undefined = undefined; let pages = 0; let apiReturned = 0; let status = 0; let error: string | null = null
   for (let i = 0; i < Math.max(1, maxPages); i++) {
-    const r: { status: number; places: any[]; error: string | null; nextPageToken: string | null } = await searchLight(apiKey, query, perPage, token)
+    const r: { status: number; places: any[]; error: string | null; nextPageToken: string | null } = await searchLight(apiKey, query, perPage, token, rect)
     status = r.status; if (r.error) { error = r.error; break }
     pages++; apiReturned += r.places.length
     for (const p of r.places) { const id = p.id || JSON.stringify(p.displayName); if (!seen.has(id)) { seen.add(id); out.push(p) } }
@@ -400,16 +420,24 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     debug.japanCountryFilter = true
     const nowIso = new Date().toISOString()
 
+    // 全国エリアグリッド: 各クエリに地域ブロックを割り当て（東京偏重を避け全国網羅）。実行ごとに開始位置をずらす。
+    const useGrid = nationwide && rawSettings?.placesAreaGrid !== false
+    const gridOffset = picked.length  // 実行ごとにpicked件数でずらす（ローテーション近似）
+    const regionsCovered = new Set<string>()
+    let qi = -1
     for (const gq of picked) {
+      qi++
       // 504回避: 時間予算を超えたら残りクエリは次回実行に回す
       if (overBudget()) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
       const query = gq.query
-      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit)
+      const region = useGrid ? REGION_RECTANGLES[(qi + gridOffset) % REGION_RECTANGLES.length] : null
+      if (region) regionsCovered.add(region.name)
+      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit, region?.rect)
       if (r.error) { counts.error++; errorMessage = r.error }
       counts.apiReturned += r.apiReturned; counts.pages += r.pages; counts.uniquePlaceIds += r.places.length
       // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
       const qstat: any = {
-        query, isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, pages: r.pages, apiReturned: r.apiReturned, error: r.error,
+        query, region: region?.name || '全国', isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, pages: r.pages, apiReturned: r.apiReturned, error: r.error,
         detail: 0, judged: 0, hot: 0, hold: 0, excluded: 0, skipped: 0, saved: 0, saveError: 0,
         reasons: {} as Record<string, number>, items: [] as any[],
       }
@@ -705,6 +733,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         : (counts.saveError > 0 ? 'B: HOTありだがDB保存失敗' : 'C: HOTありだがcases投入失敗/上限')
 
     debug.estApiCalls = picked.length + counts.detailCalls
+    debug.regionsCovered = Array.from(regionsCovered)
+    debug.areaGrid = useGrid
     await admin.from('auto_lead_runs').update({
       status: 'success', finished_at: new Date().toISOString(),
       search_queries_count: picked.length, fetched_count: counts.fetched,
@@ -713,7 +743,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       error_count: counts.error, error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, queries: picked.length, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
+    return { ok: true, runId, queries: picked.length, regionsCovered: Array.from(regionsCovered), ...counts, errorCount: counts.error, error: errorMessage || null, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg, error_count: counts.error + 1 }).eq('id', runId)

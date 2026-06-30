@@ -38,6 +38,32 @@ function fmtDate(s?: string | null): string {
   return m.isValid() ? m.format('YYYY/MM/DD') : '—'
 }
 
+/** 架電優先スコア（0-100）: 全ソース横断で「今すぐ架電すべき」順に並べるための統一ランク。
+ *  openingDate(未来/直近) > 新規GBP優先 > HOT > 電話+住所 > 新店根拠 > 新しさ の重み付け。電話なし・EXCLUDEDは大きく減点。 */
+function callPriority(c: any): number {
+  if (!c) return 0
+  if (c.lead_temperature === 'EXCLUDED' || c.should_exclude_from_call_list) return 0
+  let s = 0
+  const temp = c.lead_temperature
+  if (temp === 'HOT') s += 55; else if (temp === 'HOLD') s += 22
+  if (c.hot_tier === 'A') s += 25; else if (c.hot_tier === 'B') s += 12
+  const band = c.opening_date_band
+  if (band === 'future') s += 32; else if (band === 'd0_90') s += 30; else if (band === 'd91_180') s += 18; else if (band === 'd181_365') s += 6
+  if (c.is_new_gbp_priority) s += 22
+  if (c.has_opening_date_badge || c.has_google_opening_date) s += 8
+  const hasPhone = !!(c.phone_number || c.extracted_phone)
+  const hasAddr = !!(c.address || c.extracted_address)
+  if (hasPhone) s += 16; else s -= 30  // 電話なしは架電できない＝大幅減点
+  if (hasAddr) s += 8; else s -= 6
+  if (c.name_unconfirmed_hot) s -= 6  // 店名未確定は要確認のため微減
+  // 新しさ（初回発見/検出日が直近）
+  const seen = c.first_seen_at || c.regional_media_detected_at || c.first_discovered_at || c.last_seen_at
+  if (seen) { const d = (Date.now() - Date.parse(seen)) / 86400000; if (d <= 3) s += 8; else if (d <= 7) s += 4 }
+  // 新店根拠
+  if (c.newness_reason || c.regional_media_newness_reason || c.matched_keywords?.length) s += 4
+  return Math.max(0, Math.min(100, Math.round(s)))
+}
+
 function loadSettings(): LeadImportSettings {
   try {
     const raw = localStorage.getItem(LS_LEAD_SETTINGS)
@@ -111,6 +137,7 @@ export default function Leads() {
   const [allTest, setAllTest] = useState<any>(null)
   const [shown, setShown] = useState(50)  // 一覧の表示件数
   const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr' | 'opening_date' | 'new_gbp'>('all')  // HOT絞り込み
+  const [rankMode, setRankMode] = useState<'priority' | 'newest'>('priority')  // 並び順: 架電優先 / 新着
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -302,6 +329,13 @@ export default function Leads() {
     setRecorrecting(true)
     try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / 店名未確定HOT-B昇格${json.promotedHotB ?? 0} / HOLD${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
     finally { setRecorrecting(false) }
+  }
+  const [rescuing, setRescuing] = useState(false)
+  async function rescueHolds() {
+    if (!window.confirm('電話番号が無いHOLD候補に対し、Google Places・公式サイト・検索で電話番号を補完し、取れたらHOTへ昇格します（架電リストを増やす）。地域が矛盾する電話は採用しません。実行しますか？')) return
+    setRescuing(true)
+    try { const json = await regionalApi({ rescueHolds: { limit: 80 } }); if (json?.ok) { toast.success(`HOLD救済: ${json.scanned}件走査 / 補完試行${json.enriched} / 電話取得${json.phoneFound} / HOT昇格${json.promotedHot}`); load() } else toast.error(json?.error || '救済に失敗しました') }
+    finally { setRescuing(false) }
   }
   async function recorrectProbe() {
     if (!window.confirm('連番探索（食べログ/じゃらん）由来で「連番探索候補」「店名未確定」のままの候補を、元URLから再取得して正式店名・電話・住所を再抽出します。\ncases投入済みなら案件側の店名も更新します。実行しますか？')) return
@@ -852,7 +886,14 @@ export default function Leads() {
       return true
     })
   }, [filtered, subFilter])
-  const visible = useMemo(() => (shown >= subFiltered.length ? subFiltered : subFiltered.slice(0, shown)), [subFiltered, shown])
+  // 並び替え: 架電優先（callPriority降順）/ 新着（発見日降順）
+  const subSorted = useMemo(() => {
+    const arr = [...subFiltered]
+    if (rankMode === 'priority') arr.sort((a: any, b: any) => callPriority(b) - callPriority(a))
+    else arr.sort((a: any, b: any) => Date.parse(b.first_seen_at || b.last_seen_at || 0) - Date.parse(a.first_seen_at || a.last_seen_at || 0))
+    return arr
+  }, [subFiltered, rankMode])
+  const visible = useMemo(() => (shown >= subSorted.length ? subSorted : subSorted.slice(0, shown)), [subSorted, shown])
   const rmSitesFiltered = useMemo(() => {
     const q = siteFilter.q.trim().toLowerCase()
     return rmSites.filter((s) => {
@@ -2348,6 +2389,10 @@ export default function Leads() {
             {([['all', 'すべて'], ['named_hot', '店名ありHOT'], ['unconfirmed_hot', '店名未確定HOT(要確認)'], ['opening_date', 'Google開業日あり'], ['new_gbp', '新規GBP優先'], ['has_phone', '電話あり'], ['has_addr', '住所あり']] as const).map(([k, label]) => (
               <button key={k} onClick={() => setSubFilter(k)} className={cn('rounded-full border px-2 py-0.5', subFilter === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-muted-foreground hover:bg-accent')}>{label}{k === 'unconfirmed_hot' ? ` (${sourceCandidates.filter((c: any) => c.name_unconfirmed_hot).length})` : k === 'new_gbp' ? ` (${sourceCandidates.filter((c: any) => c.is_new_gbp_priority).length})` : k === 'opening_date' ? ` (${sourceCandidates.filter((c: any) => c.has_opening_date_badge || c.has_google_opening_date).length})` : ''}</button>
             ))}
+            <span className="ml-2 text-muted-foreground">並び順:</span>
+            <button onClick={() => setRankMode('priority')} className={cn('rounded-full border px-2 py-0.5', rankMode === 'priority' ? 'border-rose-500 bg-rose-500 text-white' : 'border-input text-muted-foreground hover:bg-accent')}>🔥架電優先</button>
+            <button onClick={() => setRankMode('newest')} className={cn('rounded-full border px-2 py-0.5', rankMode === 'newest' ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-muted-foreground hover:bg-accent')}>新着順</button>
+            <span className="rounded-full bg-rose-100 px-2 py-0.5 font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">今すぐ架電 {sourceCandidates.filter((c: any) => callPriority(c) >= 70).length}件（優先度70+）</span>
           </div>
           {/* 表示件数 */}
           <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
@@ -2360,6 +2405,7 @@ export default function Leads() {
             {shown < subFiltered.length && <button onClick={() => setShown((s) => s + 50)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+50)</button>}
             <button onClick={recorrectNames} disabled={recorrecting} className="ml-auto rounded border border-amber-500 px-2 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10">{recorrecting ? '再補正中...' : '既存の店名を再補正（サイト名/カテゴリをHOLDへ）'}</button>
             <button onClick={recorrectProbe} disabled={recorrecting} className="rounded border border-indigo-500 px-2 py-0.5 text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-500/10">{recorrecting ? '再取得中...' : '連番候補を再取得（食べログ正式店名へ）'}</button>
+            <button onClick={rescueHolds} disabled={rescuing} className="rounded border border-rose-500 px-2 py-0.5 font-bold text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{rescuing ? '救済中...' : '🔥HOLD救済（電話補完→HOT昇格）'}</button>
           </div>
 
           {/* テーブル */}
@@ -2397,7 +2443,7 @@ export default function Leads() {
                 <tbody>
                   {visible.map((c) => (
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
-                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-` : c.lead_temperature}</span>{callPriority(c) >= 70 && <span className="ml-1 rounded bg-rose-500 px-1 text-[8px] font-bold text-white">🔥{callPriority(c)}</span>}</td>
                       <td className="max-w-[150px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
                         <div className="text-[9px] text-muted-foreground">{c.extracted_industry || '—'}{c.newness_type ? ` / ${c.newness_type}` : ''}</div>
@@ -2480,7 +2526,7 @@ export default function Leads() {
                 <tbody>
                   {visible.map((c) => (
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
-                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span></td>
+                      <td className="p-2"><span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-` : c.lead_temperature}</span>{callPriority(c) >= 70 && <span className="ml-1 rounded bg-rose-500 px-1 text-[8px] font-bold text-white">🔥{callPriority(c)}</span>}</td>
                       <td className="max-w-[160px] p-2">
                         <div className="font-medium">{c.extracted_shop_name || c.name}</div>
                         {c.extracted_industry && <div className="text-[9px] text-muted-foreground">{c.extracted_industry}</div>}
@@ -2621,6 +2667,7 @@ export default function Leads() {
                     <tr key={c.id} className="cursor-pointer border-t align-top hover:bg-accent/40" onClick={() => setDrawerCand(c)}>
                       <td className="p-2">
                         <span className={cn('rounded px-1.5 py-0.5 font-bold', LEAD_TEMP_COLORS[c.lead_temperature])}>{c.lead_temperature === 'HOT' && c.hot_tier ? `HOT-${c.hot_tier}` : c.lead_temperature}</span>
+                        {callPriority(c) >= 70 && <span className="ml-1 rounded bg-rose-500 px-1 text-[8px] font-bold text-white">🔥{callPriority(c)}</span>}
                       </td>
                       <td className="p-2">
                         <div className="font-medium">{c.name}</div>
@@ -2821,6 +2868,7 @@ export default function Leads() {
               <div className="relative h-full w-full max-w-md overflow-y-auto border-l bg-card p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
                 <div className="mb-2 flex items-center justify-between">
                   <span className={cn('rounded px-2 py-0.5 font-bold', LEAD_TEMP_COLORS[drawerCand.lead_temperature])}>{drawerCand.lead_temperature === 'HOT' && drawerCand.hot_tier ? `HOT-${drawerCand.hot_tier}` : drawerCand.lead_temperature}</span>
+                  <span className={cn('rounded px-2 py-0.5 font-bold', callPriority(drawerCand) >= 70 ? 'bg-rose-500 text-white' : callPriority(drawerCand) >= 45 ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'bg-muted text-muted-foreground')}>架電優先度 {callPriority(drawerCand)}</span>
                   <button onClick={() => setDrawerCand(null)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
                 </div>
                 <div className="text-base font-bold">{drawerCand.name}{(drawerCand as any).name_unconfirmed_hot && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要店名確認</span>}</div>
