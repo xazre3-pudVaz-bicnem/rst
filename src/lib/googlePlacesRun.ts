@@ -332,6 +332,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     saveErrorDetails: [] as any[],
   }
   let errorMessage = ''
+  // 504回避: 実行全体の時間予算（Vercel maxDuration 60s に対する安全マージン）。超過後は新規クエリ/詳細取得を打ち切り次回へ。
+  const runStart = Date.now()
+  const RUN_BUDGET_MS = Math.max(20000, Number(rawSettings?.runBudgetMs) || 50000)
+  const overBudget = () => (Date.now() - runStart) > RUN_BUDGET_MS
+  debug.runBudgetMs = RUN_BUDGET_MS
   const recordSaveError = (msg: string, ctx?: any) => {
     counts.saveError++
     if (debug.saveErrors.length < 5) debug.saveErrors.push(String(msg).slice(0, 300))
@@ -360,6 +365,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     const nowIso = new Date().toISOString()
 
     for (const gq of picked) {
+      // 504回避: 時間予算を超えたら残りクエリは次回実行に回す
+      if (overBudget()) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
       const query = gq.query
       const r = await searchLight(apiKey, query, perQuery)
       if (r.error) { counts.error++; errorMessage = r.error }
@@ -422,6 +429,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         let p: any = lp
         const fromNewOpen = gq.isNewOpen
         if (!hardExclude) {
+          // 504回避: 時間予算を超えたら詳細取得を打ち切り次回へ（SKIPPED）
+          if (overBudget()) {
+            counts.skipped++; qstat.skipped++; qReason('実行時間上限(次回継続)')
+            logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '実行時間上限・次回継続', saved: false }); continue
+          }
           // Place Details の1日上限（コスト制御）→ SKIPPED（保存しない）
           if (detailsToday + counts.detailCalls >= maxDetailsPerDay) {
             counts.detailCapped++; counts.skipped++; qstat.skipped++; qReason('Details1日上限超過')

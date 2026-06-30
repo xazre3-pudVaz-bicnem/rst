@@ -61,13 +61,18 @@ interface WebResult { title: string; url: string; snippet: string }
 
 async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null }> {
   const prov = searchProvider()
+  // 504回避: 検索APIが固まっても8秒で打ち切る
+  const ctrl = new AbortController()
+  let timedOut = false
+  const to = setTimeout(() => { timedOut = true; ctrl.abort() }, 8000)
   try {
     if (prov === 'serper') {
       const res = await fetch('https://google.serper.dev/search', {
-        method: 'POST',
+        method: 'POST', signal: ctrl.signal,
         headers: { 'X-API-KEY': process.env.SERPER_API_KEY as string, 'Content-Type': 'application/json' },
         body: JSON.stringify({ q: query, gl: 'jp', hl: 'ja', num: Math.min(20, num) }),
       })
+      clearTimeout(to)
       const j: any = await res.json().catch(() => ({}))
       if (!res.ok) return { results: [], error: String(j?.message || `HTTP ${res.status}`).slice(0, 200) }
       const organic = Array.isArray(j.organic) ? j.organic : []
@@ -75,14 +80,16 @@ async function webSearch(query: string, num: number): Promise<{ results: WebResu
     }
     if (prov === 'bing') {
       const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${Math.min(20, num)}&mkt=ja-JP`
-      const res = await fetch(u, { headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY as string } })
+      const res = await fetch(u, { headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY as string }, signal: ctrl.signal })
+      clearTimeout(to)
       const j: any = await res.json().catch(() => ({}))
       if (!res.ok) return { results: [], error: String(j?.error?.message || `HTTP ${res.status}`).slice(0, 200) }
       const vals = j?.webPages?.value || []
       return { results: vals.map((o: any) => ({ title: o.name || '', url: o.url || '', snippet: o.snippet || '' })), error: null }
     }
     return { results: [], error: '検索APIキー未設定（SERPER_API_KEY / BING_SEARCH_API_KEY）' }
-  } catch (e: any) { return { results: [], error: String(e?.message || e).slice(0, 200) } }
+  } catch (e: any) { return { results: [], error: timedOut ? 'timeout(8000ms・検索API応答遅延)' : String(e?.message || e).slice(0, 200) } }
+  finally { clearTimeout(to) }
 }
 
 // ---- ルールベース粗選別（Anthropic判定の前に必ず実行） ----
@@ -456,7 +463,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         // 外部情報補完: 電話または地域が無ければ、関連サイト/予約サイト/Placesから補完
         let enrich: EnrichResult | null = null
-        const needEnrich = enrichEnabled && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture) && !base.is_foreign
+        // 504回避: 時間予算を超えたら補完はせず軽量判定のみ（続きは次回実行）
+        const overBudget = Date.now() - startMs > TIME_BUDGET
+        const needEnrich = enrichEnabled && !overBudget && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture) && !base.is_foreign
         if (needEnrich) {
           enrich = await enrichCandidate(mapsKey, { shop, username, areaHint: baseRegion.area, industry: industry0, havePhone: base.phone_candidate || '', haveAddress: '' }, {
             maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,

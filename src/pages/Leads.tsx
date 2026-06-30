@@ -1008,6 +1008,7 @@ export default function Leads() {
                   {Number(gpResult.detailCapped ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">詳細上限skip {gpResult.detailCapped}</span>}
                   {Number(gpResult.foreignSkipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">日本国外除外 {gpResult.foreignSkipped}</span>}
                   {Number(gpResult.orgFiltered ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">法人/団体除外 {gpResult.orgFiltered}</span>}
+                  {gpResult.debug?.stoppedEarly && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">実行時間上限で打ち切り・次回継続（残り{gpResult.debug?.deferredQueries ?? 0}クエリ）</span>}
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
@@ -1364,6 +1365,9 @@ export default function Leads() {
                       <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {rmResult.excluded ?? 0}</span>
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">cases投入 {rmResult.imported ?? 0}</span>
                       {Number(rmResult.saveError ?? 0) > 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存エラー {rmResult.saveError}</span>}
+                      <span className="rounded bg-muted px-1.5 py-0.5">詳細取得 {rmResult.detailFetches ?? 0}/{rmResult.debug?.maxDetailFetches ?? 20}</span>
+                      {Number(rmResult.timeouts ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">タイムアウト {rmResult.timeouts}</span>}
+                      {(Number(rmResult.deferredSites ?? 0) > 0 || Number(rmResult.deferredDetails ?? 0) > 0) && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">次回継続 サイト{rmResult.deferredSites ?? 0}/詳細{rmResult.deferredDetails ?? 0}</span>}
                     </div>
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完検索 {rmResult.enrichQueries ?? 0}回</span>
@@ -1381,13 +1385,15 @@ export default function Leads() {
                           {rmResult.debug.siteResults.map((h: any, i: number) => (
                             <div key={i} className="border-b pb-0.5">
                               <div className="font-medium">{h.site}{' '}
-                                <span className={cn('rounded px-1 text-[9px]', h.siteType === 'local_directory_new_listing' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300')}>{h.siteType === 'local_directory_new_listing' ? '店舗ディレクトリ型' : '記事型'}</span>{' '}
-                                <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span></div>
-                              {h.siteType === 'local_directory_new_listing' ? (
+                                {h.deferred && <span className="rounded bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">次回継続</span>}{' '}
+                                {!h.deferred && <span className={cn('rounded px-1 text-[9px]', h.siteType === 'local_directory_new_listing' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300')}>{h.siteType === 'local_directory_new_listing' ? '店舗ディレクトリ型' : '記事型'}</span>}{' '}
+                                {!h.deferred && <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span>}
+                                {Number(h.timeouts ?? 0) > 0 && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">timeout{h.timeouts}</span>}</div>
+                              {!h.deferred && (h.siteType === 'local_directory_new_listing' ? (
                                 <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ <b>店舗詳細リンク{h.detailLinks ?? 0}</b> ・ OPEN表記{h.openTagged ?? 0} ・ 詳細取得{h.detailFetched ?? 0} ・ 電話取得{h.phoneYes ?? 0} ・ 住所取得{h.addressYes ?? 0} ・ OPEN日{h.openYes ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
                               ) : (
                                 <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ 記事候補{h.candidateLinks ?? 0} ・ 新店語一致{h.keywordHits ?? 0} ・ 新着{h.newArticles ?? 0} ・ 3日内{h.recent ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
-                              )}
+                              ))}
                               {h.reason && h.reason !== 'OK' && <div className="text-amber-600">理由: {h.reason}</div>}
                               {h.error && <div className="text-red-600">エラー: {h.error}</div>}
                             </div>

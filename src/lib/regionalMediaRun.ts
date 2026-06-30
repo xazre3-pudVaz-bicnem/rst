@@ -28,6 +28,9 @@ export function getDefaultRegionalSettings() {
     regionalEnabled: true,
     maxSitesPerDay: 3,
     maxArticlesPerSite: 5,
+    // 504回避: 実行全体の時間予算と詳細取得の上限（続きは次回実行に回す）
+    runBudgetMs: 50000,            // Vercel maxDuration 60s に対する安全マージン
+    maxDetailFetchesPerRun: 20,    // 1回の巡回で詳細ページは最大20件
     periodDays: 30,
     saveDays: 3,        // lead_candidates へ保存する公開日の上限（既定3日以内）
     requirePhone: true,
@@ -44,21 +47,29 @@ export function getDefaultRegionalSettings() {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 
-async function fetchHtml(url: string, timeoutMs = 12000): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null }> {
+// fetchタイムアウト: 一覧ページは長め、詳細ページは短め（504回避）
+const LIST_TIMEOUT_MS = 12000
+const DETAIL_TIMEOUT_MS = 7000
+
+async function fetchHtml(url: string, timeoutMs = LIST_TIMEOUT_MS): Promise<{ ok: boolean; status: number; html: string; length: number; error: string | null; timedOut: boolean }> {
+  const ctrl = new AbortController()
+  let timedOut = false
+  const to = setTimeout(() => { timedOut = true; ctrl.abort() }, timeoutMs)
   try {
-    const ctrl = new AbortController()
-    const to = setTimeout(() => ctrl.abort(), timeoutMs)
     const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'ja,en;q=0.8' }, redirect: 'follow', signal: ctrl.signal })
     clearTimeout(to)
     const ct = res.headers.get('content-type') || ''
-    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `HTTP ${res.status}` }
-    if (ct && !/text|html|xml|json/i.test(ct)) return { ok: false, status: res.status, html: '', length: 0, error: `非HTML(${ct})` }
+    if (!res.ok) return { ok: false, status: res.status, html: '', length: 0, error: `HTTP ${res.status}`, timedOut: false }
+    if (ct && !/text|html|xml|json/i.test(ct)) return { ok: false, status: res.status, html: '', length: 0, error: `非HTML(${ct})`, timedOut: false }
     const html = await res.text()
-    return { ok: true, status: res.status, html, length: html.length, error: null }
-  } catch (e: any) { return { ok: false, status: 0, html: '', length: 0, error: String(e?.message || e).slice(0, 120) } }
+    return { ok: true, status: res.status, html, length: html.length, error: null, timedOut: false }
+  } catch (e: any) {
+    clearTimeout(to)
+    return { ok: false, status: 0, html: '', length: 0, error: timedOut ? `timeout(${timeoutMs}ms・外部サイト応答遅延)` : String(e?.message || e).slice(0, 120), timedOut }
+  }
 }
 
-async function fetchText(url: string, timeoutMs = 12000): Promise<string | null> {
+async function fetchText(url: string, timeoutMs = LIST_TIMEOUT_MS): Promise<string | null> {
   const r = await fetchHtml(url, timeoutMs)
   return r.ok ? r.html : null
 }
@@ -179,10 +190,17 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const enrichPerQuery = Math.max(1, Math.min(10, Number(s.regionalEnrichPerQuery) || 5))
   const enrichDailyCap = Math.max(0, Number(s.regionalEnrichDailyCap) || 100)
 
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0 }
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0, timeouts: 0, detailFetches: 0, deferredSites: 0, deferredDetails: 0 }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const enrichQueriesToLog = new Set<string>()
+  // 504回避: 実行全体の時間予算・詳細取得上限（続きは次回実行に回す）
+  const runStart = Date.now()
+  const runBudgetMs = Math.max(20000, Number(s.runBudgetMs) || 50000)
+  const maxDetailFetches = Math.max(1, Number(s.maxDetailFetchesPerRun) || 20)
+  const overBudget = () => (Date.now() - runStart) > runBudgetMs
+  const detailBudgetLeft = () => counts.detailFetches < maxDetailFetches
+  debug.runBudgetMs = runBudgetMs; debug.maxDetailFetches = maxDetailFetches
 
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'regional_media', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
@@ -208,6 +226,8 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     debug.enrichBudget = enrichBudget
 
     for (const site of list) {
+      // 504回避: 時間予算を超えたら残りサイトは次回実行に回す（全体は失敗扱いにしない）
+      if (overBudget()) { counts.deferredSites++; debug.siteResults.push({ site: site.name, deferred: true, reason: `実行時間上限(${Math.round(runBudgetMs / 1000)}s)のため次回に継続` }); continue }
       counts.sites++
       const crawlUrl = site.list_url || site.base_url
       let base: URL
@@ -224,11 +244,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       await sleep(delay)
       const linkOpts: LinkOpts = { mediaFamily: site.media_family, categoryLabel: site.category_label, listUrl: crawlUrl }
       const stype = siteTypeOf(site)
-      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, error: idx.error, reason: '' }
+      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, timeouts: 0, error: idx.error, reason: '' }
       if (!idx.ok) {
-        counts.error++; diag.reason = `リスト取得失敗（${idx.error}）`
+        counts.error++; if (idx.timedOut) { counts.timeouts++; diag.timeouts++ }
+        diag.reason = idx.timedOut ? `リスト取得がタイムアウト（外部サイト応答遅延）` : `リスト取得失敗（${idx.error}）`
         debug.siteResults.push(diag)
-        await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: `取得失敗 ${idx.error}` }).eq('id', site.id)
+        await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: (idx.timedOut ? 'timeout ' : '取得失敗 ') + (idx.error || '') }).eq('id', site.id)
         continue
       }
 
@@ -241,6 +262,8 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         let used = 0
         for (const item of dr.links.slice(0, maxArticles * 2)) {
           if (used >= maxArticles) break
+          // 504回避: 時間/件数の上限に達したら次回に継続
+          if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `詳細取得を${used}件で打ち切り（時間/件数上限・次回継続）`; break }
           const dhash = urlHash(item.url)
           const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', dhash).limit(1)
           // 既存lead候補（source_detail_url）も確認（HOLD→電話/住所が取れたら補完更新）
@@ -249,9 +272,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (exA?.[0] && existingCand && existingCand.phone_number && existingCand.address) continue // 既に十分取得済み
           counts.articles++; counts.newArticles++; used++
 
-          const dHtml = await fetchText(item.url)
+          const dRes = await fetchHtml(item.url, DETAIL_TIMEOUT_MS)
+          counts.detailFetches++
           await sleep(delay)
-          if (!dHtml) { diag.reason = diag.reason || '詳細ページ取得失敗'; continue }
+          if (!dRes.ok) { if (dRes.timedOut) { counts.timeouts++; diag.timeouts++ } diag.reason = diag.reason || (dRes.timedOut ? '詳細ページがタイムアウト' : '詳細ページ取得失敗'); continue }
+          const dHtml = dRes.html
           diag.detailFetched++
           const info = extractDirectoryShopInfo(dHtml, item.title)
           // 一覧タイトルのOPEN表記を優先（詳細でOPEN取れない場合の補完）
@@ -387,13 +412,18 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       let used = 0
       for (const link of links) {
         if (used >= maxArticles) break
+        // 504回避: 時間/件数の上限に達したら次回に継続
+        if (overBudget() || !detailBudgetLeft()) { counts.deferredDetails++; diag.reason = `記事取得を${used}件で打ち切り（時間/件数上限・次回継続）`; break }
         counts.articles++
         const hash = urlHash(link.url)
         const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', hash).limit(1)
         if (exA && exA[0]) continue // 同一URLは再取得しない
         counts.newArticles++; used++
 
-        const html = await fetchText(link.url)
+        const aRes = await fetchHtml(link.url, DETAIL_TIMEOUT_MS)
+        counts.detailFetches++
+        if (aRes.timedOut) { counts.timeouts++; diag.timeouts++ }
+        const html = aRes.ok ? aRes.html : null
         await sleep(delay)
         const body = html ? stripTags(html) : ''
         const meta = html ? articleMeta(html) : { published_at: null, excerpt: '', title: '' }
