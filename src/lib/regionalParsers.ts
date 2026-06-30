@@ -62,8 +62,16 @@ export function detectParserType(site: any, html: string, url: string): ParserTy
   // 明示的な parser_type 指定を最優先（HORBY専用など）
   const pt = String(site?.parser_type || '')
   if (pt === 'horby_new_salon' || /u-word\.com|h-word\.com/i.test(url)) return 'horby_new_salon'
+  // 詳細 parser_type 名 → エンジンの基本パーサーへマッピング（開店閉店/号外NET/つうしん/地域ブログ/リビングWeb=記事型、まいぷれ/ディレクトリ=新着型、食べログ新着=マーケット型）
+  if (/^(openclose_article|goguynet_openclose|goguynet_index_discovery|goguynet_area_discovery|tsushin_openclosed|regional_blog_openclose|living_web_newopen)$/.test(pt)) return 'openclose_article'
+  if (/^(mypl_newopen_list|mypl_area_discovery|mypl_submission_signal|newopen_submission_page|local_directory_new_listing)$/.test(pt)) return 'local_directory_new_listing'
+  if (/^(tabelog_newopen_list|marketplace_listing)$/.test(pt)) return 'marketplace_listing'
   const st = String(site?.source_type || '')
   if (st === 'openclose_article' || st === 'local_directory_new_listing' || st === 'marketplace_listing' || st === 'generic_page_text_scan') return st as ParserType
+  // 詳細 source_type 名のマッピング（seedの非標準 source_type に対応）
+  if (/openclose|tsushin|goguynet|living|blog/i.test(st)) return 'openclose_article'
+  if (/mypl|directory|newopen_submission|submission/i.test(st)) return 'local_directory_new_listing'
+  if (/marketplace|tabelog/i.test(st)) return 'marketplace_listing'
   const fam = String(site?.media_family || '')
   if (['goguynet', 'kaitenheiten', 'tsushin'].includes(fam)) return 'openclose_article'
   if (['saikohkunavi', 'local_directory'].includes(fam)) return 'local_directory_new_listing'

@@ -17,6 +17,17 @@ export const DISCOVERY_QUERIES = [
   // 新店情報サイトを探す追加クエリ
   '新規オープン 店舗 地域メディア', '開店 閉店 地域ブログ', 'ニューオープン 店舗 特集', '新店情報 地域サイト',
   '開店情報 グルメ 美容', 'まいぷれ ニューオープン 店舗', 'つうしん 開店 閉店', 'なび ニューオープン', 'タイムズ 開店 閉店',
+  // 地域情報サイト系
+  '開店 閉店 地域情報サイト', 'ニューオープン 地域情報サイト', '新規オープン 店舗 地域メディア', '開業 開院 地域情報',
+  '通信 開店 閉店', 'ぐらし 開店 閉店', 'ロード 開店 閉店', 'マガジン 開店 情報', 'ナビ ニューオープン', '広場 新店特集', 'にゅーす 開店 閉店',
+  // まいぷれ系
+  'site:mypl.net ニューオープン 店舗', 'site:mypl.net 新店舗 ニューオープン', 'site:mypl.net article newopen', 'site:mypl.net 新しくオープンしたお店',
+  // 号外NET系
+  'site:goguynet.jp/category/cat_openclose 開店', 'site:goguynet.jp/category/cat_openclose オープン', 'site:goguynet.jp 開店 閉店',
+  // リビングWeb系
+  'site:mrs.living.jp 開店 閉店', 'site:mrs.living.jp newopen', 'site:mrs.living.jp オープン',
+  // つうしん系
+  'site:tsushin.com openclosed', '松戸つうしん 開店 閉店', '船橋つうしん 開店 閉店', '柏つうしん 開店 閉店', '葛飾つうしん 開店 閉店', '流山つうしん 開店', '三郷ぐらし 開店',
   'site:jp "新規オープン"', 'site:jp "開店しました"', 'site:jp "新着店舗"', 'site:jp "新規掲載"',
 ]
 
@@ -70,8 +81,9 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
 
   // 既存サイトのドメイン集合
   const { data: sites } = await admin.from('source_sites').select('base_url,list_url').limit(2000)
-  const existingDomains = new Set<string>()
-  for (const s of sites || []) { existingDomains.add(domainOf(s.base_url)); existingDomains.add(domainOf(s.list_url)) }
+  // 重複判定は normalized_url 単位（ドメインだけで重複扱いしない。goguynet.jp/tokyo と /saitama 等は別ソース）
+  const existingUrls = new Set<string>()
+  for (const s of sites || []) { if (s.base_url) existingUrls.add(normalizeUrl(s.base_url)); if (s.list_url) existingUrls.add(normalizeUrl(s.list_url)) }
 
   // URL収集
   const urlSet = new Map<string, { url: string; title: string; snippet: string; query: string }>()
@@ -92,8 +104,8 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
   for (const cand of Array.from(urlSet.values()).slice(0, maxTests)) {
     const normalized = normalizeUrl(cand.url)
     const domain = domainOf(cand.url)
-    // 既存サイトと重複
-    const already = existingDomains.has(domain)
+    // 既存サイトと重複（normalized_url単位。同一ドメインでもパス/サブドメインが違えば別ソース）
+    const already = existingUrls.has(normalized)
     // 30日以内に診断済みならスキップ
     const since30 = new Date(Date.now() - 30 * 86400000).toISOString()
     const { data: prev } = await admin.from('source_site_candidates').select('id').eq('normalized_url', normalized).gte('last_tested_at', since30).limit(1)
@@ -133,12 +145,17 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
       if (/(OPEN|オープン|開店|開業|グランドオープン)/i.test(body.slice(0, 3000))) score += 15
       if (parserType === 'local_directory_new_listing' || parserType === 'marketplace_listing') score += 10
       if (sample.length > 0) score += 10
-      if (RECRUIT_RE.test(body.slice(0, 2000))) score -= 30
-      if (EVENT_RE.test(cand.title)) score -= 30
+      // 開店閉店カテゴリ/ニューオープン特集URL（号外NET cat_openclose・まいぷれ newopen 等）を強く加点
+      if (/(cat_openclose|openclosed|newopen|new-?open|kaiten|開店閉店|ニューオープン)/i.test(cand.url + ' ' + cand.title)) score += 30
+      // 一都三県
+      if (/(東京|新宿|渋谷|世田谷|練馬|葛飾|江戸川|足立|北区|中野|府中|埼玉|さいたま|川口|所沢|越谷|千葉|船橋|松戸|柏|流山|市川|神奈川|横浜|川崎|湘南|藤沢)/.test(body.slice(0, 2000) + cand.title)) score += 10
+      if (RECRUIT_RE.test(body.slice(0, 2000))) score -= 40
+      if (EVENT_RE.test(cand.title)) score -= 40
       if (EC_RE.test(body.slice(0, 2000))) score -= 30
       if (LOGIN_RE.test(body.slice(0, 2000))) score -= 50
+      if (/(閉店|閉業)/.test(cand.title) && !/(開店|オープン|開業)/.test(cand.title)) score -= 30  // 閉店中心
     }
-    const action = score >= 80 ? 'auto_register' : score >= 50 ? 'review' : 'ignore'
+    const action = score >= 70 ? 'auto_register' : score >= 60 ? 'review' : 'ignore'
     const fam = MEDIA_FAMILY_HINT.find((m) => m.re.test(cand.url))?.fam || 'local_news'
 
     const candRow: any = {
@@ -162,14 +179,14 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
       const listUrl = cand.url
       const sourceType = parserType
       const { data: created } = await admin.from('source_sites').insert({
-        name: (cand.title || domain).slice(0, 80), base_url: origin || cand.url, list_url: listUrl,
+        name: (cand.title || domain).slice(0, 80), base_url: normalized || cand.url, list_url: listUrl,
         media_family: fam, source_type: sourceType, parser_type: sourceType, category_label: '店舗新着',
         is_active: score >= 70, reliability_score: Math.max(0, Math.min(100, score)), crawl_interval_hours: 24,
         created_by: 'auto_discovery', last_crawl_result: '自動発見により登録', updated_at: new Date().toISOString(),
       }).select('id').single().then((x: any) => x, () => ({ data: null }))
       if (created?.id) {
         stats.autoRegistered++; stats.review--
-        existingDomains.add(domain)
+        existingUrls.add(normalized)
         await admin.from('source_site_candidates').update({ is_registered: true, registered_source_site_id: created.id, recommended_action: 'auto_register' }).eq('id', up?.id).then(() => {}, () => {})
       }
     }
