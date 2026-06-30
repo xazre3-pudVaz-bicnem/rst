@@ -8,6 +8,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
+import { isForeignAddress } from './japanFilter.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -38,11 +39,11 @@ export function getAdminClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 
-// 全国・新店系ワードでの検索クエリ（地域名・業種名を含めない）
+// 全国・新店系ワードでの検索クエリ（地域名・業種名は入れない／国は日本に限定＝末尾に「日本」）
 export const NATIONAL_PLACES_QUERIES = [
-  '新規オープン', 'ニューオープン', 'オープン予定', '開業予定', '開店予定', '開院予定',
-  'プレオープン', 'グランドオープン', '移転オープン', '本日オープン', '近日オープン',
-  '新店舗', '新店', '開業しました', '開店しました', '開院しました', 'オープンしました', '新規開業', '独立開業',
+  '新規オープン 日本', 'ニューオープン 日本', 'オープン予定 日本', '開業予定 日本', '開店予定 日本', '開院予定 日本',
+  'プレオープン 日本', 'グランドオープン 日本', '移転オープン 日本', '本日オープン 日本', '近日オープン 日本',
+  '新店舗 日本', '新店 日本', '開業しました 日本', '開店しました 日本', '開院しました 日本', 'オープンしました 日本', '新規開業 日本', '独立開業 日本',
 ]
 
 export function getDefaultSettings() {
@@ -161,7 +162,7 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
 /** 第2段階: 詳細取得（電話・レビュー日・開店日）。openingDate/reviewsが400なら自動でBASEに落とす */
 export async function placeDetails(apiKey: string, placeId: string): Promise<any | null> {
   async function attempt(ext: boolean) {
-    const res = await fetch(DETAILS_ENDPOINT + encodeURIComponent(placeId), {
+    const res = await fetch(DETAILS_ENDPOINT + encodeURIComponent(placeId) + '?languageCode=ja&regionCode=JP', {
       method: 'GET',
       headers: { 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': ext ? DETAIL_FIELDS_EXT : DETAIL_FIELDS_BASE },
     })
@@ -281,7 +282,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
-    dupSkip: 0, detailCapped: 0,
+    dupSkip: 0, detailCapped: 0, foreignSkipped: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
   }
@@ -336,6 +337,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (reviewCount < 100) counts.review16_99++
         else counts.review100++
 
+        // 日本国外は詳細を取らずスキップ（コスト削減・海外候補を作らない）
+        if (isForeignAddress(address)) { counts.foreignSkipped++; continue }
         // 足切り: チェーン/施設内/支店、口コミ6件以上は深掘りしない（API節約）
         const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
         if (chainish) { counts.chainExcluded++; continue }
@@ -365,6 +368,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         const { latest: latestPub, oldest: oldestPub } = reviewDates(p)
         const fromNewOpen = gq.isNewOpen
         const firstSeenDays = existing?.first_seen_at ? Math.max(0, Math.floor((Date.now() - Date.parse(existing.first_seen_at)) / 86400000)) : 0
+        // 詳細住所で海外と判明したら保存しない
+        if (isForeignAddress(p.formattedAddress || address)) { counts.foreignSkipped++; continue }
         // 全国モード: 住所から都道府県/市区町村、primaryType/types/店名から業種を抽出
         const region = regionFromAddress(p.formattedAddress || address)
         const industryGuess = industryFromPlace(p.primaryType || '', Array.isArray(p.types) ? p.types : [], name) || gq.industry || null

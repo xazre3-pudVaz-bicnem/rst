@@ -7,6 +7,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
+import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -296,13 +297,19 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const haveArea = !!(areaMerged || address)
         const strongOpening = !!enrich?.has_opening  // Google openingDate / FUTURE_OPENING
         const openNote = strongOpening ? `Google開業日(${enrich.opening_raw}${enrich.business_status === 'FUTURE_OPENING' ? '・開業予定' : ''})` : ''
-        if (!ex.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
+        // 日本国外は除外（海外住所/海外電話）。HOTは日本の住所/都道府県＋日本の電話が必須
+        const isForeign = isForeignAddress(address) || isForeignText(`${ex.shop_name || ''} ${bestTitle || ''}`) || (!!phone && !isJapanPhone(phone))
+        const japanOk = !isForeign && (!!prefecture || isJapanAddress(address) || !!ex.area || isJapanPhone(phone))
+        if (isForeign) { temperature = 'EXCLUDED'; reason = '日本国外の候補のため除外。' }
+        else if (!ex.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
         else if (!recentOk && !strongOpening) { temperature = 'HOLD'; reason = `記事公開が${Math.round((now - publishedMs) / 86400000)}日前で対象期間外のためHOLD。` }
-        else if (phone && (haveArea || strongOpening)) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話${haveArea ? '・住所' : ''}${openNote ? '・' + openNote : ''}を確認したためHOT。` }
+        else if (phone && japanOk && isJapanPhone(phone) && (haveArea || strongOpening)) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話${haveArea ? '・住所' : ''}${openNote ? '・' + openNote : ''}を確認したためHOT。` }
         else if (phone || reservationVal || lineVal || officialVal || instagramVal || strongOpening) { temperature = 'HOLD'; reason = `新店記事。${phone ? '電話は取得' : '予約/公式/LINE/Instagram/開業日のみ取得'}${openNote ? '（' + openNote + '）' : ''}・連絡先/住所が弱いためHOLD（要確認）。` }
         else { temperature = 'HOLD'; reason = '外部補完でも電話・住所・開業日が取得できずHOLD（自動投入しない）。' }
 
-        if (temperature === 'HOT') { counts.hot++; diag.hot++ } else { counts.hold++; diag.hold++ }
+        if (temperature === 'HOT') { counts.hot++; diag.hot++ }
+        else if (temperature === 'EXCLUDED') { counts.excluded++; diag.excluded = (diag.excluded || 0) + 1 }
+        else { counts.hold++; diag.hold++ }
         counts.candidates++
 
         const name = ex.shop_name || `${ex.area || ''}${ex.industry || ''}`.trim() || '地域メディア候補'

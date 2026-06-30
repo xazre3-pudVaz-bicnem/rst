@@ -23,18 +23,44 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_places_checked_at TI
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS opening_date_checked_at TIMESTAMPTZ;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS google_business_status TEXT;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS google_opening_date_raw TEXT;
+-- 全国・新店系ワード検索（エリア/業種で絞らない）の保存列
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS places_search_query TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS places_search_mode TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_primary_type TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_types TEXT[];
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_website_uri TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_rating NUMERIC;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS google_user_rating_count INTEGER;
+`
+
+// 既存の海外候補を EXCLUDED に更新（日本国外は対象外）
+const FOREIGN_CLEANUP = `
+UPDATE lead_candidates SET
+  lead_temperature = 'EXCLUDED',
+  should_exclude_from_call_list = TRUE,
+  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), '日本国外の候補のため除外')
+WHERE lead_temperature <> 'EXCLUDED' AND (
+     address ILIKE '%アメリカ合衆国%' OR address ILIKE '%United States%' OR address ILIKE '%USA%'
+  OR address ILIKE '%Canada%' OR address ILIKE '%カナダ%' OR address ILIKE '%Australia%' OR address ILIKE '%オーストラリア%'
+  OR address ILIKE '%Korea%' OR address ILIKE '%韓国%' OR address ILIKE '%Taiwan%' OR address ILIKE '%台湾%'
+  OR address ILIKE '%Singapore%' OR address ILIKE '%シンガポール%' OR address ILIKE '%Oregon%' OR address ILIKE '%California%'
+  OR phone_number LIKE '+1%' OR phone_number LIKE '+44%' OR phone_number LIKE '+61%' OR phone_number LIKE '+82%' OR phone_number LIKE '+886%' OR phone_number LIKE '+65%'
+);
 `
 
 async function main() {
-  console.log('=== RST Google Places openingDate セットアップ ===')
+  console.log('=== RST Google Places（全国・新店系／日本限定）セットアップ ===')
   if (!DB_URL) { console.error('✗ SUPABASE_DB_URL が未設定です（.env）。Connection string[URI] を設定して再実行してください。'); process.exit(1) }
   const client = new Client({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } })
   await client.connect()
   try {
-    console.log('• openingDate/businessStatus カラムを適用中（冪等）...')
+    console.log('• openingDate/businessStatus・全国検索カラムを適用中（冪等）...')
     await client.query(DDL)
-    const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name='lead_candidates' AND column_name LIKE 'google_opening%' OR column_name IN ('google_business_status','has_google_opening_date','days_until_opening','days_since_opening')`)
+    const cols = await client.query(`SELECT column_name FROM information_schema.columns WHERE table_name='lead_candidates' AND column_name LIKE 'google_opening%' OR column_name IN ('google_business_status','has_google_opening_date','days_until_opening','days_since_opening','places_search_mode')`)
     console.log('  ✓ lead_candidates:', cols.rows.map((r: any) => r.column_name).join(', '))
+    console.log('• 既存の海外候補を EXCLUDED に更新中...')
+    const upd = await client.query(FOREIGN_CLEANUP)
+    console.log(`  ✓ 日本国外候補を除外: ${upd.rowCount}件`)
     console.log('\n✅ セットアップ完了 — npm run build → RST「AI投入」Google Places タブで確認')
   } finally { await client.end() }
 }

@@ -5,6 +5,7 @@
 // 地域/業種は title/snippet/url から後段で抽出。コスト制御付き定期バッチ設計。
 // ============================================================
 import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './googlePlacesRun.js'
+import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -27,27 +28,25 @@ export function getDefaultIwSettings() {
   }
 }
 
-// 全国検索クエリ（地域名・業種名を含めない。新店系ハッシュタグ/語のみ）
+// 全国検索クエリ（地域名・業種名を含めない。新店系ハッシュタグ/語のみ／国は日本に限定＝末尾に「日本」）
 export const NATIONAL_QUERIES = [
-  'site:instagram.com "#新規オープン"',
-  'site:instagram.com "#ニューオープン"',
-  'site:instagram.com "#開業"',
-  'site:instagram.com "#開店"',
-  'site:instagram.com "#開院"',
-  'site:instagram.com "#独立開業"',
-  'site:instagram.com "#グランドオープン"',
-  'site:instagram.com "#プレオープン"',
-  'site:instagram.com "#移転オープン"',
-  'site:instagram.com "#newopen"',
-  'site:instagram.com "#new_open"',
-  'site:instagram.com "新規オープンしました"',
-  'site:instagram.com "オープンしました"',
-  'site:instagram.com "開業しました"',
-  'site:instagram.com "開店しました"',
-  'site:instagram.com "開院しました"',
-  'site:instagram.com "本日オープン"',
-  'site:instagram.com "グランドオープンしました"',
-  'site:instagram.com "プレオープンしました"',
+  'site:instagram.com "#新規オープン" 日本',
+  'site:instagram.com "#ニューオープン" 日本',
+  'site:instagram.com "#開業" 日本',
+  'site:instagram.com "#開店" 日本',
+  'site:instagram.com "#開院" 日本',
+  'site:instagram.com "#独立開業" 日本',
+  'site:instagram.com "#グランドオープン" 日本',
+  'site:instagram.com "#プレオープン" 日本',
+  'site:instagram.com "#移転オープン" 日本',
+  'site:instagram.com "新規オープンしました" 日本',
+  'site:instagram.com "オープンしました" 日本',
+  'site:instagram.com "開業しました" 日本',
+  'site:instagram.com "開店しました" 日本',
+  'site:instagram.com "開院しました" 日本',
+  'site:instagram.com "本日オープン" 日本',
+  'site:instagram.com "グランドオープンしました" 日本',
+  'site:instagram.com "プレオープンしました" 日本',
 ]
 
 // ---- Web検索（Serper優先・無ければBing） ----
@@ -96,6 +95,8 @@ function ruleFilter(r: WebResult): { pass: boolean; result: 'open' | 'excluded_p
     const w = (text.match(PRE_EXCLUDE_RE) || [])[0] || ''
     return { pass: false, result: 'excluded_pre', reason: `除外語「${w}」` }
   }
+  // 日本国外（海外マーカーあり・日本住所/都道府県が取れない）は除外
+  if (isForeignText(text)) return { pass: false, result: 'excluded_pre', reason: '日本国外の候補のため除外' }
   if (OPEN_WORDS_RE.test(text)) return { pass: true, result: 'open', reason: '新店系ワードあり' }
   return { pass: false, result: 'no_open_word', reason: '新店系ワードなし' }
 }
@@ -108,7 +109,7 @@ function extractRegion(text: string): { prefecture: string; city: string; area: 
   const prefecture = PREFECTURES.find((p) => text.includes(p)) || ''
   const cityM = text.match(/([一-龥ぁ-んァ-ヶ]{1,6}[市区町村])/)
   const city = cityM ? cityM[1] : ''
-  const foreign = !prefecture && FOREIGN_RE.test(text)
+  const foreign = !prefecture && (FOREIGN_RE.test(text) || isForeignText(text))
   const area = [prefecture, city].filter(Boolean).join('')
   return { prefecture, city, area, foreign }
 }
@@ -216,8 +217,9 @@ export async function enrichCandidate(
     }
     // Google Places 照合（店名＋エリア/業種）
     if (mapsKey && ctx.shop && (!phone || !address)) {
-      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''}`.trim(), 3)
-      const top = sr.places?.[0]
+      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''} 日本`.trim(), 3)
+      // 日本国内の候補のみ採用（海外Placesは無視）
+      const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress)) || null
       if (top && nameMatch(ctx.shop, top.displayName?.text || '')) {
         place_id = top.id || ''
         const d = place_id ? await placeDetails(mapsKey, place_id) : null
@@ -494,9 +496,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         // 温度: 全国化でも甘くしない。HOTは電話＋エリア(住所/市区町村)が必須
         let temperature: string = j.recommended_status || 'HOLD'
-        if (j.is_foreign) temperature = 'EXCLUDED'
+        // 日本国外は除外（補完後の住所/電話で海外と判明した場合も）
+        const foreignFinal = j.is_foreign || isForeignAddress(addressVal) || (!!finalPhone && !isJapanPhone(finalPhone))
+        if (foreignFinal) temperature = 'EXCLUDED'
+        // HOTは日本の住所/都道府県＋日本の電話番号が必須
+        const japanOk = !foreignFinal && (!!prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
         if (temperature === 'HOT') {
           if (!finalPhone || !area) temperature = 'HOLD'
+          if (!japanOk || (finalPhone && !isJapanPhone(finalPhone))) temperature = 'HOLD'
           if (s.iwRequirePhone && !finalPhone) temperature = 'HOLD'
           if (s.iwPlacesRequired && !placeMatched) temperature = 'HOLD'
         }
@@ -506,7 +513,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         const name = j.shop_name || shop || (area ? `${area}の新店候補` : 'Instagram新店候補')
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
-        const reason = j.exclusion_reason
+        const reason = foreignFinal
+          ? '除外: 日本国外の候補のため除外'
+          : j.exclusion_reason
           ? `除外: ${j.exclusion_reason}`
           : `新店根拠(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / 電話:${finalPhone || 'なし'}${enrichNote} / ${j.evidence_text || r.snippet?.slice(0, 100) || ''}${j._heuristic ? '（ルール判定）' : '（AI判定）'}`
 

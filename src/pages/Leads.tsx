@@ -948,6 +948,7 @@ export default function Leads() {
                   <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.futureOpeningCount ?? 0}</span>
                   {Number(gpResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {gpResult.dupSkip}</span>}
                   {Number(gpResult.detailCapped ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">詳細上限skip {gpResult.detailCapped}</span>}
+                  {Number(gpResult.foreignSkipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">日本国外除外 {gpResult.foreignSkipped}</span>}
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
