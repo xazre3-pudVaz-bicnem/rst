@@ -1,0 +1,10 @@
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS quality_score INTEGER;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS quality_grade TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS industry_category TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS dedup_key TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS quality_flags JSONB;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS phone_pref_match TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS quality_computed_at TIMESTAMPTZ;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS dup_group_size INTEGER;
+CREATE INDEX IF NOT EXISTS idx_lead_candidates_dedup_key ON lead_candidates(dedup_key);
+CREATE INDEX IF NOT EXISTS idx_lead_candidates_quality ON lead_candidates(quality_score DESC);

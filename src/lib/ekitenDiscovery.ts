@@ -10,6 +10,7 @@ import { isJapanPhone } from './japanFilter.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic } from './targetFilter.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
+import { computeQuality } from './leadQuality.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -101,6 +102,9 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
           extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null, extracted_industry: sp.category || null, extracted_official_url: sp.official || null,
           last_seen_at: nowIso, source_run_id: runId,
         }
+        const qr = computeQuality({ ...payload, lead_temperature: temperature, hot_tier: hotTier })
+        payload.quality_score = qr.score; payload.quality_grade = qr.grade; payload.industry_category = qr.category
+        payload.dedup_key = qr.dedupKey; payload.quality_flags = qr.flags; payload.phone_pref_match = qr.phoneMatch; payload.quality_computed_at = nowIso
         const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases').eq('source_detail_url', url).limit(1)
         let candidateId: string | null = exC?.[0]?.id || null
         if (!candidateId && phone) { const { data: byPhone } = await admin.from('lead_candidates').select('id').eq('phone_number', phone).limit(1); candidateId = byPhone?.[0]?.id || null; if (candidateId) counts.dup++ }

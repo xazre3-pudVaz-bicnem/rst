@@ -10,6 +10,7 @@ import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
 import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
+import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/leadQualityRun.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
 
@@ -224,6 +225,17 @@ export default async function handler(req: any, res: any) {
     if (error) return res.status(400).json({ ok: false, error: error.message })
     const { count } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('source_type', 'sequential_id_probe').eq('is_active', true)
     return res.status(200).json({ ok: true, activeCount: count || 0 })
+  }
+
+  // リード品質の一括再計算（quality_score/grade/業種/重複キー/地域整合）＋クロスソース重複グルーピング
+  if (body?.recomputeQuality) {
+    try {
+      const o = body.recomputeQuality || {}
+      const q = await recomputeQualityBatch(admin, { limit: o.limit || 800, mode: o.mode || 'all' })
+      let dup: any = null
+      if (o.withDups) dup = await recomputeDupGroups(admin)
+      return res.status(200).json({ ok: true, quality: q, dup })
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
 
   // エキテン公開日ベースの新規掲載候補探索（過去7日の公開日をSerper/Bingで検索→詳細ページで再確認→7日以内のみHOT-B）

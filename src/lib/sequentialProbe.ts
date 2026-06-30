@@ -14,6 +14,7 @@ import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { detectChain } from './chainFilter.js'
+import { computeQuality } from './leadQuality.js'
 import { webSearch } from './instagramWebRun.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -556,6 +557,9 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       hot_missing_requirements: hotReject.hot_missing_requirements, hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
       match_confidence: sc.score, last_seen_at: opts.nowIso, source_run_id: opts.runId,
     }
+    const qr = computeQuality(payload)
+    payload.quality_score = qr.score; payload.quality_grade = qr.grade; payload.industry_category = qr.category
+    payload.dedup_key = qr.dedupKey; payload.quality_flags = qr.flags; payload.phone_pref_match = qr.phoneMatch; payload.quality_computed_at = opts.nowIso
     const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases').eq('source_detail_url', url).limit(1)
     let candidateId: string | null = exC?.[0]?.id || null
     if (!candidateId && phone) { const { data: byPhone } = await admin.from('lead_candidates').select('id').eq('phone_number', phone).limit(1); candidateId = byPhone?.[0]?.id || null }
