@@ -12,6 +12,8 @@ import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeig
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
+// 判定ロジックの版（openingDate最優先版）。版が上がると既存候補は30日内でも再評価される。
+export const GP_LOGIC_VERSION = 3
 
 // 第1段階（軽い検索：country判定のため addressComponents も取得。openingDate/businessStatus を検索段階でも取得し新店を優先）
 const LIGHT_FIELDS = [
@@ -19,6 +21,7 @@ const LIGHT_FIELDS = [
   'places.internationalPhoneNumber', 'places.nationalPhoneNumber',
   'places.userRatingCount', 'places.rating', 'places.types', 'places.primaryType', 'places.primaryTypeDisplayName',
   'places.businessStatus', 'places.openingDate', 'places.googleMapsUri', 'places.websiteUri',
+  'nextPageToken',
 ].join(',')
 
 // 第2段階（詳細取得：電話・レビュー日・開店日・addressComponents など）
@@ -166,29 +169,47 @@ export function phoneOf(p: any): string {
   return p.nationalPhoneNumber || p.internationalPhoneNumber || ''
 }
 
-/** 第1段階: 軽い検索。例外を投げず {status, places, error} を返す */
-export async function searchLight(apiKey: string, query: string, maxResultCount: number): Promise<{ status: number; places: any[]; error: string | null }> {
+/** 第1段階: 軽い検索（1ページ）。pageToken指定で次ページ。nextPageToken も返す。 */
+export async function searchLight(apiKey: string, query: string, maxResultCount: number, pageToken?: string): Promise<{ status: number; places: any[]; error: string | null; nextPageToken: string | null }> {
   try {
+    const body: any = {
+      textQuery: query, languageCode: 'ja', regionCode: 'JP',
+      pageSize: Math.max(1, Math.min(20, maxResultCount)),
+      // オープン予定（future opening）のビジネスも検索対象に含める（新店を取りこぼさない）
+      includeFutureOpeningBusinesses: true,
+      // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。
+      locationRestriction: { rectangle: JAPAN_RECTANGLE },
+    }
+    if (pageToken) body.pageToken = pageToken
     const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': LIGHT_FIELDS },
-      body: JSON.stringify({
-        textQuery: query, languageCode: 'ja', regionCode: 'JP',
-        maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
-        // オープン予定（future opening）のビジネスも検索対象に含める（新店を取りこぼさない）
-        includeFutureOpeningBusinesses: true,
-        // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。
-        locationRestriction: { rectangle: JAPAN_RECTANGLE },
-      }),
+      body: JSON.stringify(body),
     })
     const text = await res.text().catch(() => '')
     let json: any = {}
     try { json = text ? JSON.parse(text) : {} } catch { json = {} }
-    if (!res.ok) return { status: res.status, places: [], error: String(json?.error?.message || text || `HTTP ${res.status}`).slice(0, 400) }
-    return { status: res.status, places: Array.isArray(json.places) ? json.places : [], error: null }
+    if (!res.ok) return { status: res.status, places: [], error: String(json?.error?.message || text || `HTTP ${res.status}`).slice(0, 400), nextPageToken: null }
+    return { status: res.status, places: Array.isArray(json.places) ? json.places : [], error: null, nextPageToken: json.nextPageToken || null }
   } catch (e: any) {
-    return { status: 0, places: [], error: String(e?.message || e) }
+    return { status: 0, places: [], error: String(e?.message || e), nextPageToken: null }
   }
+}
+
+/** 1クエリを複数ページ取得（nextPageTokenを辿る）。重複place_idは除外。 */
+export async function searchPaged(apiKey: string, query: string, perPage: number, maxPages: number, resultLimit: number): Promise<{ status: number; places: any[]; error: string | null; pages: number; apiReturned: number }> {
+  const seen = new Set<string>(); const out: any[] = []
+  let token: string | undefined = undefined; let pages = 0; let apiReturned = 0; let status = 0; let error: string | null = null
+  for (let i = 0; i < Math.max(1, maxPages); i++) {
+    const r: { status: number; places: any[]; error: string | null; nextPageToken: string | null } = await searchLight(apiKey, query, perPage, token)
+    status = r.status; if (r.error) { error = r.error; break }
+    pages++; apiReturned += r.places.length
+    for (const p of r.places) { const id = p.id || JSON.stringify(p.displayName); if (!seen.has(id)) { seen.add(id); out.push(p) } }
+    if (out.length >= resultLimit || !r.nextPageToken) break
+    token = r.nextPageToken
+    await new Promise((rs) => setTimeout(rs, 1500))  // nextPageToken は数秒の伝播待ちが必要
+  }
+  return { status, places: out.slice(0, resultLimit), error, pages, apiReturned }
 }
 
 /** 第2段階: 詳細取得（電話・レビュー日・開店日）。openingDate/reviewsが400なら自動でBASEに落とす */
@@ -292,6 +313,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   const detailsLimitPerRun = Math.max(1, Number(rawSettings?.placesDetailsLimitPerRun) || 100)  // 1回あたりPlace Details上限
   const skipDetailsIfReviewsOver = Math.max(1, Number(rawSettings?.placesSkipDetailsIfReviewsOver) || 100)  // 口コミN件以上はDetailsスキップ
   const openingDatePriority = rawSettings?.placesOpeningDatePriority !== false  // openingDate優先（既定ON）
+  const pagesPerQuery = Math.max(1, Math.min(5, Number(rawSettings?.placesPagesPerQuery) || 3))  // 1クエリのページ取得数（nextPageToken）
+  const resultsPerQueryLimit = Math.max(1, Math.min(100, Number(rawSettings?.placesResultsPerQueryLimit) || 60))  // 1クエリの最大件数
 
   // テスト固定: 少量・ローテーションなし
   if (testFixed) {
@@ -323,6 +346,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
     openFuture: 0, openWithin90: 0, openWithin180: 0, openWithin365: 0, openOver365: 0, newGbpPriority: 0,
     reviews100Excluded: 0, reviews31Excluded: 0, closedPermExcluded: 0,
+    apiReturned: 0, pages: 0, uniquePlaceIds: 0, existingPlaceIds: 0, reEvaluated: 0,
     dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
     detailFailed: 0, judged: 0, skipped: 0, hotA: 0, hotB: 0,
     countryJP: 0, countryNonJP: 0, addressCompMissing: 0, japanByAddrOnly: 0,
@@ -380,11 +404,12 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       // 504回避: 時間予算を超えたら残りクエリは次回実行に回す
       if (overBudget()) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
       const query = gq.query
-      const r = await searchLight(apiKey, query, perQuery)
+      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit)
       if (r.error) { counts.error++; errorMessage = r.error }
+      counts.apiReturned += r.apiReturned; counts.pages += r.pages; counts.uniquePlaceIds += r.places.length
       // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
       const qstat: any = {
-        query, isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, error: r.error,
+        query, isNewOpen: gq.isNewOpen, status: r.status, placesLength: r.places.length, pages: r.pages, apiReturned: r.apiReturned, error: r.error,
         detail: 0, judged: 0, hot: 0, hold: 0, excluded: 0, skipped: 0, saved: 0, saveError: 0,
         reasons: {} as Record<string, number>, items: [] as any[],
       }
@@ -423,11 +448,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
           existing = data && data[0] ? data[0] : null
         }
-        // === SKIPPED: 30日以内にDetails取得済み（保存しない明確な理由）===
-        if (existing?.google_places_checked_at && (Date.now() - Date.parse(existing.google_places_checked_at)) < 30 * 86400000) {
-          counts.dupSkip++; counts.skipped++; qstat.skipped++; qReason('place_id_30日以内取得済み')
-          logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '30日以内place_id', saved: false }); continue
+        if (existing) counts.existingPlaceIds++
+        // === 30日スキップは「最新ロジックで完全評価済み」のときだけ。openingDate/Details未取得は再評価する（item6）===
+        const fullyEvaluated = !!existing
+          && existing.google_places_logic_version === GP_LOGIC_VERSION
+          && existing.opening_date_checked_at != null
+          && existing.last_details_fetched_at != null
+        if (fullyEvaluated && existing.google_places_checked_at && (Date.now() - Date.parse(existing.google_places_checked_at)) < 30 * 86400000) {
+          counts.dupSkip++; counts.skipped++; qstat.skipped++; qReason('place_id_30日以内・最新ロジックで評価済み')
+          logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '30日place_id(評価済)', saved: false }); continue
         }
+        if (existing && !fullyEvaluated) counts.reEvaluated++  // openingDate/Details/ロジック未評価 → 再評価対象
 
         // 明確な除外（Detailsを取らずEXCLUDED保存＝APIコスト削減・記録は残す）
         const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
@@ -560,6 +591,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           opening_date_source: og.has ? 'google_places' : null, opening_date_confidence: og.has ? og.confidence : null, opening_date_precision: og.has ? (og.day ? 'day' : og.month ? 'month' : 'year') : null,
           opening_date_band: (classified as any).opening_date_band || null, is_new_gbp_priority: !!(classified as any).is_new_gbp_priority,
           google_primary_type_display_name: (p.primaryTypeDisplayName?.text || p.primaryTypeDisplayName || null),
+          google_places_logic_version: GP_LOGIC_VERSION, last_details_fetched_at: nowIso, last_evaluated_at: nowIso,
           days_until_opening: og.daysUntil, days_since_opening: og.daysSince,
           google_places_checked_at: nowIso, opening_date_checked_at: og.has ? nowIso : null,
           // 全国モード: 検索条件ではなく抽出結果として保存

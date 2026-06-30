@@ -564,6 +564,8 @@ export default function Leads() {
             placesDetailsLimitPerRun: settings.placesDetailsLimitPerRun ?? 100,
             placesSkipDetailsIfReviewsOver: settings.placesSkipDetailsIfReviewsOver ?? 100,
             placesOpeningDatePriority: settings.placesOpeningDatePriority !== false,
+            placesPagesPerQuery: settings.placesPagesPerQuery ?? 3,
+            placesResultsPerQueryLimit: settings.placesResultsPerQueryLimit ?? 60,
             aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
             hotMaxReviews: settings.hotMaxReviews,
             warmMaxReviews: settings.warmMaxReviews,
@@ -1063,6 +1065,8 @@ export default function Leads() {
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.placesNationwide} onChange={(e) => saveSettings({ ...settings, placesNationwide: e.target.checked })} />全国検索モード（地域/業種で絞らない）</label>
                   <div className="space-y-1"><Label>1日最大検索クエリ数</Label><Input type="number" min={1} value={settings.placesMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 30) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.placesPerQuery} onChange={(e) => saveSettings({ ...settings, placesPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 20)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1クエリのページ取得数（最大5・nextPageToken）</Label><Input type="number" min={1} max={5} value={settings.placesPagesPerQuery ?? 3} onChange={(e) => saveSettings({ ...settings, placesPagesPerQuery: Math.max(1, Math.min(5, Number(e.target.value) || 3)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1クエリ最大件数</Label><Input type="number" min={1} max={100} value={settings.placesResultsPerQueryLimit ?? 60} onChange={(e) => saveSettings({ ...settings, placesResultsPerQueryLimit: Math.max(1, Math.min(100, Number(e.target.value) || 60)) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日最大Place Details件数</Label><Input type="number" min={1} value={settings.placesMaxDetailsPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxDetailsPerDay: Math.max(1, Number(e.target.value) || 100) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日あたりの投入上限</Label><Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" /></div>
                 </div>
@@ -1348,10 +1352,23 @@ export default function Leads() {
             )}
             {gpResult && gpResult.ok && (
               <div className="mt-2 space-y-2">
+                {/* 探索の内訳（item9: 175を検索クエリ数として扱わない） */}
+                <div className="rounded border bg-muted/40 p-1.5 text-[10px]">
+                  実行クエリ {gpResult.queries ?? 0} ・ 取得ページ {gpResult.pages ?? 0} ・ API返却 {gpResult.apiReturned ?? gpResult.fetched ?? 0}件 ・ ユニークPlaceID {gpResult.uniquePlaceIds ?? '-'} ・ 既存PlaceID {gpResult.existingPlaceIds ?? 0} ・ 再評価対象 {gpResult.reEvaluated ?? 0}
+                  <span className="ml-1">／ openingDate取得 {gpResult.openingDateCount ?? 0}（開業予定{gpResult.openFuture ?? 0}/90日内{gpResult.openWithin90 ?? 0}/180日内{gpResult.openWithin180 ?? 0}）・電話あり {gpResult.phoneYes ?? 0}・新規GBP優先 {gpResult.newGbpPriority ?? 0}</span>
+                  {Number(gpResult.hot ?? 0) === 0 && (
+                    <div className="mt-0.5 font-bold text-amber-700 dark:text-amber-300">HOT 0件の理由: {[
+                      (gpResult.openingDateCount ?? 0) === 0 ? 'openingDateあり候補が0件' : null,
+                      (gpResult.reEvaluated ?? 0) === 0 && (gpResult.existingPlaceIds ?? 0) > 0 ? `既存place_idが${gpResult.existingPlaceIds}件で再評価対象外` : null,
+                      Number(gpResult.detailCapped ?? 0) > 0 ? `Details上限で${gpResult.detailCapped}件後回し` : null,
+                      Number(gpResult.phoneYes ?? 0) <= 1 ? `電話番号あり候補が${gpResult.phoneYes ?? 0}件のみ` : null,
+                    ].filter(Boolean).join(' / ') || '電話+住所+openingDate/新店根拠を満たす候補なし'}</div>
+                  )}
+                </div>
                 {/* 段階別カウント */}
                 <div className="flex flex-wrap gap-1.5 text-[10px]">
                   <span className="rounded bg-muted px-1.5 py-0.5">クエリ {gpResult.queries ?? 0}</span>
-                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">API取得 {gpResult.fetched ?? 0}</span>
+                  <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">API返却 {gpResult.apiReturned ?? gpResult.fetched ?? 0}</span>
                   <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {gpResult.hot ?? 0}</span>
                   <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {gpResult.hotA ?? 0}</span>
                   <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {gpResult.hotB ?? 0}</span>
