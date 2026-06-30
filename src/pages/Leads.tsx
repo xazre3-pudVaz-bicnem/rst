@@ -786,7 +786,31 @@ export default function Leads() {
                   <div className="space-y-1"><Label>1日最大Place Details件数</Label><Input type="number" min={1} value={settings.placesMaxDetailsPerDay} onChange={(e) => saveSettings({ ...settings, placesMaxDetailsPerDay: Math.max(1, Number(e.target.value) || 100) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日あたりの投入上限</Label><Input type="number" min={1} value={settings.dailyCap} onChange={(e) => saveSettings({ ...settings, dailyCap: Math.max(1, Number(e.target.value) || 1) })} className="h-8" /></div>
                 </div>
-                <div className="mt-1 text-[10px] text-muted-foreground">※検索クエリに地域名・業種名を入れません（新店系ワードのみ全国横断）。エリア・業種は取得後に formattedAddress / primaryType から抽出。openingDate / businessStatus を最重要シグナルとして判定（HOT条件は据え置き）。同一place_idは30日以内再取得しない。</div>
+                <div className="mt-1 text-[10px] text-muted-foreground">※検索クエリに地域名・業種名を入れません（新店系ワードのみ全国横断）。エリア・業種は取得後に formattedAddress / primaryType から抽出。同一place_idは30日以内再取得しない。</div>
+                {/* GBP登録日は取得できない旨の注意書き */}
+                <div className="mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                  <b>注意:</b> Google Places APIでは<b>GBP登録日そのものは取得できません</b>。openingDate・businessStatus・口コミ数・RST初回発見日などから「新店らしさ」を推定します（「GBPを作っただけ」の店舗は検索クエリだけでは拾えません）。新規GBPはInstagram Web検索・地域メディア巡回・外部補完・Google Places照合を組み合わせて補います。
+                </div>
+                <div className="mt-1 grid gap-2 text-[10px] md:grid-cols-2">
+                  <div className="rounded border bg-green-50 p-2 dark:bg-green-500/10">
+                    <div className="font-bold text-green-700 dark:text-green-300">このクエリで拾えるもの</div>
+                    <ul className="ml-3 list-disc text-muted-foreground">
+                      <li>開業日(openingDate)がGoogleにある店舗</li>
+                      <li>オープン予定店舗（businessStatus=FUTURE_OPENING）</li>
+                      <li>新店系ワードに反応する店舗</li>
+                      <li>口コミが少ない店舗（0〜5件）</li>
+                    </ul>
+                  </div>
+                  <div className="rounded border bg-zinc-50 p-2 dark:bg-zinc-800/40">
+                    <div className="font-bold text-zinc-600 dark:text-zinc-300">拾えない / 弱いもの</div>
+                    <ul className="ml-3 list-disc text-muted-foreground">
+                      <li>GBPを作っただけの店舗（openingDate未登録）</li>
+                      <li>新店文言がない店舗</li>
+                      <li>投稿/口コミ/外部情報がない店舗</li>
+                    </ul>
+                  </div>
+                </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">判定軸: openingDateあり / FUTURE_OPENING / 口コミ0〜5件 / 電話番号あり / 住所あり / 公式サイト弱い / 新店系クエリ反応 / RST初回発見日。<b>HOT自動投入は openingDate または FUTURE_OPENING がある場合のみ</b>（無い場合は電話・住所があってもHOLD）。</div>
               </div>
 
               {/* 旧モード（エリア×業種）: 全国検索OFFのときのみ表示 */}
@@ -1980,7 +2004,7 @@ export default function Leads() {
                           {c.days_until_opening != null && <span className="rounded-sm bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">開業まで{c.days_until_opening}日</span>}
                           {c.days_since_opening != null && c.days_since_opening <= 60 && <span className="rounded-sm bg-emerald-100 px-1 text-[9px] text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">開業{c.days_since_opening}日</span>}
                           {c.from_new_open_query && <span className="rounded-sm bg-sky-100 px-1 text-[9px] text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">新規Q</span>}
-                          {c.days_since_first_seen != null && <span className="text-[9px] text-muted-foreground">発見{c.days_since_first_seen}日前</span>}
+                          {c.days_since_first_seen != null && <span className="text-[9px] text-muted-foreground" title="RSTが初めて見つけた日（GBP登録日ではありません）">RST発見{c.days_since_first_seen}日前</span>}
                         </div>
                       </td>
                       <td className="p-2 text-center">

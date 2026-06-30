@@ -214,8 +214,11 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite)
 
   const isNewCandidate = !hardExclude && countOk && recencyOk && newnessStrong
-  // HOTは日本国内が必須（日本の住所/都道府県＋日本の電話番号）。法人/団体/研究会系はHOTにしない
-  const isHotFinal = isNewCandidate && score >= 80 && japanConfirmed && hasJapanPhone && !orgLike
+  // Google Places単体のHOT自動投入は厳しめ:
+  //   GBP登録日は取得できないため、openingDate(±90日)または FUTURE_OPENING を必須シグナルにする。
+  //   新規オープン系クエリ取得・口コミ少だけでは HOT にせず HOLD（要確認）に留める。
+  const hasStrongOpening = openingWithin90 || futureOpening
+  const isHotFinal = isNewCandidate && hasStrongOpening && score >= 80 && japanConfirmed && hasJapanPhone && !orgLike
 
   // 口コミ日付の判定理由（新店判定は最古を重視）
   const reviewNewnessReason = countZero
