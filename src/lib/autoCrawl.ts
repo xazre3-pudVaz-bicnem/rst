@@ -11,6 +11,7 @@ import { runInstagramWeb, getDefaultIwSettings } from './instagramWebRun.js'
 import { runAllSequentialProbes } from './sequentialProbe.js'
 import { runSerpDiscovery } from './serpDiscovery.js'
 import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
+import { sweepHotToCases } from './importHot.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
@@ -172,6 +173,10 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
       items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'error', error_kind: kind, error_message: msg.slice(0, 500), started_at: itemStart, finished_at: new Date().toISOString() })
     }
   }
+
+  // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOTはHOLD降格）。時間が残っていれば実行。
+  let swept: any = null
+  if (Date.now() - startMs < budgetMs - 4000) { try { swept = await sweepHotToCases(admin, { limit: 100, userId: opts.userId || null }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
 
   // 明細を保存
   if (items.length) await admin.from('auto_crawl_run_items').insert(items).then(() => {}, () => {})

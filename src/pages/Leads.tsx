@@ -964,6 +964,11 @@ export default function Leads() {
     const next = !autoCrawlOn
     try { const cur = (await AppConfigApi.get('auto_crawl')) || {}; await AppConfigApi.set('auto_crawl', { ...cur, enabled: next }); setAutoCrawlOn(next); toast.success(`自動巡回を${next ? 'ON' : 'OFF'}にしました`) } catch (e) { toast.error('変更に失敗: ' + jpError(e)) }
   }
+  async function sweepHot() {
+    if (!window.confirm('未投入のHOTを案件(cases)へ一括投入します。電話/住所が無いHOTはルール上HOLDへ降格、既存案件と電話重複はリンクします。実行しますか？')) return
+    setCrawlBusy('sweep')
+    try { const j = await regionalApi({ sweepHot: { limit: 200 } }); if (j?.ok) { toast.success(`HOT一括投入: ${j.imported}件投入 / 重複リンク${j.linkedDup} / HOLD降格${j.downgraded}（電話・住所なし）`); load(); loadAutoCrawl() } else toast.error(j?.error || '失敗') } finally { setCrawlBusy('') }
+  }
 
   // ===== 新規取得元レジストリ =====
   const loadDiscovery = useCallback(async () => {
@@ -1631,6 +1636,7 @@ export default function Leads() {
             <div className="mt-2 flex flex-wrap gap-1.5">
               <Button size="sm" onClick={() => runCrawl('all')} disabled={!!crawlBusy} className="bg-primary">{crawlBusy === 'all' ? '巡回中...' : '今すぐ全サイト巡回'}</Button>
               <Button size="sm" variant="outline" onClick={() => runCrawl('failed')} disabled={!!crawlBusy}>{crawlBusy === 'failed' ? '実行中...' : '失敗分だけ再実行'}</Button>
+              <Button size="sm" variant="outline" onClick={sweepHot} disabled={!!crawlBusy} className="border-emerald-500 text-emerald-700 dark:text-emerald-300">{crawlBusy === 'sweep' ? '投入中...' : '未投入HOTを一括投入'}</Button>
               <Button size="sm" variant="outline" onClick={() => runCrawl('places')} disabled={!!crawlBusy}>Google Placesだけ</Button>
               <Button size="sm" variant="outline" onClick={() => runCrawl('regional')} disabled={!!crawlBusy}>地域メディアだけ</Button>
               <Button size="sm" variant="outline" onClick={() => runCrawl('instagram')} disabled={!!crawlBusy}>Instagramだけ</Button>

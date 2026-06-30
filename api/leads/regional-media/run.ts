@@ -13,6 +13,7 @@ import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
 import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/leadQualityRun.js'
 import { runSerpDiscovery } from '../../../src/lib/serpDiscovery.js'
 import { recomputeSalesBatch } from '../../../src/lib/leadSignals.js'
+import { sweepHotToCases } from '../../../src/lib/importHot.js'
 import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles } from '../../../src/lib/discoverySources.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
@@ -303,6 +304,11 @@ export default async function handler(req: any, res: any) {
       }, userData.user.id)
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+  // 未投入HOTの一括投入スイープ（電話/住所なしHOTはHOLD降格・適格HOTはcases投入・重複はリンク）
+  if (body?.sweepHot) {
+    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id }); return res.status(200).json(out) }
+    catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
   // 営業優先度/Web弱点/架電前メモの一括再計算
   if (body?.recomputeSales) {

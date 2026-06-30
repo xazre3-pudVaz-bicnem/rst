@@ -1,0 +1,47 @@
+// ============================================================
+// 未投入HOTの一括投入スイープ。サーバー専用。
+// 1) 電話/住所が無いHOTはルール上HOT禁止 → HOLDへ降格
+// 2) 適格な未投入HOT(電話有効+住所+非除外+案件重複なし)を cases へ投入（架電前メモも転記）
+// 自動巡回の各回末尾＋手動ボタンから呼ぶ。重複二重投入はしない。
+// ============================================================
+import { isJapanPhone, isForeignAddress } from './japanFilter.js'
+import { isValidJpPhone } from './regionalParsers.js'
+import { onlyDigits } from './leadQuality.js'
+import { DEFAULT_STATUS } from './constants.js'
+
+const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise'
+
+export async function sweepHotToCases(admin: any, opts: { limit?: number; userId?: string | null } = {}): Promise<any> {
+  const limit = Math.max(1, Math.min(500, opts.limit || 200))
+  const userId = opts.userId || null
+  const nowIso = new Date().toISOString()
+  const { data: rows, error } = await admin.from('lead_candidates').select(FIELDS).eq('lead_temperature', 'HOT').eq('imported_to_cases', false).limit(limit)
+  if (error) return { ok: false, error: error.message }
+  const list: any[] = rows || []
+  let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0
+  for (const c of list) {
+    const phone = c.phone_number || c.extracted_phone || ''
+    const address = c.address || c.extracted_address || ''
+    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+    // 1) 電話/住所なし・国外・除外フラグ → HOLD降格（HOT禁止ルールの是正）
+    if (!phoneOk || !address || isForeignAddress(address) || c.should_exclude_from_call_list) {
+      await admin.from('lead_candidates').update({ lead_temperature: c.should_exclude_from_call_list ? 'EXCLUDED' : 'HOLD', hot_tier: null, auto_insert_skipped_reason: !phoneOk ? '電話番号なし(HOT禁止)→HOLD' : !address ? '住所なし(HOT禁止)→HOLD' : '除外条件' }).eq('id', c.id)
+      downgraded++; continue
+    }
+    // 2) 既存案件と電話重複なら、二重投入せず候補をリンク
+    const digits = onlyDigits(phone)
+    const { data: exCase } = await admin.from('cases').select('id').or(`phone1.eq.${phone},phone1.ilike.%${digits}%`).limit(1)
+    if (exCase?.[0]) {
+      await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: exCase[0].id, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', c.id)
+      linkedDup++; continue
+    }
+    // 3) 投入
+    const name = c.name && c.name !== '店名未確定' ? c.name : (c.name || '（店名未確定）')
+    const memo = [`【一括投入 / HOT-${c.hot_tier || 'B'}${c.sales_priority_grade ? ` / 営業${c.sales_priority_grade}` : ''}】`, `理由: ${c.auto_import_reason || c.regional_media_newness_reason || ''}`, `電話: ${phone}`, `住所: ${address}`, ...(c.call_memo ? ['', c.call_memo] : [])].join('\n')
+    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: c.industry || c.industry_category || null, status: DEFAULT_STATUS, priority: c.hot_tier === 'A' ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
+    if (ce || !created?.id) { skipped++; await admin.from('lead_candidates').update({ auto_insert_attempted: true, auto_insert_success: false, auto_insert_error: ce?.message || 'case作成失敗' }).eq('id', c.id); continue }
+    await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)
+    imported++
+  }
+  return { ok: true, scanned: list.length, imported, linkedDup, downgraded, skipped }
+}
