@@ -6,7 +6,7 @@
 // 設定は app_config(key='instagram_web_auto')。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { runInstagramWeb, getDefaultIwSettings, searchProvider, anthropicJudge, heuristicJudge } from '../../src/lib/instagramWebRun.js'
+import { runInstagramWeb, getDefaultIwSettings, searchProvider, anthropicJudge, heuristicJudge, enrichCandidate, usernameFromUrl } from '../../src/lib/instagramWebRun.js'
 import { authorizeAdmin } from '../../src/lib/regionalAdmin.js'
 
 export const config = { maxDuration: 60 }
@@ -43,6 +43,32 @@ export default async function handler(req: any, res: any) {
 
   try {
     const body = typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})
+
+    // 1件だけ再補完（外部サイト/予約サイト/Placesから電話・住所を探す。AI判定とは別）
+    if (body?.reenrich?.id) {
+      const { data: cand } = await admin.from('lead_candidates').select('*').eq('id', body.reenrich.id).maybeSingle()
+      if (!cand) return res.status(404).json({ ok: false, error: '候補が見つかりません' })
+      const shop = cand.extracted_shop_name || cand.name || ''
+      const username = usernameFromUrl(cand.instagram_url || '')
+      const e = await enrichCandidate(process.env.GOOGLE_MAPS_API_KEY || null,
+        { shop, username, areaHint: cand.extracted_area || '', industry: cand.extracted_industry || '', havePhone: cand.phone_number || '', haveAddress: cand.address || '' },
+        { maxQueries: 3, perQuery: 5 })
+      // 既存値は保持し、空のところだけ補完
+      const phone = cand.phone_number || e.phone || null
+      const prefecture = cand.extracted_prefecture || e.prefecture || null
+      const city = cand.extracted_city || e.city || null
+      const area = [prefecture, city].filter(Boolean).join('') || cand.extracted_area || null
+      await admin.from('lead_candidates').update({
+        phone_number: phone, extracted_phone: phone, address: cand.address || e.address || null,
+        extracted_area: area, extracted_prefecture: prefecture, extracted_city: city,
+        official_url: cand.official_url || e.official || null, reservation_url: cand.reservation_url || e.reservation || null, line_url: cand.line_url || e.line || null,
+        enrichment_status: e.status, enrichment_sources: e.sources, enriched_phone: e.phone || null, enriched_address: e.address || null,
+        enriched_prefecture: e.prefecture || null, enriched_city: e.city || null, enriched_official_url: e.official || null,
+        enriched_reservation_url: e.reservation || null, enriched_line_url: e.line || null, enriched_google_place_id: e.place_id || null,
+        enrichment_reason: e.reason, enrichment_confidence: e.confidence, last_enriched_at: new Date().toISOString(),
+      }).eq('id', body.reenrich.id)
+      return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, enrich: e })
+    }
 
     // 1件だけ再判定（UIの「再判定」ボタン）
     if (body?.rejudge?.id) {

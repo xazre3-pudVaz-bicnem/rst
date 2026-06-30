@@ -279,6 +279,20 @@ export interface LeadCandidate {
   rule_filter_result?: string | null
   skipped_reason?: string | null
   api_run_id?: string | null
+  // 外部情報補完
+  enrichment_status?: string | null
+  enrichment_sources?: unknown
+  enriched_phone?: string | null
+  enriched_address?: string | null
+  enriched_prefecture?: string | null
+  enriched_city?: string | null
+  enriched_official_url?: string | null
+  enriched_reservation_url?: string | null
+  enriched_line_url?: string | null
+  enriched_google_place_id?: string | null
+  enrichment_reason?: string | null
+  enrichment_confidence?: number | null
+  last_enriched_at?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string
@@ -384,6 +398,10 @@ export interface LeadImportSettings {
   iwMaxRunsPerDay: number      // 1日最大実行回数（既定4）
   iwPerRun: number             // 1回最大クエリ数（既定20）
   iwAnthropicDailyCap: number  // 1日最大AI判定件数（既定100）
+  iwEnrichEnabled: boolean     // 外部情報補完ON/OFF
+  iwEnrichMaxQueries: number   // 1候補あたり追加検索の最大クエリ数（既定3）
+  iwEnrichPerQuery: number     // 補完1クエリの取得件数（既定5）
+  iwEnrichDailyCap: number     // 1日最大補完候補数（既定100）
 }
 
 /** Auto search settings stored in localStorage */

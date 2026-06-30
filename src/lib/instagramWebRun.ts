@@ -19,6 +19,11 @@ export function getDefaultIwSettings() {
     iwMaxQueriesPerDay: 80,     // 1日最大クエリ数
     iwPerQuery: 10,             // 1クエリ取得件数
     iwAnthropicDailyCap: 100,   // 1日最大AI判定件数
+    // 外部情報補完（電話/住所を関連サイト・Placesから補完）
+    iwEnrichEnabled: true,
+    iwEnrichMaxQueries: 3,      // 1候補あたり追加検索の最大クエリ数
+    iwEnrichPerQuery: 5,        // 補完1クエリの取得件数
+    iwEnrichDailyCap: 100,      // 1日最大補完候補数
   }
 }
 
@@ -118,11 +123,124 @@ const INDUSTRY_RE: { name: string; re: RegExp }[] = [
 ]
 function extractIndustry(text: string): string { return INDUSTRY_RE.find((m) => m.re.test(text))?.name || '' }
 
+// ---- 電話/住所/連絡先URL 抽出（外部サイトのスニペットから） ----
+const ADDR_RE = new RegExp(`(${PREFECTURES.join('|')})[^\\n。、）)｜|]{2,40}`)
+function extractPhone(text: string): string {
+  // 0始まり 10-11桁（ハイフン/括弧/空白あり）、0120、ハイフンなしも対応
+  const m = text.match(/0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}|0120[-\s]?\d{2,3}[-\s]?\d{2,3}|0\d{9,10}/)
+  if (!m) return ''
+  const d = m[0].replace(/[^\d]/g, '')
+  if (d.length < 10 || d.length > 11) return ''
+  return m[0].trim()
+}
+function classifyUrls(text: string): { line: string; reservation: string; official: string; all: string[] } {
+  const urls = Array.from(text.matchAll(/https?:\/\/[^\s　"'<>]+/g)).map((m) => m[0])
+  const line = urls.find((u) => /lin\.ee|line\.me/i.test(u)) || ''
+  const reservation = urls.find((u) => /(stores\.jp|reserva\.be|tol-app\.jp|select-type\.com|airrsv\.net|hotpepper\.jp|coubic|epark|reserve|yoyaku|booking)/i.test(u)) || ''
+  const official = urls.find((u) => !/instagram\.com/i.test(u) && u !== line && u !== reservation && !/lit\.link|linktr\.ee|instabio\.cc/i.test(u)) || ''
+  return { line, reservation, official, all: urls }
+}
+function extractContacts(text: string) {
+  const phone = extractPhone(text)
+  const am = text.match(ADDR_RE)
+  const address = am ? am[0].trim().slice(0, 60) : ''
+  const region = extractRegion(text)
+  const u = classifyUrls(text)
+  return { phone, address, prefecture: region.prefecture, city: region.city, line: u.line, reservation: u.reservation, official: u.official }
+}
+export function usernameFromUrl(url: string): string {
+  const m = url.match(/instagram\.com\/([A-Za-z0-9_.]+)/i)
+  const u = m ? m[1] : ''
+  return /^(p|reel|explore|stories|tv)$/i.test(u) ? '' : u
+}
+function nameMatch(a: string, b: string): boolean {
+  const n = (s: string) => (s || '').replace(/[\s　・,.。、（）()【】\[\]『』「」'’]/g, '').toLowerCase()
+  const x = n(a), y = n(b)
+  if (!x || !y) return false
+  return y.includes(x.slice(0, 4)) || x.includes(y.slice(0, 4))
+}
+// 優先予約/外部サイト
+const ENRICH_SITES = ['stores.jp', 'reserva.be', 'tol-app.jp', 'select-type.com']
+function buildEnrichQueries(shop: string, username: string, max: number): string[] {
+  const qs: string[] = []
+  if (shop) { qs.push(`"${shop}" 電話番号`, `"${shop}" 住所`, `"${shop}" 予約`, `"${shop}" 公式`, `"${shop}" LINE`, ...ENRICH_SITES.map((s) => `"${shop}" site:${s}`)) }
+  if (username && username !== shop) { qs.push(`"${username}" 電話番号`, `"${username}" 住所`, `"${username}" 予約`, ...ENRICH_SITES.map((s) => `"${username}" site:${s}`)) }
+  return qs.slice(0, Math.max(0, max))
+}
+
+export interface EnrichResult {
+  phone: string; address: string; prefecture: string; city: string
+  official: string; reservation: string; line: string; place_id: string
+  sources: { url: string; got: string }[]; status: 'not_started' | 'searched' | 'enriched' | 'failed'
+  confidence: number; reason: string; queriesUsed: number
+}
+
+/** 外部情報補完: 関連サイト/予約サイト/Google Placesから電話・住所を補完 */
+export async function enrichCandidate(
+  mapsKey: string | null,
+  ctx: { shop: string; username: string; areaHint: string; industry: string; havePhone: string; haveAddress: string },
+  opts: { maxQueries: number; perQuery: number; skipQuery?: Set<string>; onQuery?: (q: string) => void },
+): Promise<EnrichResult> {
+  let phone = ctx.havePhone || '', address = ctx.haveAddress || '', prefecture = '', city = ''
+  let official = '', reservation = '', line = '', place_id = ''
+  const sources: { url: string; got: string }[] = []
+  let queriesUsed = 0
+  try {
+    const queries = buildEnrichQueries(ctx.shop, ctx.username, opts.maxQueries)
+    for (const q of queries) {
+      if (phone && address) break
+      if (opts.skipQuery?.has(q)) continue
+      opts.onQuery?.(q)
+      queriesUsed++
+      const { results } = await webSearch(q, opts.perQuery)
+      for (const r of results) {
+        const c = extractContacts(`${r.title} ${r.snippet} ${r.url}`)
+        if (c.phone && !phone) { phone = c.phone; sources.push({ url: r.url, got: 'phone' }) }
+        if (c.address && !address) { address = c.address; prefecture = prefecture || c.prefecture; city = city || c.city; sources.push({ url: r.url, got: 'address' }) }
+        if (c.reservation && !reservation) { reservation = c.reservation; sources.push({ url: c.reservation, got: 'reservation' }) }
+        if (c.official && !official) official = c.official
+        if (c.line && !line) line = c.line
+      }
+    }
+    // Google Places 照合（店名＋エリア/業種）
+    if (mapsKey && ctx.shop && (!phone || !address)) {
+      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''}`.trim(), 3)
+      const top = sr.places?.[0]
+      if (top && nameMatch(ctx.shop, top.displayName?.text || '')) {
+        place_id = top.id || ''
+        const d = place_id ? await placeDetails(mapsKey, place_id) : null
+        const p: any = d || top
+        if (!phone && phoneOf(p)) { phone = phoneOf(p); sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_phone' }) }
+        if (!address && p.formattedAddress) { address = p.formattedAddress; const reg = extractRegion(address); prefecture = prefecture || reg.prefecture; city = city || reg.city; sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_address' }) }
+        if (!official && p.websiteUri) official = p.websiteUri
+      }
+    }
+    if (!prefecture && address) { const reg = extractRegion(address); prefecture = reg.prefecture; city = city || reg.city }
+    const confidence = (phone ? 40 : 0) + (address ? 40 : 0) + (place_id ? 20 : 0)
+    const status: EnrichResult['status'] = (phone || address) ? 'enriched' : (queriesUsed > 0 ? 'searched' : 'not_started')
+    const reason = status === 'enriched'
+      ? `補完: ${phone ? '電話' : ''}${phone && address ? '＋' : ''}${address ? '住所' : ''}${place_id ? '（Places含む）' : ''} / ${queriesUsed}クエリ`
+      : `補完未取得（${queriesUsed}クエリ実行）`
+    return { phone, address, prefecture, city, official, reservation, line, place_id, sources, status, confidence, reason, queriesUsed }
+  } catch (e: any) {
+    return { phone, address, prefecture, city, official, reservation, line, place_id, sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed }
+  }
+}
+
 // ---- Anthropic 判定 ----
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
 
-function buildJudgePrompt(r: WebResult): string {
-  return `あなたは新規オープン店舗の営業リスト判定アシスタントです。以下のInstagram公開検索結果が「新規オープン/開業/開店/開院/独立開業/移転オープン」の新店候補かを判定し、JSONのみ返してください。検索クエリには地域名・業種名を含めていません。地域や業種は本文から推定し、無ければ null にしてください（推測で東京都千代田区などを入れない）。
+function buildJudgePrompt(r: WebResult, enrich?: EnrichResult, username?: string): string {
+  const enrichBlock = enrich ? `
+
+外部情報補完（同じ店舗の予約サイト/公式/LINE/Google Places等から取得・信頼度${enrich.confidence}）:
+- 補完電話: ${enrich.phone || '（なし）'}
+- 補完住所: ${enrich.address || '（なし）'}（${enrich.prefecture || ''}${enrich.city || ''}）
+- 予約URL: ${enrich.reservation || '（なし）'} / 公式: ${enrich.official || '（なし）'} / LINE: ${enrich.line || '（なし）'}
+- Google Place ID: ${enrich.place_id || '（なし）'}
+- 補完元URL: ${enrich.sources.map((s) => `${s.got}:${s.url}`).slice(0, 6).join(' , ') || '（なし）'}
+※補完情報が同一店舗と判断できる場合は phone/prefecture/city/address に反映してよい。別店舗の可能性があれば HOLD。` : ''
+  return `あなたは新規オープン店舗の営業リスト判定アシスタントです。以下のInstagram公開検索結果が「新規オープン/開業/開店/開院/独立開業/移転オープン」の新店候補かを判定し、JSONのみ返してください。検索クエリには地域名・業種名を含めていません。地域や業種は本文/補完情報から推定し、無ければ null にしてください（推測で東京都千代田区などを入れない）。username: ${username || '（不明）'}${enrichBlock}
 
 ルール:
 - 新店根拠が明確で店名/業種/日本国内の地域が推定でき、電話/公式/予約/LINEで連絡先が辿れる → HOT
@@ -141,14 +259,14 @@ url: ${r.url}
 JSONのみ:`
 }
 
-export async function anthropicJudge(r: WebResult): Promise<any | null> {
+export async function anthropicJudge(r: WebResult, enrich?: EnrichResult, username?: string): Promise<any | null> {
   const key = process.env.ANTHROPIC_API_KEY
   if (!key) return null
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 600, messages: [{ role: 'user', content: buildJudgePrompt(r) }] }),
+      body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 600, messages: [{ role: 'user', content: buildJudgePrompt(r, enrich, username) }] }),
     })
     const j: any = await res.json().catch(() => ({}))
     if (!res.ok) return null
@@ -209,12 +327,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const anthropicDailyCap = Math.max(0, Number(s.iwAnthropicDailyCap) || 100)
   const useAnthropic = s.iwAnthropic !== false && !!process.env.ANTHROPIC_API_KEY
   const dailyCap = Math.max(1, Number(s.dailyCap) || 30)
+  const enrichEnabled = s.iwEnrichEnabled !== false
+  const enrichMaxQueries = Math.max(0, Number(s.iwEnrichMaxQueries) || 3)
+  const enrichPerQuery = Math.max(1, Math.min(10, Number(s.iwEnrichPerQuery) || 5))
+  const enrichDailyCap = Math.max(0, Number(s.iwEnrichDailyCap) || 100)
 
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
     hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, dup: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
+    enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
   }
   const debug: any = { mode: 'nationwide', provider: searchProvider(), useAnthropic, queries: [] as string[], queryResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
@@ -253,11 +376,20 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     const recent = new Set<string>((recentRows || []).map((r: any) => String(r.query)))
     let picked = NATIONAL_QUERIES.filter((q) => !recent.has(q)).slice(0, runQueryLimit)
     if (picked.length === 0 && runQueryLimit > 0) picked = NATIONAL_QUERIES.slice(0, runQueryLimit)
+    // 補完: 1日の補完候補上限と、7日以内に実行済みの補完クエリ
+    const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
+      .eq('source', 'instagram_web_search').not('last_enriched_at', 'is', null).gte('last_enriched_at', startToday.toISOString())
+    let enrichBudget = Math.max(0, enrichDailyCap - (enrichedTodayCount || 0))
+    const { data: enrichRecentRows } = await admin.from('ig_enrich_log').select('query').gte('last_run_at', since7).limit(8000)
+    const enrichRecent = new Set<string>((enrichRecentRows || []).map((r: any) => String(r.query)))
+    const enrichQueriesToLog = new Set<string>()
+
     debug.queries = picked
     debug.runsToday = (runsToday || 0) + 1
     debug.queriesToday = queriesToday || 0
     debug.remainingQueries = remainingQueries
     debug.anthropicBudget = anthropicBudget
+    debug.enrichBudget = enrichBudget
 
     const nowIso = new Date().toISOString()
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
@@ -286,58 +418,73 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (!rf.pass) { counts.noOpenWord++; continue }
         counts.rulePassed++; q.rulePassed++
 
-        // AI判定（上限内のみ）。超過/OFF/失敗はヒューリスティック（無料）
-        let j: any
-        if (useAnthropic && anthropicBudget > 0) {
-          j = await anthropicJudge(r)
-          if (j) { counts.judged++; q.judged++; anthropicBudget-- }
-          else { j = heuristicJudge(r); counts.heuristicUsed++; q.heuristic++ }
-        } else {
-          j = heuristicJudge(r); counts.heuristicUsed++; q.heuristic++
+        // ベース抽出（無料）で店名/username/地域を得る
+        const base = heuristicJudge(r)
+        const username = usernameFromUrl(r.url)
+        const baseRegion = extractRegion(`${r.title} ${r.snippet}`)
+        const shop = base.shop_name || ''
+        const industry0 = base.industry || extractIndustry(`${r.title} ${r.snippet}`) || ''
+
+        // 外部情報補完: 電話または地域が無ければ、関連サイト/予約サイト/Placesから補完
+        let enrich: EnrichResult | null = null
+        const needEnrich = enrichEnabled && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture) && !base.is_foreign
+        if (needEnrich) {
+          enrich = await enrichCandidate(mapsKey, { shop, username, areaHint: baseRegion.area, industry: industry0, havePhone: base.phone_candidate || '', haveAddress: '' }, {
+            maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,
+            onQuery: (qq) => { counts.enrichQueries++; q.enrichQueries = (q.enrichQueries || 0) + 1; enrichQueriesToLog.add(qq) },
+          })
+          enrichBudget--; counts.enrichTried++
+          if (enrich.status === 'enriched') counts.enrichSucceeded++
+          if (enrich.phone) counts.enrichPhone++
+          if (enrich.address) counts.enrichAddress++
         }
 
-        // 地域は抽出できたものだけ。クエリ地域のフォールバックはしない（千代田区固定の修正）
-        const region = extractRegion(`${r.title} ${r.snippet}`)
-        const prefecture = j.prefecture || region.prefecture || null
-        const city = j.city || region.city || null
+        // AI判定（補完情報も渡す）。上限内のみAI、超過/OFF/失敗はベース（ルール）判定
+        let j: any
+        if (useAnthropic && anthropicBudget > 0) {
+          j = await anthropicJudge(r, enrich || undefined, username)
+          if (j) { counts.judged++; q.judged++; anthropicBudget-- }
+          else { j = base; counts.heuristicUsed++; q.heuristic++ }
+        } else { j = base; counts.heuristicUsed++; q.heuristic++ }
+
+        // マージ（AI > 補完 > ベース）。地域のクエリ・フォールバックはしない（千代田区固定の修正）
+        const prefecture = j.prefecture || enrich?.prefecture || baseRegion.prefecture || null
+        const city = j.city || enrich?.city || baseRegion.city || null
         const area = [prefecture, city].filter(Boolean).join('') || null
-        const industry = j.industry || extractIndustry(`${r.title} ${r.snippet}`) || null
-        const phone = j.phone_candidate || ''
-        if (phone) counts.phoneYes++
+        const industry = j.industry || industry0 || null
+        const finalPhone = j.phone_candidate || enrich?.phone || base.phone_candidate || ''
+        const addressVal = j.address_candidate || enrich?.address || null
+        const officialVal = j.official_url_candidate || enrich?.official || null
+        const reservationVal = j.reservation_url_candidate || enrich?.reservation || null
+        const lineVal = j.line_url_candidate || enrich?.line || null
+        const matchedPlaceId = enrich?.place_id || null
+        const placeMatched = !!matchedPlaceId
+        if (placeMatched) counts.placeMatched++
+        if (finalPhone) counts.phoneYes++
         if (area) { counts.areaKnown++; q.areaKnown++ } else { counts.areaUnknown++; q.areaUnknown++ }
         if (industry) { counts.industryKnown++; q.industryKnown++ } else { counts.industryUnknown++; q.industryUnknown++ }
 
-        // 任意: Google Places照合
-        let placeMatched = false, matchedPlaceId: string | null = null, placeFields: any = {}
-        if (mapsKey && j.shop_name && area && !j.is_foreign) {
-          const sr = await searchLight(mapsKey, `${j.shop_name} ${area}`, 2)
-          const top = sr.places?.[0]
-          if (top && (top.displayName?.text || '').includes(String(j.shop_name).slice(0, 4))) {
-            placeMatched = true; matchedPlaceId = top.id || null; counts.placeMatched++
-            const d = matchedPlaceId ? await placeDetails(mapsKey, matchedPlaceId) : null
-            placeFields = d || top
-          }
-        }
-
+        // 温度: 全国化でも甘くしない。HOTは電話＋エリア(住所/市区町村)が必須
         let temperature: string = j.recommended_status || 'HOLD'
         if (j.is_foreign) temperature = 'EXCLUDED'
         if (temperature === 'HOT') {
-          if (s.iwRequirePhone && !phone) temperature = 'HOLD'
+          if (!finalPhone || !area) temperature = 'HOLD'
+          if (s.iwRequirePhone && !finalPhone) temperature = 'HOLD'
           if (s.iwPlacesRequired && !placeMatched) temperature = 'HOLD'
         }
         if (temperature === 'HOT') { counts.hot++; q.hot++ }
         else if (temperature === 'EXCLUDED') { counts.excluded++; q.excluded++ }
         else { counts.hold++; q.hold++ }
 
-        const finalPhone = phone || (placeMatched ? phoneOf(placeFields) : '')
-        const name = j.shop_name || (area ? `${area}の新店候補` : 'Instagram新店候補')
+        const name = j.shop_name || shop || (area ? `${area}の新店候補` : 'Instagram新店候補')
+        const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
         const reason = j.exclusion_reason
           ? `除外: ${j.exclusion_reason}`
-          : `新店根拠(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / ${j.evidence_text || r.snippet?.slice(0, 100) || ''}${j._heuristic ? '（ルール判定）' : '（AI判定）'}`
+          : `新店根拠(${j.newness_type || 'unknown'}) 確度${j.confidence_score ?? '-'} / 地域:${area || '不明'} / 電話:${finalPhone || 'なし'}${enrichNote} / ${j.evidence_text || r.snippet?.slice(0, 100) || ''}${j._heuristic ? '（ルール判定）' : '（AI判定）'}`
 
         const payload: any = {
-          name, address: j.address_candidate || null, industry,
-          phone_number: finalPhone || null, website_url: j.official_url_candidate || null,
+          name, address: addressVal, industry,
+          phone_number: finalPhone || null, website_url: officialVal,
           source: 'instagram_web_search', lead_source: 'instagram_web', source_type: 'AI自動投入(Instagram Web)',
           lead_temperature: temperature, recommended_status: j.recommended_status || temperature,
           is_new_instagram: true, is_new_gbp: placeMatched,
@@ -345,9 +492,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           owner_reachability_score: finalPhone ? 65 : 30,
           auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason,
           instagram_url: r.url, search_query: query, search_title: (r.title || '').slice(0, 300), search_snippet: (r.snippet || '').slice(0, 500),
-          extracted_shop_name: j.shop_name || null, extracted_area: area, extracted_prefecture: prefecture, extracted_city: city,
-          extracted_industry: industry, extracted_phone: phone || null, extracted_url: j.official_url_candidate || null,
-          line_url: j.line_url_candidate || null, reservation_url: j.reservation_url_candidate || null, official_url: j.official_url_candidate || null,
+          // 元データ（snippet由来）と補完データの両方を保存。extracted_* には最終値（補完反映）を入れる
+          extracted_shop_name: name, extracted_area: area, extracted_prefecture: prefecture, extracted_city: city,
+          extracted_industry: industry, extracted_phone: finalPhone || base.phone_candidate || null, extracted_url: officialVal,
+          line_url: lineVal, reservation_url: reservationVal, official_url: officialVal,
+          enrichment_status: enrich?.status || 'not_started', enrichment_sources: enrich?.sources || null,
+          enriched_phone: enrich?.phone || null, enriched_address: enrich?.address || null,
+          enriched_prefecture: enrich?.prefecture || null, enriched_city: enrich?.city || null,
+          enriched_official_url: enrich?.official || null, enriched_reservation_url: enrich?.reservation || null,
+          enriched_line_url: enrich?.line || null, enriched_google_place_id: enrich?.place_id || null,
+          enrichment_reason: enrich?.reason || null, enrichment_confidence: enrich?.confidence ?? null,
+          last_enriched_at: enrich ? nowIso : null,
           instagram_newness_reason: reason, anthropic_judgement: j, match_confidence: j.confidence_score ?? null, newness_type: j.newness_type || null,
           rule_filter_result: rf.result, skipped_reason: null, api_run_id: runId,
           google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId,
@@ -362,8 +517,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (s.iwAutoImport && temperature === 'HOT' && finalPhone && candidateId && importedCount < dailyCap) {
           const memo = [`【AI自動投入 / Instagram Web(全国)】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
           const { data: created } = await admin.from('cases').insert({
-            name, address: j.address_candidate || '', phone1: finalPhone, industry,
-            status: DEFAULT_STATUS, hp1: j.official_url_candidate || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
+            name, address: addressVal || '', phone1: finalPhone, industry,
+            status: DEFAULT_STATUS, hp1: officialVal || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
           }).select('id').single()
           if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++ }
         }
@@ -375,10 +530,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       debug.queryResults.push(q)
     }
 
-    // 概算コスト
-    debug.estSerperCost = Math.round(counts.queries * SERPER_JPY_PER_QUERY * 10) / 10
+    // 補完検索クエリの実行履歴を記録（7日スキップ用）
+    for (const eq of enrichQueriesToLog) {
+      await admin.from('ig_enrich_log').upsert({ query: eq, last_run_at: nowIso, runs: 1 }, { onConflict: 'query' }).then(() => {}, () => {})
+    }
+
+    // 概算コスト（Serperは本検索＋補完検索の合計）
+    const totalSerperQueries = counts.queries + counts.enrichQueries
+    debug.estSerperCost = Math.round(totalSerperQueries * SERPER_JPY_PER_QUERY * 10) / 10
     debug.estAnthropicCost = Math.round(counts.judged * ANTHROPIC_JPY_PER_JUDGE * 10) / 10
     debug.estTotalCost = Math.round((debug.estSerperCost + debug.estAnthropicCost) * 10) / 10
+    debug.enrichSucceeded = counts.enrichSucceeded
 
     await admin.from('auto_lead_runs').update({
       status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.queries,

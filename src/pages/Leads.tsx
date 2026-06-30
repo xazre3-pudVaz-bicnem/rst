@@ -207,6 +207,7 @@ export default function Leads() {
             iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
             iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
             iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
+            iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
             dailyCap: settings.dailyCap,
           },
         }),
@@ -233,6 +234,19 @@ export default function Leads() {
   async function excludeCandidate(c: LeadCandidate) {
     try { await LeadCandidateApi.update(c.id, { lead_temperature: 'EXCLUDED', should_exclude_from_call_list: true }); toast.success('除外にしました'); load() }
     catch (e) { toast.error('除外に失敗: ' + jpError(e)) }
+  }
+
+  // 再補完: 外部サイト/予約サイト/Placesから電話・住所を探索（AI判定とは別）
+  async function reenrichCandidate(c: LeadCandidate) {
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      toast.info('外部情報を補完中…')
+      const res = await fetch('/api/cron/instagram-web-leads', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ reenrich: { id: c.id } }) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok || j.ok === false) throw new Error(j.error || 'failed')
+      toast.success(`再補完: 電話${j.phone || 'なし'} / ${j.area || '地域不明'}`); load()
+    } catch (e) { toast.error('再補完に失敗: ' + jpError(e)) }
   }
 
   // 管理API（ログインJWTで認可・service roleはサーバー側のみ）
@@ -435,6 +449,7 @@ export default function Leads() {
         iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
         iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
         iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
+        iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
         dailyCap: settings.dailyCap,
       })
       toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram Web に反映）')
@@ -806,6 +821,10 @@ export default function Leads() {
                   <div className="space-y-1"><Label>1日最大クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 80) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.iwPerQuery} onChange={(e) => saveSettings({ ...settings, iwPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 10)) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日最大AI判定件数</Label><Input type="number" min={0} value={settings.iwAnthropicDailyCap} onChange={(e) => saveSettings({ ...settings, iwAnthropicDailyCap: Math.max(0, Number(e.target.value) || 100) })} className="h-8" /></div>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwEnrichEnabled} onChange={(e) => saveSettings({ ...settings, iwEnrichEnabled: e.target.checked })} />外部情報補完（電話/住所探索）</label>
+                  <div className="space-y-1"><Label>1候補の補完検索数</Label><Input type="number" min={0} value={settings.iwEnrichMaxQueries} onChange={(e) => saveSettings({ ...settings, iwEnrichMaxQueries: Math.max(0, Number(e.target.value) || 3) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>補完1クエリ取得件数</Label><Input type="number" min={1} max={10} value={settings.iwEnrichPerQuery} onChange={(e) => saveSettings({ ...settings, iwEnrichPerQuery: Math.max(1, Math.min(10, Number(e.target.value) || 5)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大補完候補数</Label><Input type="number" min={0} value={settings.iwEnrichDailyCap} onChange={(e) => saveSettings({ ...settings, iwEnrichDailyCap: Math.max(0, Number(e.target.value) || 100) })} className="h-8" /></div>
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   ※全国検索。検索クエリに<b>地域名・業種名を入れません</b>（新店系ハッシュタグ/語のみ）。地域・業種は title/snippet/url から後段で抽出（取れなければ「不明」）。Serper取得後にルールで粗選別し、新店っぽい候補のみAI判定（1日{settings.iwAnthropicDailyCap}件まで）。同一URL重複・同一クエリ7日はスキップ。HOTは初期OFFでHOLD中心に保存→画面で手動投入。自動実行は毎朝6:30 Cron。
@@ -1213,6 +1232,14 @@ export default function Leads() {
                       <span className="rounded bg-muted px-1.5 py-0.5">業種不明 {iwResult.industryUnknown ?? 0}</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完検索 {iwResult.enrichQueries ?? 0}回</span>
+                      <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">補完実行 {iwResult.enrichTried ?? 0}</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">補完成功 {iwResult.enrichSucceeded ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話取得 {iwResult.enrichPhone ?? 0}</span>
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">住所取得 {iwResult.enrichAddress ?? 0}</span>
+                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">補完残枠 {iwResult.debug?.enrichBudget ?? '-'}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日実行 {iwResult.debug?.runsToday ?? '-'}回</span>
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日クエリ {iwResult.debug?.queriesToday ?? 0}</span>
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">AI残枠 {iwResult.debug?.anthropicBudget ?? '-'}</span>
@@ -1429,6 +1456,7 @@ export default function Leads() {
                     <th className="p-2 text-left">LINE/予約/公式</th>
                     <th className="p-2 text-left">Instagram / タイトル</th>
                     <th className="p-2 text-left">スニペット / 判定理由</th>
+                    <th className="p-2 text-left">補完</th>
                     <th className="p-2 text-center">確度</th>
                     <th className="p-2 text-right">操作</th>
                   </tr>
@@ -1462,11 +1490,28 @@ export default function Leads() {
                         <div className="line-clamp-2 text-[9px] text-muted-foreground" title={c.search_snippet ?? ''}>{c.search_snippet}</div>
                         <div className="mt-0.5 line-clamp-2 text-fuchsia-700 dark:text-fuchsia-300" title={c.instagram_newness_reason ?? c.ai_comment ?? ''}>{c.instagram_newness_reason || c.ai_comment}</div>
                       </td>
+                      <td className="max-w-[160px] p-2">
+                        {(() => {
+                          const st = c.enrichment_status
+                          const cls = st === 'enriched' ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : st === 'searched' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : st === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300' : 'bg-muted'
+                          const srcCount = Array.isArray(c.enrichment_sources) ? (c.enrichment_sources as any[]).length : 0
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <span className={cn('w-fit rounded px-1 text-[9px]', cls)}>{st || '未補完'}{c.enrichment_confidence != null ? ` ${c.enrichment_confidence}` : ''}</span>
+                              {c.enriched_phone && <span className="text-[9px] text-green-700 dark:text-green-300">📞{c.enriched_phone}</span>}
+                              {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
+                              {c.enriched_google_place_id && <a href={`https://www.google.com/maps/place/?q=place_id:${c.enriched_google_place_id}`} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">Places</a>}
+                              {srcCount > 0 && <span className="text-[9px] text-muted-foreground">補完元 {srcCount}件</span>}
+                            </div>
+                          )
+                        })()}
+                      </td>
                       <td className="p-2 text-center">{c.match_confidence ?? '—'}</td>
                       <td className="p-2 text-right">
                         <div className="flex flex-col items-end gap-1">
                           {!c.imported_to_cases && c.lead_temperature !== 'EXCLUDED' && <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => importToCase(c).then((ok) => ok && toast.success('投入しました'))}>投入</Button>}
                           {c.imported_to_cases && <span className="text-green-600">投入済</span>}
+                          <Button size="sm" variant="ghost" className="h-6 text-2xs text-fuchsia-700 dark:text-fuchsia-300" onClick={() => reenrichCandidate(c)}>再補完</Button>
                           <Button size="sm" variant="ghost" className="h-6 text-2xs" onClick={() => rejudgeCandidate(c)}>再判定</Button>
                           {c.lead_temperature !== 'EXCLUDED' && <Button size="sm" variant="ghost" className="h-6 text-2xs text-red-600" onClick={() => excludeCandidate(c)}>除外</Button>}
                         </div>

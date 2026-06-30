@@ -337,6 +337,10 @@ export const DEFAULT_LEAD_SETTINGS = {
   iwMaxRunsPerDay: 4,
   iwPerRun: 20,
   iwAnthropicDailyCap: 100,
+  iwEnrichEnabled: true,
+  iwEnrichMaxQueries: 3,
+  iwEnrichPerQuery: 5,
+  iwEnrichDailyCap: 100,
   areas: [
     '東京都葛飾区', '亀有', '金町', '新小岩',
   ].join('\n'),
