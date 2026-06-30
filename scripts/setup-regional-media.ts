@@ -169,6 +169,21 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_media_family TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_shop_name_from_article TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_area_from_article TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_date_from_article TEXT;
+-- 店舗ディレクトリ型（彩北なび等）
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_site_type TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_listing_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS source_detail_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS search_title TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS search_snippet TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS newness_type TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_date_text TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_month INTEGER;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_day INTEGER;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS extracted_open_date_confidence TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS map_url TEXT;
+CREATE INDEX IF NOT EXISTS idx_lead_candidates_detail_url ON lead_candidates(source_detail_url);
+-- 旧・誤URLの彩北なび(saihokunavi.net)は無効化（正: www.saikohkunavi.net）
+UPDATE source_sites SET is_active = false, last_crawl_result = '旧URL（無効化）' WHERE base_url ILIKE '%saihokunavi.net%';
 CREATE TABLE IF NOT EXISTS ig_enrich_log (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(), query TEXT NOT NULL UNIQUE,
   last_run_at TIMESTAMPTZ NOT NULL DEFAULT now(), runs INTEGER NOT NULL DEFAULT 0, created_date TIMESTAMPTZ NOT NULL DEFAULT now()

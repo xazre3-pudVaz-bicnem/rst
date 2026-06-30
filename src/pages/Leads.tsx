@@ -1365,8 +1365,14 @@ export default function Leads() {
                         <div className="mt-1 max-h-56 space-y-1 overflow-y-auto">
                           {rmResult.debug.siteResults.map((h: any, i: number) => (
                             <div key={i} className="border-b pb-0.5">
-                              <div className="font-medium">{h.site} <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span></div>
-                              <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ 記事候補{h.candidateLinks ?? 0} ・ 新店語一致{h.keywordHits ?? 0} ・ 新着{h.newArticles ?? 0} ・ 3日内{h.recent ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
+                              <div className="font-medium">{h.site}{' '}
+                                <span className={cn('rounded px-1 text-[9px]', h.siteType === 'local_directory_new_listing' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300')}>{h.siteType === 'local_directory_new_listing' ? '店舗ディレクトリ型' : '記事型'}</span>{' '}
+                                <span className={cn(h.fetchOk ? 'text-green-600' : 'text-red-600')}>{h.fetchOk ? 'fetch✓' : 'fetch✗'} HTTP{h.status ?? '-'}</span></div>
+                              {h.siteType === 'local_directory_new_listing' ? (
+                                <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ <b>店舗詳細リンク{h.detailLinks ?? 0}</b> ・ OPEN表記{h.openTagged ?? 0} ・ 詳細取得{h.detailFetched ?? 0} ・ 電話取得{h.phoneYes ?? 0} ・ 住所取得{h.addressYes ?? 0} ・ OPEN日{h.openYes ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
+                              ) : (
+                                <div className="text-muted-foreground">HTML{h.htmlLength ?? 0}字 ・ 全リンク{h.totalLinks ?? 0} ・ 記事候補{h.candidateLinks ?? 0} ・ 新店語一致{h.keywordHits ?? 0} ・ 新着{h.newArticles ?? 0} ・ 3日内{h.recent ?? 0} ・ 保存{h.saved ?? 0} ・ HOT{h.hot ?? 0}/HOLD{h.hold ?? 0}/除外{h.excluded ?? 0}</div>
+                              )}
                               {h.reason && h.reason !== 'OK' && <div className="text-amber-600">理由: {h.reason}</div>}
                               {h.error && <div className="text-red-600">エラー: {h.error}</div>}
                             </div>
@@ -1377,9 +1383,20 @@ export default function Leads() {
                     {rmResult.debug?.sample && (
                       <div className="rounded border bg-muted/30 p-2 text-[10px]">
                         <div className="font-semibold">サンプル: {rmResult.debug.sample.site}</div>
-                        <div className="truncate">{rmResult.debug.sample.title}（{fmtDate(rmResult.debug.sample.published_at)}）</div>
-                        <div>店名: {rmResult.debug.sample.extracted?.shop_name || '—'} / エリア: {rmResult.debug.sample.extracted?.area || '—'} / 業種: {rmResult.debug.sample.extracted?.industry || '—'} / 電話: {rmResult.debug.sample.extracted?.phone || '—'}</div>
-                        <div>判定: <b>{rmResult.debug.sample.temperature}</b> ・ {rmResult.debug.sample.reason}</div>
+                        {rmResult.debug.sample.siteType === 'local_directory_new_listing' ? (
+                          <>
+                            <div className="truncate">店舗: <b>{rmResult.debug.sample.shop_name}</b>{rmResult.debug.sample.open_date ? `（${rmResult.debug.sample.open_date}）` : ''}</div>
+                            <div>電話: {rmResult.debug.sample.phone || '—'} / 住所: {rmResult.debug.sample.address || '—'} / 業種: {rmResult.debug.sample.industry || '—'}</div>
+                            <div className="truncate">詳細URL: {rmResult.debug.sample.detailUrl}</div>
+                            <div>判定: <b>{rmResult.debug.sample.temperature}</b> ・ {rmResult.debug.sample.reason}</div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="truncate">{rmResult.debug.sample.title}（{fmtDate(rmResult.debug.sample.published_at)}）</div>
+                            <div>店名: {rmResult.debug.sample.extracted?.shop_name || '—'} / エリア: {rmResult.debug.sample.extracted?.area || '—'} / 業種: {rmResult.debug.sample.extracted?.industry || '—'} / 電話: {rmResult.debug.sample.extracted?.phone || '—'}</div>
+                            <div>判定: <b>{rmResult.debug.sample.temperature}</b> ・ {rmResult.debug.sample.reason}</div>
+                          </>
+                        )}
                       </div>
                     )}
                   </>
