@@ -9,6 +9,7 @@ import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
 import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
+import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
 
@@ -223,6 +224,14 @@ export default async function handler(req: any, res: any) {
     if (error) return res.status(400).json({ ok: false, error: error.message })
     const { count } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('source_type', 'sequential_id_probe').eq('is_active', true)
     return res.status(200).json({ ok: true, activeCount: count || 0 })
+  }
+
+  // エキテン公開日ベースの新規掲載候補探索（過去7日の公開日をSerper/Bingで検索→詳細ページで再確認→7日以内のみHOT-B）
+  if (body?.ekitenDiscover) {
+    try {
+      const out = await runEkitenDiscovery(admin, process.env.GOOGLE_MAPS_API_KEY || null, { ...(body.settings || {}), ...(body.ekitenDiscover || {}) }, userData.user.id)
+      return res.status(out.ok === false ? 200 : 200).json(out)
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
 
   // 大手/公共/大型施設/道の駅/産直/JA等の既存候補を EXCLUDED へ（ターゲット=個人事業主・小規模店に絞る）

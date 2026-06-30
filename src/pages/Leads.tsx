@@ -323,6 +323,16 @@ export default function Leads() {
     } finally { setProbing(false) }
   }
   async function updateProbeSite(id: string, u: any) { const json = await regionalApi({ updateProbeSite: { id, ...u } }); if (json?.ok) { toast.success('更新しました'); loadProbeSites() } }
+  const [ekitenRunning, setEkitenRunning] = useState(false)
+  const [ekitenResult, setEkitenResult] = useState<any>(null)
+  async function runEkiten() {
+    if (!window.confirm('エキテンの「公開日が直近7日以内」の新規掲載候補を探索します（Serper/Bingで過去7日の公開日を検索→詳細ページで公開日・電話・住所を再確認→7日以内のみHOT-B）。※公開日は開業日ではなく掲載公開日です。実行しますか？')) return
+    setEkitenRunning(true); setEkitenResult(null)
+    try { const json = await regionalApi({ ekitenDiscover: {}, settings: { aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun } })
+      if (json?.ok) { setEkitenResult(json); toast.success(`エキテン: 検索${json.queries}q / 詳細${json.detailFetched} / 公開日7日内${json.pub7} / HOT-B${json.hotB} / 投入${json.imported}`); load() }
+      else { setEkitenResult(json); toast.error(json?.error || 'エキテン探索に失敗しました') }
+    } finally { setEkitenRunning(false) }
+  }
   const [recorrecting, setRecorrecting] = useState(false)
   async function recorrectNames() {
     if (!window.confirm('既存の地域メディア/Instagram候補の店名を再判定します。\nサイト名/カテゴリ/記事タイトルのままの候補は「店名未確定」にしてHOLDへ下げます。実行しますか？')) return
@@ -2094,6 +2104,7 @@ export default function Leads() {
               <div className="flex flex-wrap items-center gap-2">
                 <Button size="sm" onClick={runProbeAll} disabled={probing}>{probing ? '探索中...' : '全ソースを探索（前回の続きから）'}</Button>
                 <Button size="sm" variant="outline" onClick={openAddProbe}>＋ 連番ソースを追加</Button>
+                <Button size="sm" variant="outline" onClick={runEkiten} disabled={ekitenRunning} className="border-pink-500 text-pink-700 dark:text-pink-300">{ekitenRunning ? 'エキテン探索中...' : 'エキテン新規掲載候補（公開日7日内）'}</Button>
                 <button onClick={loadProbeSites} className="text-[10px] text-primary hover:underline">再読込</button>
                 <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground"><input type="checkbox" checked={devMode} onChange={(e) => setDevMode(e.target.checked)} />開発者モード（source_id等を表示）</label>
               </div>
@@ -2121,6 +2132,25 @@ export default function Leads() {
                   <button key={k} onClick={() => setProbeView(k)} className={cn('rounded border px-2 py-0.5', probeView === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>{label}</button>
                 ))}
               </div>
+              {ekitenResult && (
+                <div className="rounded-lg border border-pink-300 bg-pink-50/50 p-2 text-[10px] dark:border-pink-500/30 dark:bg-pink-500/10">
+                  <div className="mb-1 font-bold text-pink-700 dark:text-pink-300">エキテン新規掲載候補（公開日7日以内）{ekitenResult.ok === false && <span className="ml-1 text-red-600">エラー: {String(ekitenResult.error).slice(0, 80)}</span>}</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <span className="rounded bg-muted px-1.5 py-0.5">検索対象 {ekitenResult.dateRange}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">クエリ {ekitenResult.queries}</span>
+                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">詳細取得 {ekitenResult.detailFetched}</span>
+                    <span className="rounded bg-rose-100 px-1.5 py-0.5 font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">公開日7日内 {ekitenResult.pub7}</span>
+                    <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">8日以上前 {ekitenResult.pubOld}</span>
+                    <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">公開日取得不可 {ekitenResult.noPub}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">電話あり {ekitenResult.phoneYes}・住所あり {ekitenResult.addrYes}</span>
+                    <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-B {ekitenResult.hotB}</span>
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {ekitenResult.hold}</span>
+                    <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED/SKIP {ekitenResult.excluded}</span>
+                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">lead保存 {ekitenResult.saved}・cases投入 {ekitenResult.imported}</span>
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">※公開日は店舗の開業日ではなく、エキテン上の掲載公開日です。新店確定ではなく新規掲載候補として扱っています（site:検索のためBing推奨。Serper無料は site: が弾かれ簡易検索にfallback）。</div>
+                </div>
+              )}
               {probeResult && (
                 <div className="flex flex-wrap gap-1.5 text-[10px]">
                   {probeResult.single
@@ -2886,6 +2916,17 @@ export default function Leads() {
                   </div>
                 )}
                 {(drawerCand as any).source_article_title && <div className="mt-1 text-[10px] text-muted-foreground">記事タイトル: {(drawerCand as any).source_article_title}</div>}
+                {(drawerCand as any).source_date_type === 'ekiten_published_date' && (() => {
+                  const pub = (drawerCand as any).source_published_date
+                  const days = pub ? Math.floor((Date.now() - Date.parse(String(pub).replace(/\//g, '-'))) / 86400000) : null
+                  return (
+                    <div className="mt-1 rounded border border-pink-300 bg-pink-50 p-1.5 text-[10px] text-pink-800 dark:border-pink-500/30 dark:bg-pink-500/10 dark:text-pink-200">
+                      <div>エキテン公開日: <b>{pub || '不明'}</b>{days != null && <>（{days}日前{days <= 7 ? '・直近7日以内の新規掲載候補' : '・8日以上前'}）</>}</div>
+                      {(drawerCand as any).source_updated_date && <div>最終更新日: {(drawerCand as any).source_updated_date}</div>}
+                      <div className="font-bold">※公開日は開業日ではなく、エキテン上の掲載公開日です。営業前に確認推奨。</div>
+                    </div>
+                  )
+                })()}
                 {((drawerCand as any).has_opening_date_badge || (drawerCand as any).is_new_gbp_priority) && (
                   <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
                     {(drawerCand as any).has_opening_date_badge && <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 font-bold text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {(drawerCand as any).google_opening_date_year || ''}{(drawerCand as any).google_opening_date_month ? `年${(drawerCand as any).google_opening_date_month}月` : ''}{(drawerCand as any).opening_date_band === 'future' ? '（開業予定）' : ''}</span>}

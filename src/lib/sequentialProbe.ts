@@ -14,6 +14,7 @@ import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { detectChain } from './chainFilter.js'
+import { webSearch } from './instagramWebRun.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
@@ -78,7 +79,7 @@ const OPEN_RE = /(新規オープン|ニューオープン|グランドオープ
 // 観光名所・公共施設のみ（電話/住所が無ければ営業対象外）
 const FACILITY_RE = /(神社|神宮|大社|[^ァ-ヶ]寺$|お寺|寺院|仏閣|教会|公園|庭園|広場|駅$|空港|港$|役所|市役所|町村役場|区役所|図書館|博物館|美術館|資料館|城跡|城$|展望台|展望|海岸|砂浜|ビーチ|滝$|渓谷|峠|岬|湖$|池$|山$|岳$|温泉郷|景勝|名所|旧跡|史跡|記念碑|モニュメント)/
 
-export interface JalanSpot { name: string; address: string; phone: string; category: string; official: string; mapUrl: string; reviews: string; valid: boolean; invalidReason: string }
+export interface JalanSpot { name: string; address: string; phone: string; category: string; official: string; mapUrl: string; reviews: string; valid: boolean; invalidReason: string; published?: string; updated?: string }
 /** じゃらん観光スポット詳細ページのパーサー（本体の基本情報のみ。周辺おすすめは除外） */
 export function parseJalanSpot(html: string, mojibake: boolean): JalanSpot {
   const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '' }
@@ -230,6 +231,50 @@ export function parseEparkCaloo(html: string, mojibake: boolean): JalanSpot {
   return { name, address, phone, category, official, mapUrl, reviews, valid: !invalidReason, invalidReason }
 }
 
+// エキテン店舗詳細ページ。公開日/最終更新日（掲載日。開業日ではない）＋店名/電話/住所/業種。
+const EKITEN_INVALID_RE = /(見つかりません|ページが存在しません|削除されたか|公開を終了|該当する店舗はありません|存在しないか|閉店しました|掲載を終了)/
+export function parseEkiten(html: string, mojibake: boolean): JalanSpot {
+  const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '', published: '', updated: '' }
+  if (mojibake) return { ...empty, invalidReason: '文字化けで読めない' }
+  const body = stripTags(html)
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || ''
+  if (EKITEN_INVALID_RE.test(og) || EKITEN_INVALID_RE.test(body.slice(0, 2000))) return { ...empty, invalidReason: 'ページ未存在/掲載終了' }
+  // 店名: h1 → og:title（（エリア） | エキテン byGMO を除去）
+  const h1 = stripTags(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '').trim()
+  let name = (h1 || og.replace(/\s*[（(][^）)]*[)）]\s*$/, '').replace(/\s*[|｜].*$/, '')).replace(/\s*[（(][^）)]*[)）]\s*$/, '').replace(/\s*[|｜].*$/, '').trim().slice(0, 50)
+  // 住所: 住所ラベル → 都道府県アンカー
+  let address = (body.match(/(?:住所|所在地)[:：\s]{0,4}((?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[一-龥ぁ-んァ-ヶ0-9０-９丁目番地号－−\-]{2,40})/)?.[1] || '').trim()
+  if (!address) address = (body.match(/(?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[一-龥ぁ-んァ-ヶ0-9０-９丁目番地号－−\-]{2,40}/)?.[0] || '').trim()
+  address = address.replace(/(地図|アクセス|ＭＡＰ|MAP|電話|TEL|営業時間|ジャンル).*$/i, '').replace(/\s+/g, '').slice(0, 70)
+  // 電話: tel: → 電話ラベル → 本文
+  let phone = (html.match(/href=["']tel:(\+?[\d-]{9,15})["']/i)?.[1] || '').replace(/^\+81/, '0')
+  if (!phone) phone = extractJpPhone(body)
+  const category = (body.match(/(?:ジャンル|業種)[:：\s]*([一-龥ぁ-んァ-ヶ・]{2,16})/)?.[1] || '').replace(/(地図|アクセス|詳細|を探す|で探す).*$/, '').trim().slice(0, 20)
+  const official = html.match(/href=["'](https?:\/\/(?!www\.ekiten\.jp|ekiten\.jp)[^"']+)["'][^>]*>\s*(?:公式|ホームページ|オフィシャル|HP)/i)?.[1] || ''
+  const reviews = (body.match(/口コミ[・･]?\s*([\d,]+)\s*件/)?.[1] || og.match(/[（(]\s*([\d,]+)\s*件/)?.[1] || '').replace(/,/g, '')
+  // 公開日 / 最終更新日: 「公開日</dt> ... <time datetime="YYYY/MM/DD">」
+  const dateAfter = (label: string): string => {
+    const i = html.indexOf(label)
+    if (i < 0) return ''
+    const seg = html.slice(i, i + 220)
+    const dt = seg.match(/datetime=["']([0-9]{4}[\/年-][0-9]{1,2}[\/月-][0-9]{1,2})/)?.[1] || seg.match(/([0-9]{4}[\/年][0-9]{1,2}[\/月][0-9]{1,2}日?)/)?.[1] || ''
+    return dt.replace(/[年月]/g, '/').replace(/日/g, '').replace(/\/$/, '')
+  }
+  const published = dateAfter('公開日')
+  const updated = dateAfter('最終更新日') || dateAfter('更新日')
+  let invalidReason = ''
+  if (!name && !phone && !address) invalidReason = '店名/電話/住所が取れない'
+  return { name, address, phone, category, official, mapUrl: '', reviews, valid: !invalidReason, invalidReason, published, updated }
+}
+
+/** 公開日(YYYY/MM/DD等)から今日との日数差（過去=正）。取れなければ null。 */
+export function daysSinceDate(s?: string): number | null {
+  if (!s) return null
+  const t = Date.parse(String(s).replace(/\//g, '-'))
+  if (Number.isNaN(t)) return null
+  return Math.floor((Date.now() - t) / 86400000)
+}
+
 export interface ProbeTestItem { url: string; ok: boolean; status: number; charset: string; mojibake: boolean; valid: boolean; name: string; address: string; phone: string; category: string; parser_used: string; invalidReason: string }
 /** 既知URL（または指定ID）でじゃらん専用パーサーを単体テスト（DB保存なし） */
 export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: boolean; items: ProbeTestItem[]; summary: { addressOk: boolean; phoneOk: boolean; parserOk: boolean } }> {
@@ -245,9 +290,10 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
     const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
-    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : 'generic_detail_page'
+    const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
+    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
     const classifyTest = (resp: typeof r) => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : null
       const body = resp.html ? stripTags(resp.html) : ''
       const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
       const nm = sn0 && sn0.valid ? sn0.name : ''
@@ -370,11 +416,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
     const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail)$/.test(site.parser_type || '')
-    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : 'generic_detail_page'
+    const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
+    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
 
     // ===== 4分類: valid / invalid(404/不存在) / fetch_failed(403,429,5xx,timeout,network) / parser_failed(200だが抽出不可・文字化け) =====
     const classify = (resp: typeof r): { status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; reason: string; spot: any; name: string; address: string; phone: string; category: string; bodyAll: string } => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : null
       const bodyAll = resp.html ? stripTags(resp.html) : ''
       const sn = sanitizeShopName(spot ? spot.name : '', { placesMatched: false })
       const name = sn.valid ? sn.name : ''
@@ -467,6 +514,15 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     } else if (temperature === 'HOLD' && !nameValid && phoneOk && !!address && !chP.definite && !excludedFacility && !isForeignAddress(address)) {
       temperature = 'HOT'; hot_tier = 'B'; nameUnconfirmedHot = true; recommendedStatus = 'HOT_B'  // 店名未確定HOLD→電話+住所+新規掲載ありでHOT-B昇格
     }
+    // エキテン: 公開日(掲載日。開業日ではない)が直近7日以内のみ新規掲載候補としてHOT-B。8日以上前/取得不可は対象外。
+    let ekitenPubDays: number | null = null
+    if (isEkiten) {
+      ekitenPubDays = daysSinceDate(spot?.published)
+      if (ekitenPubDays == null) { temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD'; hotBlock = '公開日取得不可' }
+      else if (ekitenPubDays > 7) { temperature = 'EXCLUDED'; hot_tier = null; recommendedStatus = 'EXCLUDED'; hotBlock = `公開日${ekitenPubDays}日前(8日以上前)` }
+      else if (phoneOk && address && !bigP.exclude && !chP.definite) { temperature = 'HOT'; hot_tier = 'B'; recommendedStatus = 'HOT_B' }
+      else { temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD'; hotBlock = !phoneOk ? '電話番号未取得' : !address ? '住所未取得' : '要確認' }
+    }
     if (temperature === 'HOT') { res.hot++; if (hot_tier === 'A') res.hotA++; else res.hotB++ }
     else if (temperature === 'EXCLUDED') res.excluded++; else res.hold++
 
@@ -492,7 +548,9 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       first_discovered_at: opts.nowIso, regional_media_detected_at: opts.nowIso,
       lead_temperature: temperature, hot_tier, recommended_status: recommendedStatus, should_exclude_from_call_list: temperature === 'EXCLUDED',
       name_unconfirmed_hot: nameUnconfirmedHot, phone_source: phone ? 'detail_page' : null,
-      owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? sc.reason : null, ai_comment: `${holdNote}${sc.reason}`,
+      ...(isEkiten ? { source_published_date: spot?.published || null, source_updated_date: spot?.updated || null, source_date_type: 'ekiten_published_date' } : {}),
+      owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? sc.reason : null,
+      ai_comment: isEkiten ? `${ekitenPubDays != null ? `エキテン公開日 ${spot?.published}（${ekitenPubDays}日前${ekitenPubDays <= 7 ? '・直近7日以内の新規掲載候補' : '・8日以上前'}）。※公開日は開業日ではなくエキテン掲載公開日。` : 'エキテン公開日が取得できず。'}${holdNote ? holdNote + ' ' : ''}${sc.reason}` : `${holdNote}${sc.reason}`,
       extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null, extracted_industry: category || null, extracted_area: address || null, extracted_official_url: official || null,
       hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary, hot_check_result: hotReject.hot_check_result,
       hot_missing_requirements: hotReject.hot_missing_requirements, hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
