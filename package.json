@@ -12,6 +12,8 @@
     "setup:instagram-web": "tsx scripts/setup-instagram-web.ts",
     "check:instagram-web-api": "tsx scripts/check-instagram-web-api.ts",
     "setup:users": "tsx scripts/setup-users.ts",
+    "setup:google-places": "tsx scripts/setup-google-places.ts",
+    "check:google-places-api": "tsx scripts/check-google-places-api.ts",
     "db:apply": "tsx scripts/apply-migration.ts"
   },
   "dependencies": {

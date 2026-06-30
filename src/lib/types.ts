@@ -300,6 +300,18 @@ export interface LeadCandidate {
   extracted_shop_name_from_article?: string | null
   extracted_area_from_article?: string | null
   extracted_open_date_from_article?: string | null
+  // Google openingDate / businessStatus
+  google_opening_date_year?: number | null
+  google_opening_date_month?: number | null
+  google_opening_date_day?: number | null
+  google_opening_date_raw?: string | null
+  google_business_status?: string | null
+  has_google_opening_date?: boolean | null
+  opening_date_confidence?: number | null
+  days_until_opening?: number | null
+  days_since_opening?: number | null
+  google_places_checked_at?: string | null
+  opening_date_checked_at?: string | null
   organization_id?: string | null
   created_by_id?: string | null
   created_date: string

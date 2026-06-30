@@ -74,6 +74,41 @@ export function parseOpeningDate(v: any): string | null {
   return null
 }
 
+export interface GoogleOpening {
+  year: number | null; month: number | null; day: number | null; raw: string | null
+  date: string | null; daysUntil: number | null; daysSince: number | null
+  confidence: number; within90: boolean; has: boolean
+}
+/** Places の openingDate(オブジェクト/文字列) と businessStatus から開業日情報を算出。月のみ(dayなし)も対応。 */
+export function parseGoogleOpening(openingDate: any, businessStatus?: string): GoogleOpening {
+  const future = businessStatus === 'FUTURE_OPENING'
+  let year: number | null = null, month: number | null = null, day: number | null = null
+  if (openingDate && typeof openingDate === 'object') {
+    year = openingDate.year ?? null; month = openingDate.month ?? null; day = openingDate.day ?? null
+  } else if (typeof openingDate === 'string') {
+    const m = openingDate.match(/(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?/)
+    if (m) { year = Number(m[1]); month = Number(m[2]); day = m[3] ? Number(m[3]) : null }
+  }
+  const has = !!(year || future)
+  const raw = year ? `${year}年${month ? month + '月' : ''}${day ? day + '日' : ''}` : (future ? '開業予定' : null)
+  // 日付化（dayなしは月初）
+  let dateStr: string | null = null, daysUntil: number | null = null, daysSince: number | null = null
+  if (year && month) {
+    const dt = new Date(year, month - 1, day || 1)
+    dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day || 1).padStart(2, '0')}`
+    const diff = Math.round((dt.getTime() - Date.now()) / 86400000)
+    if (diff >= 0) daysUntil = diff; else daysSince = -diff
+  }
+  // 確度: 開業日あり60＋day有20/無-10＋FUTURE_OPENING+15。最大100
+  let confidence = 0
+  if (year) confidence = 60 + (day ? 20 : -10)
+  if (future) confidence += 15
+  confidence = Math.max(0, Math.min(100, confidence))
+  // 現在±90日（未来=開業予定含む）
+  const within90 = dateStr ? Math.abs(Date.parse(dateStr) - Date.now()) <= 90 * 86400000 : future
+  return { year, month, day, raw, date: dateStr, daysUntil, daysSince, confidence, within90, has }
+}
+
 export function reviewDates(p: any): { latest: string | null; oldest: string | null } {
   const reviews = Array.isArray(p.reviews) ? p.reviews : []
   let latest: string | null = null
@@ -199,7 +234,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
     noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
-    phoneYes: 0, detailCalls: 0, oldestRecent: 0,
+    phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
   }
@@ -252,15 +287,19 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         // 足切り: チェーン/施設内/支店、口コミ6件以上は深掘りしない（API節約）
         const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
         if (chainish) { counts.chainExcluded++; continue }
-        if (reviewCount !== null && reviewCount > opts.hotMaxReviews) continue // 6件以上は対象外
+        // 6件以上は対象外。ただし FUTURE_OPENING（開業予定）は口コミより優先して必ず詳細取得
+        if (reviewCount !== null && reviewCount > opts.hotMaxReviews && lp.businessStatus !== 'FUTURE_OPENING') continue
 
-        // 第2段階: 詳細取得（電話・レビュー日・開店日）
+        // 第2段階: 詳細取得（電話・レビュー日・開店日・businessStatus）
         const detail = await placeDetails(apiKey, placeId)
         counts.detailCalls++
         const p = detail || lp
         const phone = phoneOf(p)
         if (phone) counts.phoneYes++
         const openingDate = parseOpeningDate(p.openingDate)
+        const og = parseGoogleOpening(p.openingDate, p.businessStatus)
+        if (og.has) counts.openingDateCount = (counts.openingDateCount || 0) + 1
+        if (p.businessStatus === 'FUTURE_OPENING') counts.futureOpeningCount = (counts.futureOpeningCount || 0) + 1
         const { latest: latestPub, oldest: oldestPub } = reviewDates(p)
         const fromNewOpen = gq.isNewOpen
 
@@ -311,6 +350,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           source_run_id: runId,
           raw_payload: p,
           last_seen_at: nowIso,
+          // Google openingDate / businessStatus（口コミより強い新店シグナル）
+          google_business_status: p.businessStatus || null,
+          google_opening_date_year: og.year, google_opening_date_month: og.month, google_opening_date_day: og.day,
+          google_opening_date_raw: og.raw, has_google_opening_date: og.has,
+          opening_date_source: og.has ? 'google_places_openingDate' : null, opening_date_confidence: og.has ? og.confidence : null,
+          days_until_opening: og.daysUntil, days_since_opening: og.daysSince,
+          google_places_checked_at: nowIso, opening_date_checked_at: og.has ? nowIso : null,
         }
 
         if (!debug.sample) {

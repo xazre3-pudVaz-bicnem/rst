@@ -82,6 +82,12 @@ export default async function handler(req: any, res: any) {
       enriched_instagram_url: e.instagram || null, enriched_reservation_url: e.reservation || null, enriched_line_url: e.line || null,
       enriched_google_place_id: e.place_id || null, enrichment_reason: e.reason, enrichment_confidence: e.confidence,
       match_confidence: e.confidence, last_enriched_at: new Date().toISOString(),
+      google_business_status: e.business_status || null, google_opening_date_raw: e.opening_raw || null,
+      google_opening_date_year: e.opening_year ?? null, google_opening_date_month: e.opening_month ?? null, google_opening_date_day: e.opening_day ?? null,
+      has_google_opening_date: e.has_opening, opening_date_confidence: e.opening_confidence ?? null,
+      days_until_opening: e.days_until_opening ?? null, days_since_opening: e.days_since_opening ?? null,
+      opening_date_source: e.has_opening ? 'external_enrichment' : null,
+      google_places_checked_at: e.place_id ? new Date().toISOString() : null, opening_date_checked_at: e.has_opening ? new Date().toISOString() : null,
     }).eq('id', body.reenrich.id)
     return res.status(200).json({ ok: true, reenriched: true, id: body.reenrich.id, phone, area, enrich: e })
   }

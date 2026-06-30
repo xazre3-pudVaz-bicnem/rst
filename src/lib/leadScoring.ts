@@ -157,12 +157,16 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const firstSeenDays = typeof raw.first_seen_days === 'number' ? raw.first_seen_days : 0
   const fromNewOpenQuery = !!raw.from_new_open_query
 
+  // 開業日が現在±90日以内（未来＝開業予定も含む。口コミより強い新店シグナル）
   const openingWithin90 = (() => {
     if (!raw.opening_date) return false
     const t = Date.parse(raw.opening_date)
     if (Number.isNaN(t)) return false
     return Math.abs(Date.now() - t) <= 90 * 86400000
   })()
+  // businessStatus = FUTURE_OPENING は「開業予定」の強シグナル
+  const futureOpening = raw.business_status === 'FUTURE_OPENING'
+  const hasOpeningDate = !!raw.opening_date
 
   // ---- 口コミ投稿日(publishTime)による判定（新店判定は最古=oldest を重視） ----
   const toDaysAgo = (s: string | null | undefined): number | null => {
@@ -183,12 +187,14 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const count1to5 = reviewKnown && (reviewCount as number) >= 1 && (reviewCount as number) <= hotMax
   const countOk = reviewKnown && (reviewCount as number) <= hotMax  // 0〜5
 
-  // 口コミゲート（HOT必須）：0件はOK／1〜5件は「取得できた最古の口コミが30日以内」のみOK
-  const recencyOk = countZero ? true : (count1to5 && oldestRecent)
+  // 口コミゲート（HOT必須）：0件はOK／1〜5件は最古口コミ30日以内。
+  // ただし openingDate(±90日) または FUTURE_OPENING があれば口コミより優先＝ゲート通過。
+  const recencyOk = countZero ? true : ((count1to5 && oldestRecent) || openingWithin90 || futureOpening)
 
-  // 新規性の根拠（first_seenだけでは不可。openingDate / 新規オープン系クエリ / 口コミ少+HPなし）
+  // 新規性の根拠（first_seenだけでは不可。openingDate/FUTURE_OPENING / 新規オープン系クエリ / 口コミ少+HPなし）
   const newnessStrong =
     openingWithin90 ||
+    futureOpening ||
     fromNewOpenQuery ||
     (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite)
 
@@ -206,7 +212,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
 
   // 新規判定理由
   const newnessParts: string[] = []
-  if (openingWithin90) newnessParts.push(`開店日±90日以内(${raw.opening_date})`)
+  if (futureOpening) newnessParts.push('Google開業予定(FUTURE_OPENING)')
+  if (openingWithin90) newnessParts.push(`Google開業日±90日以内(${raw.opening_date})`)
   if (fromNewOpenQuery) newnessParts.push('新規オープン系クエリで取得')
   if (reviewKnown && (reviewCount as number) <= 3 && !hasWebsite) newnessParts.push(`口コミ${reviewCount}件・HPなし・個人店`)
   const newnessReason = isNewCandidate
@@ -227,12 +234,17 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const signals = (Object.keys(signalFlags) as (keyof typeof signalFlags)[]).filter((k) => signalFlags[k])
 
   // 温度判定
+  const closedPerm = raw.business_status === 'CLOSED_PERMANENTLY'
+  const closedTemp = raw.business_status === 'CLOSED_TEMPORARILY'
   let temperature: LeadTemperature
   if (isDup) temperature = 'EXCLUDED'
   else if (excludedName) temperature = 'EXCLUDED'
   else if (nonReachable) temperature = 'EXCLUDED'              // チェーン/施設内/駅ビル/支店
-  else if (!hasPhone) temperature = 'EXCLUDED'                 // 電話番号なし
-  else if (reviewKnown && (reviewCount as number) > warmMax) temperature = 'EXCLUDED'  // 16件以上(100+含む)
+  else if (closedPerm) temperature = 'EXCLUDED'               // 閉業
+  // 電話番号なし: openingDate/FUTURE_OPENING 等の強い新規根拠があればHOLD（自動投入はしない）、無ければEXCLUDED
+  else if (!hasPhone) temperature = newnessStrong ? 'HOLD' : 'EXCLUDED'
+  else if (closedTemp) temperature = 'HOLD'                   // 一時休業は要確認HOLD
+  else if (reviewKnown && (reviewCount as number) > warmMax && !openingWithin90 && !futureOpening) temperature = 'EXCLUDED'  // 16件以上だが開業日シグナルが無い既存店
   else if (isHotFinal) temperature = 'HOT'
   else if (mid) temperature = 'HOLD'                           // 6〜15件
   else if (!reviewKnown && unknownHold) temperature = 'HOLD'   // 口コミ不明
@@ -298,7 +310,9 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     duplicate_of_case_id: dupId,
     user_rating_count: reviewCount,
     opening_date: raw.opening_date ?? null,
-    opening_date_source: raw.opening_date ? 'google_places' : null,
+    opening_date_source: raw.opening_date ? 'google_places_openingDate' : null,
+    google_business_status: raw.business_status ?? null,
+    has_google_opening_date: hasOpeningDate,
     is_new_opening_candidate: isNewCandidate,
     newness_reason: newnessReason,
     days_since_first_seen: firstSeenDays,

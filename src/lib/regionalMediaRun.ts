@@ -166,7 +166,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const enrichPerQuery = Math.max(1, Math.min(10, Number(s.regionalEnrichPerQuery) || 5))
   const enrichDailyCap = Math.max(0, Number(s.regionalEnrichDailyCap) || 100)
 
-  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0 }
+  const counts = { sites: 0, articles: 0, newArticles: 0, candidates: 0, placeMatched: 0, phoneYes: 0, hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0, openingDateCount: 0, futureOpeningCount: 0 }
   const debug: any = { siteResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const enrichQueriesToLog = new Set<string>()
@@ -270,6 +270,8 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (enrich.status === 'enriched') counts.enrichSucceeded++
           if (enrich.phone) counts.enrichPhone++
           if (enrich.address) counts.enrichAddress++
+          if (enrich.has_opening) counts.openingDateCount++
+          if (enrich.business_status === 'FUTURE_OPENING') counts.futureOpeningCount++
         }
         const matchedPlaceId: string | null = enrich?.place_id || null
         const placeMatched = !!matchedPlaceId
@@ -287,16 +289,18 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const instagramVal = enrich?.instagram || null
         if (phone) counts.phoneYes++
 
-        // 判定: HOTは店名＋電話＋（住所/市区町村）必須（甘くしない）
+        // 判定: HOTは店名＋電話＋（住所/市区町村 または Google開業日）必須（甘くしない）
         let temperature: string = 'HOLD'
         let reason = ''
         const recentOk = Number.isNaN(publishedMs) ? true : !tooOld
         const haveArea = !!(areaMerged || address)
+        const strongOpening = !!enrich?.has_opening  // Google openingDate / FUTURE_OPENING
+        const openNote = strongOpening ? `Google開業日(${enrich.opening_raw}${enrich.business_status === 'FUTURE_OPENING' ? '・開業予定' : ''})` : ''
         if (!ex.shop_name) { temperature = 'HOLD'; reason = '店名の抽出精度が低いためHOLD。' }
-        else if (!recentOk) { temperature = 'HOLD'; reason = `記事公開が${Math.round((now - publishedMs) / 86400000)}日前で対象期間外のためHOLD。` }
-        else if (phone && haveArea) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話・住所を確認したためHOT。` }
-        else if (phone || reservationVal || lineVal || officialVal || instagramVal) { temperature = 'HOLD'; reason = `新店記事。${phone ? '電話は取得' : '予約/公式/LINE/Instagramのみ取得'}・住所/エリアが弱いためHOLD（要確認）。` }
-        else { temperature = 'HOLD'; reason = '外部補完でも電話・住所が取得できずHOLD（自動投入しない）。' }
+        else if (!recentOk && !strongOpening) { temperature = 'HOLD'; reason = `記事公開が${Math.round((now - publishedMs) / 86400000)}日前で対象期間外のためHOLD。` }
+        else if (phone && (haveArea || strongOpening)) { temperature = 'HOT'; reason = `新店記事＋外部補完${placeMatched ? '/Google Places' : ''}で電話${haveArea ? '・住所' : ''}${openNote ? '・' + openNote : ''}を確認したためHOT。` }
+        else if (phone || reservationVal || lineVal || officialVal || instagramVal || strongOpening) { temperature = 'HOLD'; reason = `新店記事。${phone ? '電話は取得' : '予約/公式/LINE/Instagram/開業日のみ取得'}${openNote ? '（' + openNote + '）' : ''}・連絡先/住所が弱いためHOLD（要確認）。` }
+        else { temperature = 'HOLD'; reason = '外部補完でも電話・住所・開業日が取得できずHOLD（自動投入しない）。' }
 
         if (temperature === 'HOT') { counts.hot++; diag.hot++ } else { counts.hold++; diag.hold++ }
         counts.candidates++
@@ -331,6 +335,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           enriched_reservation_url: enrich?.reservation || null, enriched_line_url: enrich?.line || null,
           enriched_google_place_id: enrich?.place_id || null, enrichment_reason: enrich?.reason || null,
           enrichment_confidence: enrich?.confidence ?? null, last_enriched_at: enrich ? nowIso : null,
+          // Google openingDate / businessStatus（補完経由）
+          google_business_status: enrich?.business_status || null, google_opening_date_raw: enrich?.opening_raw || null,
+          google_opening_date_year: enrich?.opening_year ?? null, google_opening_date_month: enrich?.opening_month ?? null, google_opening_date_day: enrich?.opening_day ?? null,
+          has_google_opening_date: enrich?.has_opening || false, opening_date_confidence: enrich?.opening_confidence ?? null,
+          days_until_opening: enrich?.days_until_opening ?? null, days_since_opening: enrich?.days_since_opening ?? null,
+          opening_date_source: enrich?.has_opening ? 'external_enrichment' : null,
+          google_places_checked_at: enrich?.place_id ? nowIso : null, opening_date_checked_at: enrich?.has_opening ? nowIso : null,
           google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId, match_confidence: enrich?.confidence ?? null,
           last_seen_at: nowIso, source_run_id: runId,
         }

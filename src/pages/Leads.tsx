@@ -917,6 +917,8 @@ export default function Leads() {
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {gpResult.imported ?? 0}</span>
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">重複 {gpResult.duplicate ?? 0}</span>
                   <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">電話あり {gpResult.phoneYes ?? 0}</span>
+                  <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {gpResult.openingDateCount ?? 0}</span>
+                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.futureOpeningCount ?? 0}</span>
                   <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">最古口コミ30日内 {gpResult.oldestRecent ?? 0}</span>
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">電話なし {gpResult.noPhone ?? 0}</span>
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">チェーン/施設内(深掘りせず除外) {gpResult.chainExcluded ?? 0}</span>
@@ -1530,6 +1532,8 @@ export default function Leads() {
                           return (
                             <div className="flex flex-col gap-0.5">
                               <span className={cn('w-fit rounded px-1 text-[9px]', cls)}>{st || '未補完'}{c.enrichment_confidence != null ? ` ${c.enrichment_confidence}` : ''}</span>
+                              {c.google_business_status === 'FUTURE_OPENING' && <span className="w-fit rounded bg-rose-100 px-1 text-[9px] font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定</span>}
+                              {c.has_google_opening_date && c.google_opening_date_raw && <span className="w-fit rounded bg-fuchsia-100 px-1 text-[9px] text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業{c.google_opening_date_raw}</span>}
                               {c.enriched_phone && <span className="text-[9px] text-green-700 dark:text-green-300">📞{c.enriched_phone}</span>}
                               {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
                               {c.enriched_google_place_id && <a href={`https://www.google.com/maps/place/?q=place_id:${c.enriched_google_place_id}`} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">Places</a>}
@@ -1600,6 +1604,8 @@ export default function Leads() {
                           return (
                             <div className="flex flex-col gap-0.5">
                               <span className={cn('w-fit rounded px-1 text-[9px]', cls)}>{st || '未補完'}{c.enrichment_confidence != null ? ` ${c.enrichment_confidence}` : ''}</span>
+                              {c.google_business_status === 'FUTURE_OPENING' && <span className="w-fit rounded bg-rose-100 px-1 text-[9px] font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定</span>}
+                              {c.has_google_opening_date && c.google_opening_date_raw && <span className="w-fit rounded bg-fuchsia-100 px-1 text-[9px] text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業{c.google_opening_date_raw}</span>}
                               {c.enriched_phone && <span className="text-[9px] text-green-700 dark:text-green-300">📞{c.enriched_phone}</span>}
                               {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
                               {c.enriched_instagram_url && <a href={c.enriched_instagram_url} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">IG</a>}
@@ -1740,8 +1746,11 @@ export default function Leads() {
                         </div>
                         <div className="mt-0.5 flex flex-wrap gap-0.5">
                           {c.is_new_opening_candidate && <span className="rounded-sm bg-green-100 px-1 text-[9px] text-green-700 dark:bg-green-500/20 dark:text-green-300">新規開業候補</span>}
+                          {c.google_business_status === 'FUTURE_OPENING' && <span className="rounded-sm bg-rose-100 px-1 text-[9px] font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定</span>}
+                          {c.has_google_opening_date && c.google_opening_date_raw && <span className="rounded-sm bg-fuchsia-100 px-1 text-[9px] text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300" title={`確度${c.opening_date_confidence ?? '-'}`}>Google開業{c.google_opening_date_raw}</span>}
+                          {c.days_until_opening != null && <span className="rounded-sm bg-amber-100 px-1 text-[9px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">開業まで{c.days_until_opening}日</span>}
+                          {c.days_since_opening != null && c.days_since_opening <= 60 && <span className="rounded-sm bg-emerald-100 px-1 text-[9px] text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">開業{c.days_since_opening}日</span>}
                           {c.from_new_open_query && <span className="rounded-sm bg-sky-100 px-1 text-[9px] text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">新規Q</span>}
-                          {c.opening_date && <span className="rounded-sm bg-muted px-1 text-[9px] text-muted-foreground">開店{c.opening_date}</span>}
                           {c.days_since_first_seen != null && <span className="text-[9px] text-muted-foreground">発見{c.days_since_first_seen}日前</span>}
                         </div>
                       </td>

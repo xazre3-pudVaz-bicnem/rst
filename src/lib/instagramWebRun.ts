@@ -4,7 +4,7 @@
 // 重要: 検索クエリに地域名・業種名を入れない（全国の新店系ハッシュタグ/語のみ）。
 // 地域/業種は title/snippet/url から後段で抽出。コスト制御付き定期バッチ設計。
 // ============================================================
-import { searchLight, placeDetails, phoneOf } from './googlePlacesRun.js'
+import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './googlePlacesRun.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -176,6 +176,10 @@ function buildEnrichQueries(shop: string, username: string, area: string, max: n
 export interface EnrichResult {
   phone: string; address: string; prefecture: string; city: string
   official: string; reservation: string; line: string; instagram: string; place_id: string
+  // Google Places openingDate / businessStatus（口コミより強い新店シグナル）
+  business_status: string; opening_raw: string | null; opening_confidence: number
+  opening_year: number | null; opening_month: number | null; opening_day: number | null
+  days_until_opening: number | null; days_since_opening: number | null; has_opening: boolean
   sources: { url: string; got: string }[]; status: 'not_started' | 'searched' | 'enriched' | 'failed'
   confidence: number; reason: string; queriesUsed: number
 }
@@ -188,6 +192,8 @@ export async function enrichCandidate(
 ): Promise<EnrichResult> {
   let phone = ctx.havePhone || '', address = ctx.haveAddress || '', prefecture = '', city = ''
   let official = '', reservation = '', line = '', instagram = '', place_id = ''
+  let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
+  let businessStatus = ''
   const sources: { url: string; got: string }[] = []
   let queriesUsed = 0
   try {
@@ -216,6 +222,9 @@ export async function enrichCandidate(
         place_id = top.id || ''
         const d = place_id ? await placeDetails(mapsKey, place_id) : null
         const p: any = d || top
+        businessStatus = p.businessStatus || ''
+        og = parseGoogleOpening(p.openingDate, p.businessStatus)
+        if (og.has) sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_openingDate' })
         if (!phone && phoneOf(p)) { phone = phoneOf(p); sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_phone' }) }
         if (!address && p.formattedAddress) { address = p.formattedAddress; const reg = extractRegion(address); prefecture = prefecture || reg.prefecture; city = city || reg.city; sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_address' }) }
         if (!official && p.websiteUri) official = p.websiteUri
@@ -227,9 +236,19 @@ export async function enrichCandidate(
     const reason = status === 'enriched'
       ? `補完: ${phone ? '電話' : ''}${phone && address ? '＋' : ''}${address ? '住所' : ''}${place_id ? '（Places含む）' : ''} / ${queriesUsed}クエリ`
       : `補完未取得（${queriesUsed}クエリ実行）`
-    return { phone, address, prefecture, city, official, reservation, line, instagram, place_id, sources, status, confidence, reason, queriesUsed }
+    return {
+      phone, address, prefecture, city, official, reservation, line, instagram, place_id,
+      business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
+      days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
+      sources, status, confidence, reason, queriesUsed,
+    }
   } catch (e: any) {
-    return { phone, address, prefecture, city, official, reservation, line, instagram, place_id, sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed }
+    return {
+      phone, address, prefecture, city, official, reservation, line, instagram, place_id,
+      business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
+      days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
+      sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed,
+    }
   }
 }
 
@@ -344,6 +363,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     hot: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, dup: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
+    openingDateCount: 0, futureOpeningCount: 0,
   }
   const debug: any = { mode: 'nationwide', provider: searchProvider(), useAnthropic, queries: [] as string[], queryResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
@@ -443,6 +463,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           if (enrich.status === 'enriched') counts.enrichSucceeded++
           if (enrich.phone) counts.enrichPhone++
           if (enrich.address) counts.enrichAddress++
+          if (enrich.has_opening) counts.openingDateCount++
+          if (enrich.business_status === 'FUTURE_OPENING') counts.futureOpeningCount++
         }
 
         // AI判定（補完情報も渡す）。上限内のみAI、超過/OFF/失敗はベース（ルール）判定
@@ -509,6 +531,13 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           enriched_line_url: enrich?.line || null, enriched_google_place_id: enrich?.place_id || null,
           enrichment_reason: enrich?.reason || null, enrichment_confidence: enrich?.confidence ?? null,
           last_enriched_at: enrich ? nowIso : null,
+          // Google openingDate / businessStatus（補完経由）
+          google_business_status: enrich?.business_status || null, google_opening_date_raw: enrich?.opening_raw || null,
+          google_opening_date_year: enrich?.opening_year ?? null, google_opening_date_month: enrich?.opening_month ?? null, google_opening_date_day: enrich?.opening_day ?? null,
+          has_google_opening_date: enrich?.has_opening || false, opening_date_confidence: enrich?.opening_confidence ?? null,
+          days_until_opening: enrich?.days_until_opening ?? null, days_since_opening: enrich?.days_since_opening ?? null,
+          opening_date_source: enrich?.has_opening ? 'external_enrichment' : null,
+          google_places_checked_at: enrich?.place_id ? nowIso : null, opening_date_checked_at: enrich?.has_opening ? nowIso : null,
           instagram_newness_reason: reason, anthropic_judgement: j, match_confidence: j.confidence_score ?? null, newness_type: j.newness_type || null,
           rule_filter_result: rf.result, skipped_reason: null, api_run_id: runId,
           google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId,
