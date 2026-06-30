@@ -247,6 +247,12 @@ export default function Leads() {
     try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / HOLD降格${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
     finally { setRecorrecting(false) }
   }
+  async function recorrectProbe() {
+    if (!window.confirm('連番探索（食べログ/じゃらん）由来で「連番探索候補」「店名未確定」のままの候補を、元URLから再取得して正式店名・電話・住所を再抽出します。\ncases投入済みなら案件側の店名も更新します。実行しますか？')) return
+    setRecorrecting(true)
+    try { const json = await regionalApi({ recorrectProbe: { limit: 200 } }); if (json?.ok) { toast.success(`連番再取得: ${json.scanned}件中 更新${json.updated} / HOLD${json.held} / 案件更新${json.caseUpdated}`); load() } else toast.error(json?.error || '再取得に失敗しました') }
+    finally { setRecorrecting(false) }
+  }
   const DEFAULT_PROBE_FORM = { name: '', url_template: '', region_label: '', prefecture: '', start_probe_id: '', id_padding: 12, scan_direction: 'forward', forward_scan_count: 20, max_probe_per_run: 20, parser_type: 'generic_detail_page', probe_mode: 'safe', valid_page_pattern: '', invalid_page_pattern: '', is_active: false }
   function openAddProbe() { setProbeFormEditId(null); setProbeForm({ ...DEFAULT_PROBE_FORM }); setProbeFormTest(null); setProbeFormOpen(true) }
   function openEditProbe(st: any) { setProbeFormEditId(st.id); setProbeForm({ name: st.name || '', url_template: st.url_template || '', region_label: st.region_label || '', prefecture: st.prefecture || '', start_probe_id: String(st.start_probe_id ?? st.current_probe_id ?? ''), id_padding: st.id_padding ?? 12, scan_direction: st.scan_direction || 'forward', forward_scan_count: st.forward_scan_count ?? 20, max_probe_per_run: st.max_probe_per_run ?? 20, parser_type: st.parser_type || 'generic_detail_page', probe_mode: st.probe_mode || 'safe', valid_page_pattern: st.valid_page_pattern || '', invalid_page_pattern: st.invalid_page_pattern || '', is_active: !!st.is_active, current_probe_id: st.current_probe_id, last_checked_id: st.last_checked_id, last_valid_id: st.last_valid_id }); setProbeFormTest(null); setProbeFormOpen(true) }
@@ -2134,6 +2140,7 @@ export default function Leads() {
             <button onClick={() => setShown(filtered.length || 1)} className={cn('rounded border px-2 py-0.5', shown >= filtered.length ? 'border-primary bg-primary text-primary-foreground' : 'border-input hover:bg-accent')}>すべて</button>
             {shown < filtered.length && <button onClick={() => setShown((s) => s + 50)} className="rounded border border-input px-2 py-0.5 hover:bg-accent">もっと見る (+50)</button>}
             <button onClick={recorrectNames} disabled={recorrecting} className="ml-auto rounded border border-amber-500 px-2 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10">{recorrecting ? '再補正中...' : '既存の店名を再補正（サイト名/カテゴリをHOLDへ）'}</button>
+            <button onClick={recorrectProbe} disabled={recorrecting} className="rounded border border-indigo-500 px-2 py-0.5 text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-500/10">{recorrecting ? '再取得中...' : '連番候補を再取得（食べログ正式店名へ）'}</button>
           </div>
 
           {/* テーブル */}
@@ -2607,6 +2614,18 @@ export default function Leads() {
                     <div key={String(k)} className="grid grid-cols-3 gap-2 border-b pb-0.5"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2"><a href={String(v)} target="_blank" rel="noreferrer" className="break-all text-primary hover:underline">{String(v).slice(0, 60)}</a></dd></div>
                   ) : null)}
                 </dl>
+                {(drawerCand as any).lead_source === 'sequential_id_probe' && (
+                  <div className="mt-2 rounded border bg-muted/30 p-2 text-[11px]">
+                    <div className="mb-0.5 font-bold">連番URL探索 抽出元</div>
+                    {(() => { const pu = (drawerCand as any).parser_used || ''; const src = pu === 'tabelog_detail' ? '食べログ詳細ページ（h1 / og:title / title）' : pu === 'jalan_spot_detail' ? 'じゃらん基本情報テーブル' : pu || '—'; return (
+                      <dl className="space-y-0.5">
+                        {[['店名取得元', src], ['電話番号取得元', (drawerCand as any).phone_number ? (pu === 'tabelog_detail' ? '食べログ詳細ページ' : pu === 'jalan_spot_detail' ? 'じゃらん詳細ページ' : '詳細ページ') : '—'], ['住所取得元', (drawerCand as any).address ? (pu === 'tabelog_detail' ? '食べログ詳細ページ' : pu === 'jalan_spot_detail' ? 'じゃらん詳細ページ' : '詳細ページ') : '—'], ['parser_used', pu || '—'], ['探索ID', (drawerCand as any).probed_id ?? '—']].map(([k, v]) => (
+                          <div key={String(k)} className="grid grid-cols-3 gap-2"><dt className="text-muted-foreground">{k}</dt><dd className="col-span-2 break-words">{String(v)}</dd></div>
+                        ))}
+                      </dl>
+                    ) })()}
+                  </div>
+                )}
                 {Array.isArray((drawerCand as any).enrichment_rejected) && (drawerCand as any).enrichment_rejected.length > 0 && (
                   <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                     <div className="font-bold">採用しなかった補完候補</div>

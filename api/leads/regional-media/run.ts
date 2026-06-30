@@ -8,7 +8,7 @@ import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../../src/lib/hotReject.js'
 import { runSiteDiscovery, registerSiteCandidate } from '../../../src/lib/siteDiscovery.js'
-import { runAllSequentialProbes, runSequentialProbe, testProbeSite } from '../../../src/lib/sequentialProbe.js'
+import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectProbeNames } from '../../../src/lib/sequentialProbe.js'
 import { sanitizeShopName } from '../../../src/lib/regionalParsers.js'
 
 // 地域メディア候補のHOT再計算＋未達理由
@@ -197,6 +197,14 @@ export default async function handler(req: any, res: any) {
   if (body?.listProbeSites) {
     const { data } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').order('name')
     return res.status(200).json({ ok: true, sites: data || [] })
+  }
+
+  // 連番探索（食べログ/じゃらん）由来候補を source_detail_url から再取得して正式店名・電話・住所を再抽出
+  if (body?.recorrectProbe) {
+    try {
+      const out = await recorrectProbeNames(admin, { limit: Number(body.recorrectProbe.limit) || 200, nowIso: new Date().toISOString() })
+      return res.status(200).json({ ok: true, ...out })
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
 
   // 既存候補の店名を再補正（サイト名/カテゴリ/記事タイトルのままの候補をHOLDへ）

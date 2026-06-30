@@ -7,7 +7,7 @@
 //  - 連続not_found停止・1回20/1日100URL・30日再取得回避・robots配慮
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
-import { extractJpPhone } from './regionalParsers.js'
+import { extractJpPhone, sanitizeShopName } from './regionalParsers.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
@@ -138,6 +138,58 @@ export function parseJalanSpot(html: string, mojibake: boolean): JalanSpot {
   return { name, address, phone, category, official, mapUrl, reviews, valid: !invalidReason, invalidReason }
 }
 
+// 食べログ詳細ページで店名に紛れ込む付帯語・固有のNG語
+const TABELOG_INVALID_RE = /(指定されたページが見つかりません|ページが見つかりませんでした|現在掲載されていません|閉店しました|この店舗は存在しません|お探しのページは)/
+const NAME_BAN_RE = /^(食べログ|口コミ|クチコミ|地図|メニュー|予約|ネット予約|店舗情報|アクセス|営業時間|クーポン|写真|空席確認)$/
+/** 食べログ店舗詳細ページのパーサー（h1/og:title/パンくず優先で正式店名、店舗情報欄から住所・電話） */
+export function parseTabelog(html: string, mojibake: boolean): JalanSpot {
+  const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '' }
+  if (mojibake) return { ...empty, invalidReason: '文字化けで読めない' }
+  const body = stripTags(html)
+  if (TABELOG_INVALID_RE.test(body) || INVALID_RE.test(body)) return { ...empty, invalidReason: 'ページ未存在/掲載終了' }
+
+  // ① h1/h2 の display-name（食べログの店名表示）
+  const dn = html.match(/<h[12][^>]*class=["'][^"']*display-name[^"']*["'][^>]*>([\s\S]*?)<\/h[12]>/i)?.[1] || ''
+  // ② og:title「店名 (よみ) - エリア/ジャンル | 食べログ」→ 店名部分
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || ''
+  // ③ titleタグ
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''
+  // ④ パンくず（末尾＝店名）
+  const crumbs = Array.from(html.matchAll(/<(?:li|span|a)[^>]*(?:itemprop=["']name["']|class=["'][^"']*breadcrumb[^"']*["'])[^>]*>([\s\S]*?)<\/(?:li|span|a)>/gi)).map((m) => stripTags(m[1]).trim()).filter(Boolean)
+
+  const cleanName = (raw: string): string => stripTags(raw)
+    .replace(/\s*[-－―|｜/／].*$/, '')          // 「店名 - エリア/ジャンル | 食べログ」以降を除去
+    .replace(/[（(][ぁ-んァ-ヶー\s]+[)）]\s*$/, '')  // 末尾の（よみがな）
+    .replace(/[（(][^（）()]{0,30}(店|よみ)[）)]\s*$/, '')
+    .replace(/\s+/g, ' ').trim().slice(0, 50)
+
+  let name = cleanName(dn)
+  if (!name || NAME_BAN_RE.test(name)) name = cleanName(og)
+  if (!name || NAME_BAN_RE.test(name)) name = cleanName(title)
+  if (!name || NAME_BAN_RE.test(name)) { const last = crumbs[crumbs.length - 1] || ''; if (last && !NAME_BAN_RE.test(last)) name = cleanName(last) }
+  if (NAME_BAN_RE.test(name)) name = ''
+
+  // 住所: rstinfo-table__address → 住所ラベル → 緩い抽出
+  let address = stripTags((html.match(/<p[^>]*class=["'][^"']*rstinfo-table__address[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)?.[1] || '').replace(/<br\s*\/?>/gi, ' ')).replace(/地図.*$/, '').replace(/\s+/g, '').slice(0, 70)
+  if (!address) address = (body.match(/(?:所在地|住所)[:：\s]*([〒\d都道府県][^\n。｜|]{4,50})/)?.[1] || '').trim()
+  if (!address) address = extractAddressLoose(body).address
+
+  // 電話: rstinfo-table__tel-num（食べログ詳細ページの電話）→ 本文
+  let phone = extractJpPhone(html.match(/class=["'][^"']*rstinfo-table__tel-num[^"']*["'][^>]*>([\s\S]*?)</i)?.[1] || '')
+  if (!phone) phone = extractJpPhone(html.match(/<strong[^>]*tel[^>]*>([\s\S]*?)<\/strong>/i)?.[1] || '')
+  if (!phone) phone = extractJpPhone(body)
+
+  // ジャンル: og:title の「エリア/ジャンル」部分、または rstinfo
+  const genre = (og.match(/-\s*[^/|｜]+\/([^|｜]+?)\s*[|｜]/)?.[1] || stripTags(html.match(/class=["'][^"']*rdheader-subinfo__item-text[^"']*["'][^>]*>([\s\S]*?)</i)?.[1] || '')).trim().slice(0, 16)
+  const official = html.match(/href=["'](https?:\/\/(?!tabelog\.com)[^"']+)["'][^>]*>\s*(?:お店のホームページ|公式|オフィシャル)/i)?.[1] || ''
+  const mapUrl = html.match(/href=["'](https?:\/\/(?:maps\.google|www\.google\.[^/]*\/maps|maps\.app\.goo\.gl)[^"']+)["']/i)?.[1] || ''
+
+  let invalidReason = ''
+  if (!name && !address) invalidReason = '店名/住所が取れない'
+  else if (!name) invalidReason = '食べログ詳細ページから店名抽出失敗'
+  return { name, address, phone, category: genre, official, mapUrl, reviews: '', valid: !invalidReason, invalidReason }
+}
+
 export interface ProbeTestItem { url: string; ok: boolean; status: number; charset: string; mojibake: boolean; valid: boolean; name: string; address: string; phone: string; category: string; parser_used: string; invalidReason: string }
 /** 既知URL（または指定ID）でじゃらん専用パーサーを単体テスト（DB保存なし） */
 export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: boolean; items: ProbeTestItem[]; summary: { addressOk: boolean; phoneOk: boolean; parserOk: boolean } }> {
@@ -150,15 +202,18 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
     const r = await fetchDecoded(url)
     await new Promise((rs) => setTimeout(rs, 400))
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
-    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : null
-    const name = spot ? spot.name : ''
+    const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
+    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : isTabelog ? parseTabelog(r.html, r.mojibake) : null
+    const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
+    const name = sn0 ? (sn0.valid ? sn0.name : '') : ''
     const address = spot ? spot.address : extractAddressLoose(stripTags(r.html)).address
     const phone = spot ? spot.phone : extractJpPhone(stripTags(r.html))
+    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
     let invalidReason = ''
     if (!r.ok || !r.html) invalidReason = r.timedOut ? 'fetch timeout' : `取得失敗(HTTP ${r.status})`
     else if (r.mojibake) invalidReason = '文字化け'
-    else if (spot) invalidReason = spot.valid ? '' : spot.invalidReason
-    items.push({ url, ok: r.ok, status: r.status, charset: r.charset, mojibake: r.mojibake, valid: !invalidReason, name, address, phone, category: spot?.category || '', parser_used: isJalan ? 'jalan_spot_detail' : 'generic_detail_page', invalidReason })
+    else if (spot) invalidReason = spot.valid ? (name ? '' : (sn0?.reason || '店名抽出失敗')) : spot.invalidReason
+    items.push({ url, ok: r.ok, status: r.status, charset: r.charset, mojibake: r.mojibake, valid: !invalidReason, name, address, phone, category: spot?.category || '', parser_used, invalidReason })
   }
   // 既知の有効URL（先頭2件＝231369/231370想定）で住所・電話が取れたか
   const known = items.slice(0, 2)
@@ -257,9 +312,14 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     if (r.mojibake) res.mojibake++
 
     const isJalan = (site.parser_type === 'jalan_spot_detail') || /jalan\.net/i.test(url)
-    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : null
+    const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
+    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : isTabelog ? parseTabelog(r.html, r.mojibake) : null
+    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : 'generic_detail_page'
     const bodyAll = r.html ? stripTags(r.html) : ''
-    const name = spot ? spot.name : ''
+    // 店名は parser抽出値を sanitize（サイト名/カテゴリ/付帯語/「連番探索候補」は無効）
+    const rawName = spot ? spot.name : ''
+    const sn = sanitizeShopName(rawName, { placesMatched: false })
+    const name = sn.valid ? sn.name : ''
     const address = spot ? spot.address : extractAddressLoose(bodyAll).address
     const phone = spot ? spot.phone : extractJpPhone(bodyAll)
     let invalidReason = ''
@@ -269,6 +329,8 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     else if (INVALID_RE.test(bodyAll) || bodyAll.length < 200) invalidReason = '不存在/本文なし'
     else if (!name && !address) invalidReason = '名称/所在地が取れない'
     const valid = !invalidReason
+    // 店名が取れない（サイト名/付帯語/空）→ ページは存在するが営業リスト不可。HOLDで保存（「連番探索候補」では保存しない）
+    const nameValid = !!name
 
     // 探索ログ（valid/invalid問わず記録）
     let savedCandidateId: string | null = null
@@ -280,7 +342,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
         source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status,
         valid_page: false, invalid_reason: invalidReason, charset_detected: r.charset, decode_method: r.decodeMethod,
         decode_success: !r.mojibake, mojibake_detected: r.mojibake, mojibake_rate: Math.round(r.mojibakeRate * 1000) / 1000,
-        extracted_name: name || null, parser_used: isJalan ? 'jalan_spot_detail' : 'generic_detail_page', error_message: r.timedOut ? 'timeout' : null, checked_at: opts.nowIso,
+        extracted_name: name || null, parser_used: parserUsed, error_message: r.timedOut ? 'timeout' : null, checked_at: opts.nowIso,
       }).then(() => {}, () => {})
       if (res.items.length < 40) res.items.push({ probedId, url, valid: false, status: r.status, charset: r.charset, mojibake: r.mojibake, invalidReason })
       continue
@@ -299,12 +361,16 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
 
     const chP = detectChain(name)
     const sc = scoreCandidate({
-      source: 'regional_media', isJapan, hasShopName: !!name, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
+      source: 'regional_media', isJapan, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
       placesMatched: false, hasOfficial: !!official,
       isChain: chP.definite, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
     }, opts.mode)
-    const { temperature, hot_tier } = tierToTemperature(sc.tier)
+    let { temperature, hot_tier } = tierToTemperature(sc.tier)
+    // HOT条件: 正式店名＋電話＋住所が必須。欠ければHOLD（「連番探索候補」/店名未確定/住所なし/電話なしはHOT禁止）
+    let recommendedStatus: string = sc.tier
+    const hotBlock = !nameValid ? '店名未確定' : !address ? '住所未取得' : (!phone || !isJapanPhone(phone)) ? '電話番号未取得' : ''
+    if (hotBlock && temperature === 'HOT') { temperature = 'HOLD'; hot_tier = null; recommendedStatus = 'HOLD' }
     if (temperature === 'HOT') { res.hot++; if (hot_tier === 'A') res.hotA++; else res.hotB++ }
     else if (temperature === 'EXCLUDED') res.excluded++; else res.hold++
 
@@ -317,17 +383,19 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       { key: 'has_opening_date', label: '新規オープン根拠', ok: hasOpen ? true : null, reasonKey: 'opening_date_missing' },
     ]
     const hotReject = buildHotReject({ source: 'regional_media', temperature, confidence: sc.score, checks: rmChecks })
+    const finalName = nameValid ? name : '店名未確定'
+    const holdNote = hotBlock ? `${parserUsed}で${hotBlock}のため自動投入不可（要手動確認）。` : ''
     const payload: any = {
-      name: name || '連番探索候補', address: address || null, industry: category || null, phone_number: phone || null, website_url: official || null,
+      name: finalName, address: address || null, industry: category || null, phone_number: phone || null, website_url: official || null,
       source: 'sequential_id_probe', lead_source: 'sequential_id_probe', source_type: 'AI自動投入(連番探索)',
-      source_site_type: 'sequential_id_probe', parser_used: isJalan ? 'jalan_spot_detail' : 'generic_detail_page', source_media_family: site.media_family || null, source_site_name: site.name,
+      source_site_type: 'sequential_id_probe', parser_used: parserUsed, source_media_family: site.media_family || null, source_site_name: site.name,
       source_detail_url: url, source_list_url: template, probed_id: probedId, probed_url: url, probe_valid: true, probe_status: `HTTP ${r.status}`,
       charset_detected: r.charset, mojibake_detected: false,
-      search_title: (name || '').slice(0, 300), search_snippet: bodyAll.slice(0, 300), candidate_block_text_short: bodyAll.slice(0, 300),
-      newness_type, regional_media_newness_reason: `連番探索(${isJalan ? 'jalan_spot_detail' : 'generic'}) ID=${probedId}「${name}」${hasOpen ? '・OPEN表記あり' : '・新規掲載候補'} / ${sc.reason}`,
+      search_title: finalName.slice(0, 300), search_snippet: bodyAll.slice(0, 300), candidate_block_text_short: bodyAll.slice(0, 300),
+      newness_type, regional_media_newness_reason: `連番探索(${parserUsed}) ID=${probedId}「${finalName}」${hasOpen ? '・OPEN表記あり' : '・新規掲載候補'} / ${holdNote}${sc.reason}`,
       first_discovered_at: opts.nowIso, regional_media_detected_at: opts.nowIso,
-      lead_temperature: temperature, hot_tier, recommended_status: sc.tier, should_exclude_from_call_list: temperature === 'EXCLUDED',
-      owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? sc.reason : null, ai_comment: sc.reason,
+      lead_temperature: temperature, hot_tier, recommended_status: recommendedStatus, should_exclude_from_call_list: temperature === 'EXCLUDED',
+      owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? sc.reason : null, ai_comment: `${holdNote}${sc.reason}`,
       extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null, extracted_industry: category || null, extracted_area: address || null, extracted_official_url: official || null,
       hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary, hot_check_result: hotReject.hot_check_result,
       hot_missing_requirements: hotReject.hot_missing_requirements, hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
@@ -342,18 +410,19 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     savedCandidateId = candidateId
 
     if (temperature === 'HOT' && alreadyImported) res.alreadyImported++
-    if (autoImportAllowed(sc.tier, opts.mode) && phone && isJapanPhone(phone) && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
-      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: name || '連番探索候補', address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n連番URL探索で新規存在確認`, created_by_id: opts.userId }).select('id').single()
+    // 自動投入は HOT（店名＋電話＋住所が揃った場合のみ。店名未確定/住所なし/電話なしは temperature が HOLD に降格済み）
+    if (temperature === 'HOT' && autoImportAllowed(sc.tier, opts.mode) && nameValid && address && phone && isJapanPhone(phone) && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
+      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n連番URL探索で新規存在確認`, created_by_id: opts.userId }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
     }
     await admin.from('sequential_probe_results').insert({
       source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status, valid_page: true, invalid_reason: null,
       charset_detected: r.charset, decode_method: r.decodeMethod, decode_success: true, mojibake_detected: false, mojibake_rate: Math.round(r.mojibakeRate * 1000) / 1000,
-      extracted_name: name || null, extracted_address: address || null, extracted_phone: phone || null, parser_used: isJalan ? 'jalan_spot_detail' : 'generic_detail_page',
+      extracted_name: name || null, extracted_address: address || null, extracted_phone: phone || null, parser_used: parserUsed,
       saved_candidate_id: savedCandidateId, created_case_id: createdCaseId, checked_at: opts.nowIso,
     }).then(() => {}, () => {})
-    if (res.items.length < 40) res.items.push({ probedId, url, valid: true, charset: r.charset, name, phone, address, category, newness_type, temperature: hot_tier ? `HOT-${hot_tier}` : temperature })
+    if (res.items.length < 40) res.items.push({ probedId, url, valid: true, charset: r.charset, name: finalName, phone, address, category, newness_type, temperature: hot_tier ? `HOT-${hot_tier}` : temperature })
   }
 
   const lastChecked = res.toId || (startId + forward - 1)
@@ -425,4 +494,59 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: String(e?.message || e) }).eq('id', runId).then(() => {}, () => {})
     throw e
   }
+}
+
+/** 既存の連番探索候補（連番探索候補/店名未確定）を source_detail_url から再取得し、正式店名・電話・住所を再抽出して更新。
+ *  cases投入済みなら cases 側の店名も更新。tabelog/jalan を対象。 */
+export async function recorrectProbeNames(admin: any, opts: { limit?: number; nowIso: string }): Promise<{ scanned: number; updated: number; held: number; caseUpdated: number; samples: any[] }> {
+  const limit = Math.min(500, opts.limit || 200)
+  const { data: rows } = await admin.from('lead_candidates')
+    .select('id,name,source_detail_url,phone_number,address,imported_to_cases,imported_case_id,lead_temperature')
+    .eq('lead_source', 'sequential_id_probe')
+    .or('name.eq.連番探索候補,name.eq.店名未確定,name.is.null')
+    .limit(limit)
+  let scanned = 0, updated = 0, held = 0, caseUpdated = 0
+  const samples: any[] = []
+  for (const row of (rows || [])) {
+    scanned++
+    const url: string = row.source_detail_url || ''
+    if (!url) continue
+    const isJalan = /jalan\.net/i.test(url)
+    const isTabelog = /tabelog\.com/i.test(url)
+    if (!isJalan && !isTabelog) continue
+    const r = await fetchDecoded(url)
+    await new Promise((rs) => setTimeout(rs, 400))
+    if (!r.ok || !r.html || r.mojibake) continue
+    const spot = isJalan ? parseJalanSpot(r.html, r.mojibake) : parseTabelog(r.html, r.mojibake)
+    const sn = sanitizeShopName(spot.name, { placesMatched: false })
+    const newName = sn.valid ? sn.name : ''
+    const newPhone = spot.phone || row.phone_number || null  // 食べログ詳細ページ由来を優先、無ければ既存維持
+    const newAddr = spot.address || row.address || null
+    const u: any = { parser_used: isJalan ? 'jalan_spot_detail' : 'tabelog_detail', source_detail_url: url }
+    if (newName) {
+      u.name = newName; u.extracted_shop_name = newName; u.search_title = newName.slice(0, 300)
+      if (spot.phone) { u.phone_number = spot.phone; u.extracted_phone = spot.phone }
+      if (spot.address) { u.address = spot.address; u.extracted_address = spot.address; u.extracted_area = spot.address }
+      // 店名＋電話＋住所が揃わなければHOTにしない（HOLD据え置き）
+      if (!(newName && newPhone && newAddr)) { u.recommended_status = 'HOLD'; if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null } }
+      await admin.from('lead_candidates').update(u).eq('id', row.id)
+      updated++
+      if (row.imported_to_cases && row.imported_case_id) {
+        const cu: any = { name: newName }
+        if (spot.phone) cu.phone1 = spot.phone
+        if (spot.address) cu.address = spot.address
+        await admin.from('cases').update(cu).eq('id', row.imported_case_id).then(() => {}, () => {})
+        caseUpdated++
+      }
+      if (samples.length < 10) samples.push({ url, name: newName, phone: newPhone, address: newAddr, parser_used: u.parser_used })
+    } else {
+      // 再取得でも店名が取れない → 店名未確定のままHOLD
+      u.name = '店名未確定'; u.recommended_status = 'HOLD'
+      if (row.lead_temperature === 'HOT') { u.lead_temperature = 'HOLD'; u.hot_tier = null }
+      u.ai_comment = `${isTabelog ? 'tabelog_detail' : 'jalan_spot_detail'}再取得でも店名抽出失敗（${sn.reason}）`
+      await admin.from('lead_candidates').update(u).eq('id', row.id)
+      held++
+    }
+  }
+  return { scanned, updated, held, caseUpdated, samples }
 }
