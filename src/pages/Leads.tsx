@@ -1037,7 +1037,20 @@ export default function Leads() {
                 {gpResult.debug && (
                   <div className="rounded-md border bg-muted/30 p-2 text-[10px]">
                     {gpResult.debug.searchMode === 'nationwide_new_open_query'
-                      ? <div><b>検索モード:</b> 全国・新店系ワード検索（地域/業種/「日本」をクエリに入れない） ・ languageCode: ja / regionCode: JP / 日本国内フィルタ ON ・ 本日Place Details {gpResult.debug.detailsToday ?? 0}件</div>
+                      ? <div>
+                          <div><b>検索モード:</b> 全国・新店系ワード検索（地域/業種/「日本」をクエリに入れない） ・ 本日Place Details {gpResult.debug.detailsToday ?? 0}件</div>
+                          <div className="mt-0.5 flex flex-wrap gap-1">
+                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">languageCode: ja</span>
+                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">regionCode: JP</span>
+                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">locationRestriction: {gpResult.debug.locationRestriction ? 'ON' : 'OFF'}</span>
+                            <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">Japan country filter: {gpResult.debug.japanCountryFilter ? 'ON' : 'OFF'}</span>
+                            <span className="rounded bg-muted px-1.5 py-0.5">country=JP {gpResult.debug.japanStats?.countryJP ?? 0}</span>
+                            <span className="rounded bg-muted px-1.5 py-0.5">country≠JP {gpResult.debug.japanStats?.countryNonJP ?? 0}</span>
+                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">日本国外除外 {gpResult.debug.japanStats?.foreignSkipped ?? 0}</span>
+                            <span className="rounded bg-muted px-1.5 py-0.5">addressComponents未取得 {gpResult.debug.japanStats?.addressCompMissing ?? 0}</span>
+                            <span className="rounded bg-muted px-1.5 py-0.5">住所のみで日本判定 {gpResult.debug.japanStats?.japanByAddrOnly ?? 0}</span>
+                          </div>
+                        </div>
                       : <div><b>エリアプリセット:</b> {AREA_PRESET_OPTIONS.find((o) => o.value === gpResult.debug.preset)?.label || gpResult.debug.preset}（エリア {(gpResult.debug.areas || []).length} / 業種 {(gpResult.debug.industries || []).length}）</div>}
                     <div className="text-muted-foreground">
                       実行クエリ {gpResult.debug.ranQueries ?? 0}（新規オープン系 {gpResult.newOpenRan ?? 0} / 通常 {gpResult.normalRan ?? 0}）・
@@ -1137,7 +1150,7 @@ export default function Leads() {
                                 <div className="mt-1 overflow-x-auto">
                                   <table className="w-full min-w-[700px] text-[9px]">
                                     <thead className="text-muted-foreground"><tr>
-                                      <th className="p-0.5 text-left">店名</th><th className="p-0.5 text-left">住所</th><th className="p-0.5 text-left">電話</th>
+                                      <th className="p-0.5 text-left">店名</th><th className="p-0.5 text-left">住所</th><th className="p-0.5 text-center">country</th><th className="p-0.5 text-center">日本</th><th className="p-0.5 text-left">電話</th>
                                       <th className="p-0.5 text-left">status</th><th className="p-0.5 text-left">開業日</th><th className="p-0.5 text-center">口コミ</th>
                                       <th className="p-0.5 text-center">判定</th><th className="p-0.5 text-center">保存</th><th className="p-0.5 text-left">理由/エラー</th>
                                     </tr></thead>
@@ -1146,6 +1159,8 @@ export default function Leads() {
                                         <tr key={j} className="border-t">
                                           <td className="max-w-[120px] truncate p-0.5" title={it.name}>{it.name || '—'}</td>
                                           <td className="max-w-[140px] truncate p-0.5" title={it.address}>{it.address || '—'}</td>
+                                          <td className={cn('p-0.5 text-center', it.isJapanPlace === false ? 'text-red-600 font-bold' : '')}>{it.country || '—'}</td>
+                                          <td className="p-0.5 text-center">{it.isJapanPlace === false ? '✗' : it.isJapanPlace === true ? '✓' : '—'}</td>
                                           <td className="p-0.5">{it.phone || '—'}</td>
                                           <td className="p-0.5">{it.businessStatus || '—'}</td>
                                           <td className="p-0.5">{it.openingDate || '—'}</td>

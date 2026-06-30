@@ -8,27 +8,51 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
-import { isForeignAddress, isOrgNonStore, isJapanAddress } from './japanFilter.js'
+import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
 
-// 第1段階（軽い検索：電話/レビューは取らない＝低コスト）
+// 第1段階（軽い検索：country判定のため addressComponents も取得）
 const LIGHT_FIELDS = [
-  'places.id', 'places.displayName', 'places.formattedAddress',
+  'places.id', 'places.displayName', 'places.formattedAddress', 'places.addressComponents',
+  'places.internationalPhoneNumber', 'places.nationalPhoneNumber',
   'places.userRatingCount', 'places.types', 'places.primaryType', 'places.businessStatus',
 ].join(',')
 
-// 第2段階（詳細取得：電話・レビュー日・開店日など）
+// 第2段階（詳細取得：電話・レビュー日・開店日・addressComponents など）
 const DETAIL_FIELDS_EXT = [
-  'id', 'displayName', 'formattedAddress', 'nationalPhoneNumber', 'internationalPhoneNumber',
+  'id', 'displayName', 'formattedAddress', 'addressComponents', 'nationalPhoneNumber', 'internationalPhoneNumber',
   'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType',
   'openingDate', 'reviews',
 ].join(',')
 const DETAIL_FIELDS_BASE = [
-  'id', 'displayName', 'formattedAddress', 'nationalPhoneNumber', 'internationalPhoneNumber',
+  'id', 'displayName', 'formattedAddress', 'addressComponents', 'nationalPhoneNumber', 'internationalPhoneNumber',
   'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType',
 ].join(',')
+
+// 日本全体をカバーする矩形（locationRestriction）。海外を最初から検索結果に入れない。
+const JAPAN_RECTANGLE = {
+  low: { latitude: 20.0, longitude: 122.0 },
+  high: { latitude: 46.0, longitude: 154.0 },
+}
+
+/** addressComponents優先で日本国内のplaceか判定（formattedAddress/電話でフォールバック）。 */
+export function isJapanPlace(p: any): { isJapan: boolean; decided: boolean; country: string; basis: string } {
+  const comps = Array.isArray(p?.addressComponents) ? p.addressComponents : []
+  const cc = comps.find((c: any) => Array.isArray(c?.types) && c.types.includes('country'))
+  const country = String(cc?.shortText || cc?.longText || '')
+  if (country) {
+    const jp = /^(JP|日本|Japan)$/i.test(country)
+    return { isJapan: jp, decided: true, country, basis: 'addressComponents.country' }
+  }
+  const addr = p?.formattedAddress || ''
+  const intl = p?.internationalPhoneNumber || ''
+  if (isJapanAddress(addr)) return { isJapan: true, decided: true, country: '', basis: 'formattedAddress' }
+  if (/^\+?81[\s-]?\d/.test(intl) || isJapanPhone(p?.nationalPhoneNumber)) return { isJapan: true, decided: true, country: '', basis: 'phone' }
+  if (isForeignAddress(addr) || isForeignPhone(intl)) return { isJapan: false, decided: true, country: '', basis: 'foreign-markers' }
+  return { isJapan: false, decided: false, country: '', basis: 'unknown' }
+}
 
 let detailExtSupported = true
 
@@ -147,7 +171,12 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
     const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': LIGHT_FIELDS },
-      body: JSON.stringify({ textQuery: query, languageCode: 'ja', regionCode: 'JP', maxResultCount: Math.max(1, Math.min(20, maxResultCount)) }),
+      body: JSON.stringify({
+        textQuery: query, languageCode: 'ja', regionCode: 'JP',
+        maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+        // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。
+        locationRestriction: { rectangle: JAPAN_RECTANGLE },
+      }),
     })
     const text = await res.text().catch(() => '')
     let json: any = {}
@@ -284,6 +313,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
     dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
     detailFailed: 0, judged: 0, skipped: 0,
+    countryJP: 0, countryNonJP: 0, addressCompMissing: 0, japanByAddrOnly: 0,
     newOpenRan: picked.filter((q) => q.isNewOpen).length,
     normalRan: picked.filter((q) => !q.isNewOpen).length,
   }
@@ -325,6 +355,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     debug.languageCode = 'ja'
     debug.regionCode = 'JP'
     debug.japanFilter = true
+    debug.locationRestriction = true
+    debug.japanCountryFilter = true
     const nowIso = new Date().toISOString()
 
     for (const gq of picked) {
@@ -356,6 +388,16 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         else if (reviewCount < 100) counts.review16_99++
         else counts.review100++
 
+        // === 日本国内判定（最優先）===: 確定的に海外なら詳細を取らず保存もしない（HOT/HOLDに入れない）
+        const jpLight = isJapanPlace(lp)
+        if (jpLight.country === 'JP') counts.countryJP++
+        else if (jpLight.country) counts.countryNonJP++
+        if (!jpLight.country && !(Array.isArray(lp.addressComponents) && lp.addressComponents.length)) counts.addressCompMissing++
+        if (jpLight.decided && !jpLight.isJapan) {
+          counts.foreignSkipped++; counts.skipped++; qstat.skipped++; qReason(jpLight.country ? `日本国外(country=${jpLight.country})` : '日本国外')
+          logItem({ placeId, name, address, country: jpLight.country || '—', isJapanPlace: false, result: 'SKIPPED', skip: '日本国外の候補のため除外', exclusion: '日本国外の候補のため除外', saved: false }); continue
+        }
+
         // 既存(place_id)を先に確認
         let existing: any = null
         if (placeId) {
@@ -371,11 +413,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         // 明確な除外（Detailsを取らずEXCLUDED保存＝APIコスト削減・記録は残す）
         const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
         const orgLike = isOrgNonStore(name)
-        const foreignLight = isForeignAddress(address)
         const closedPermLight = businessStatusLight === 'CLOSED_PERMANENTLY'
         // 口コミ多数(>warmMax)かつ FUTURE_OPENING でない＝既存店。openingDateはlightで分からないため詳細は取らずEXCLUDED保存
         const tooManyReviewsLight = reviewCount !== null && reviewCount > opts.warmMaxReviews && businessStatusLight !== 'FUTURE_OPENING'
-        const hardExclude = foreignLight || chainish || orgLike || closedPermLight || tooManyReviewsLight
+        const hardExclude = chainish || orgLike || closedPermLight || tooManyReviewsLight
 
         // === Details取得（hardExcludeでなければ）===
         let p: any = lp
@@ -391,6 +432,15 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           if (detail) p = detail
           else { counts.detailFailed++; qReason('Details取得失敗'); p = lp } // 取得失敗でもlight情報で判定・保存（握りつぶさない）
         }
+
+        // === 日本国内判定（詳細のaddressComponentsで最終確認）===: 日本と確認できなければ保存しない
+        const jp = isJapanPlace(p)
+        if (jp.basis === 'formattedAddress' || jp.basis === 'phone') counts.japanByAddrOnly++
+        if (!jp.isJapan) {
+          counts.foreignSkipped++; counts.skipped++; qstat.skipped++; qReason(jp.country ? `日本国外(country=${jp.country})` : (jp.decided ? '日本国外' : '日本判定不可'))
+          logItem({ placeId, name, address: p.formattedAddress || address, country: jp.country || '—', isJapanPlace: false, result: 'SKIPPED', skip: '日本国外/日本判定不可', exclusion: '日本国外の候補のため除外', saved: false }); continue
+        }
+        const jpCountry = jp.country || 'JP(住所判定)'
 
         const phone = phoneOf(p)
         if (phone) counts.phoneYes++
@@ -425,18 +475,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         const fullAddress = p.formattedAddress || address
         const hasJapanAddr = isJapanAddress(fullAddress)
         const dupHit = !!classified.duplicate_of_case_id
-        const hardExcludeReason = foreignLight || isForeignAddress(fullAddress) || chainish || orgLike || closedPermLight || tooManyReviewsLight || dupHit
+        // ここに来る時点で日本国内は確定済み（海外は上流でスキップ）
+        const hardExcludeReason = chainish || orgLike || closedPermLight || tooManyReviewsLight || dupHit
         if (classified.lead_temperature === 'EXCLUDED' && !hardExcludeReason && !!name && hasJapanAddr) {
           classified.lead_temperature = 'HOLD'
           classified.should_exclude_from_call_list = false
           classified.exclusion_reason = '電話/openingDate等は不足だが、日本国内・店名・Google Places取得済みのため保留（要確認）。'
-          if (classified.hot_reject_summary) classified.hot_reject_summary = classified.hot_reject_summary
         }
         const temp = classified.lead_temperature as string
 
         if (classified.oldest_review_is_recent) counts.oldestRecent++
         if (orgLike && temp === 'EXCLUDED') counts.orgFiltered++
-        if ((foreignLight || isForeignAddress(fullAddress)) && temp === 'EXCLUDED') counts.foreignSkipped++
         if (chainish && temp === 'EXCLUDED') counts.chainExcluded++
         if (temp === 'HOT') { counts.hot++; qstat.hot++ }
         else if (temp === 'EXCLUDED') { counts.excluded++; qstat.excluded++ }
@@ -444,7 +493,6 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         if (dupHit) { counts.duplicate++; qReason('既存案件と重複') }
         if (!classified.phone_normalized) { counts.noPhone++; qReason('電話番号なし') }
         if (!og.has) qReason('openingDateなし')
-        if (foreignLight || isForeignAddress(fullAddress)) qReason('日本国外')
         if (chainish) qReason('チェーン/施設内/支店')
         if (orgLike) qReason('法人/団体/研究会')
         if (tooManyReviewsLight) qReason('口コミ多数(既存店)')
@@ -522,6 +570,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         // place単位のログ（42件がどこで消えたか追跡できるように）
         logItem({
           placeId, name, address: p.formattedAddress || address, phone: phone || null,
+          country: jpCountry, isJapanPlace: true,
           businessStatus: p.businessStatus || null, openingDate: og.raw || null,
           userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : reviewCount,
           result: temp, saved: savedOk, exclusion: classified.exclusion_reason || null, saveError: saveErrMsg || null,
@@ -568,6 +617,12 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       hot: counts.hot, hold: counts.hold, excluded: counts.excluded, saved: counts.saved, saveError: counts.saveError,
       detailThisRun: counts.detailCalls, detailToday: detailsToday + counts.detailCalls, detailFailed: counts.detailFailed,
       ok: counts.fetched === (counts.skipped + counts.judged) && counts.judged === (counts.hot + counts.hold + counts.excluded),
+    }
+    // 日本国内フィルタの効き具合
+    debug.japanStats = {
+      countryJP: counts.countryJP, countryNonJP: counts.countryNonJP,
+      addressCompMissing: counts.addressCompMissing, japanByAddrOnly: counts.japanByAddrOnly,
+      foreignSkipped: counts.foreignSkipped,
     }
     // 自動投入0件の理由分類（A〜E）
     debug.autoImportDiag = counts.imported > 0 ? '投入あり'

@@ -40,17 +40,21 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_blocking_reason TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS hot_required_score INTEGER;
 `
 
-// 既存の海外候補を EXCLUDED に更新（日本国外は対象外）
+// 既存の海外候補を EXCLUDED に更新（日本国外は対象外）。米国州コード(MD/VA/PA等)+ZIPも検出。
 const FOREIGN_CLEANUP = `
 UPDATE lead_candidates SET
   lead_temperature = 'EXCLUDED',
   should_exclude_from_call_list = TRUE,
-  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), '日本国外の候補のため除外')
+  exclusion_reason = COALESCE(NULLIF(exclusion_reason, ''), '日本国外の候補のため除外'),
+  hot_reject_summary = '日本国外の候補のため営業対象外'
 WHERE lead_temperature <> 'EXCLUDED' AND (
-     address ILIKE '%アメリカ合衆国%' OR address ILIKE '%United States%' OR address ILIKE '%USA%'
+     address ILIKE '%アメリカ合衆国%' OR address ILIKE '%United States%' OR address ILIKE '%USA%' OR address ILIKE '%America%'
   OR address ILIKE '%Canada%' OR address ILIKE '%カナダ%' OR address ILIKE '%Australia%' OR address ILIKE '%オーストラリア%'
   OR address ILIKE '%Korea%' OR address ILIKE '%韓国%' OR address ILIKE '%Taiwan%' OR address ILIKE '%台湾%'
-  OR address ILIKE '%Singapore%' OR address ILIKE '%シンガポール%' OR address ILIKE '%Oregon%' OR address ILIKE '%California%'
+  OR address ILIKE '%Singapore%' OR address ILIKE '%シンガポール%'
+  OR address ILIKE '%Maryland%' OR address ILIKE '%Virginia%' OR address ILIKE '%Pennsylvania%' OR address ILIKE '%Oregon%' OR address ILIKE '%California%'
+  OR address ~ ',\\s?[A-Z]{2}\\s?\\d{5}'                          -- 米国州コード+ZIP（例: MD 21780）
+  OR (address ~ '[A-Za-z]{4,}' AND address !~ '[ぁ-んァ-ヶ一-龥]' AND address !~ '日本')  -- 日本語/都道府県を含まない英字住所
   OR phone_number LIKE '+1%' OR phone_number LIKE '+44%' OR phone_number LIKE '+61%' OR phone_number LIKE '+82%' OR phone_number LIKE '+886%' OR phone_number LIKE '+65%'
 );
 `

@@ -14,6 +14,7 @@
     "setup:users": "tsx scripts/setup-users.ts",
     "setup:google-places": "tsx scripts/setup-google-places.ts",
     "check:google-places-api": "tsx scripts/check-google-places-api.ts",
+    "check:japan-filter": "tsx scripts/check-japan-filter.ts",
     "db:apply": "tsx scripts/apply-migration.ts"
   },
   "dependencies": {
