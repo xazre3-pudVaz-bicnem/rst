@@ -20,10 +20,14 @@ export function getDefaultIwSettings() {
     iwPlacesRequired: false,    // Google Places照合必須（初期OFF）
     iwAnthropic: true,          // Anthropic判定（初期ON）
     iwMaxRunsPerDay: 4,         // 1日最大実行回数
-    iwPerRun: 20,               // 1回最大クエリ数
-    iwMaxQueriesPerDay: 80,     // 1日最大クエリ数
+    iwPerRun: 30,               // 1回最大クエリ数（後方互換）
+    iwMaxQueriesPerRun: 30,     // 1回最大クエリ数（最低30・最大50）
+    iwMaxQueriesPerDay: 120,    // 1日最大クエリ数
     iwPerQuery: 10,             // 1クエリ取得件数
     iwAnthropicDailyCap: 100,   // 1日最大AI判定件数
+    iwProvider: 'serper',       // 検索プロバイダ: serper / bing / both
+    iwSameQuerySkipDays: 0,     // 同一クエリのスキップ日数（0=毎日同じクエリOK・Instagramは新着が増えるため）
+    iwSameUrlSkipDays: 7,       // 同一URLのスキップ日数（重複保存防止）
     // 外部情報補完（電話/住所を関連サイト・Placesから補完）
     iwEnrichEnabled: true,
     iwEnrichMaxQueries: 3,      // 1候補あたり追加検索の最大クエリ数
@@ -35,22 +39,37 @@ export function getDefaultIwSettings() {
   }
 }
 
-// 簡易クエリ（Serper無料枠向け。site:・完全一致クォート・「日本」を使わない）。日本判定は取得後の補完で行う。
+// 簡易クエリ（Serper無料枠向け。site:・完全一致クォート・「日本」「地域名」「業種名」を使わない）。地域/業種は取得後の抽出・判定で見る。
 export const NATIONAL_QUERIES_SIMPLE = [
-  'Instagram 新規オープンしました', 'Instagram ニューオープン', 'Instagram オープンしました', 'Instagram 開業しました',
-  'Instagram 開店しました', 'Instagram 開院しました', 'Instagram プレオープン', 'Instagram グランドオープン',
-  'Instagram 移転オープン', 'Instagram 本日オープン', 'Instagram 新店 オープン', 'Instagram 独立開業',
-  '#新規オープン Instagram', '#ニューオープン Instagram', '#開業 Instagram', '#開店 Instagram',
-  '#開院 Instagram', '#独立開業 Instagram', '#グランドオープン Instagram', '#プレオープン Instagram',
+  // 新店ワード本体（言い換えを大幅に拡充）
+  'Instagram 新規オープンしました', 'Instagram 新規OPEN', 'Instagram 新規オープン', 'Instagram ニューオープン',
+  'Instagram New Open', 'Instagram NEW OPEN', 'Instagram グランドオープン', 'Instagram GRAND OPEN',
+  'Instagram プレオープン', 'Instagram pre open', 'Instagram オープンしました', 'Instagram オープンします',
+  'Instagram 開店しました', 'Instagram 開店します', 'Instagram 開業しました', 'Instagram 開業します',
+  'Instagram 開院しました', 'Instagram 開院します', 'Instagram 開設しました', 'Instagram 開設します',
+  'Instagram リニューアルオープン', 'Instagram 移転オープン', 'Instagram 本日オープン', 'Instagram 明日オープン',
+  'Instagram 近日オープン', 'Instagram もうすぐオープン', 'Instagram オープン準備中', 'Instagram 内装工事中',
+  'Instagram 物件決まりました', 'Instagram 看板つきました', 'Instagram 予約開始', 'Instagram 受付開始',
+  'Instagram 初投稿', 'Instagram はじめまして', 'Instagram 店舗準備', 'Instagram お店作り',
+  'Instagram 開店準備', 'Instagram 独立開業', 'Instagram 新店舗', 'Instagram 新店', 'Instagram 新しいお店',
+  // ハッシュタグ系
+  '#新規オープン Instagram', '#ニューオープン Instagram', '#グランドオープン Instagram', '#プレオープン Instagram',
+  '#開店 Instagram', '#開業 Instagram', '#開院 Instagram', '#新店 Instagram', '#新店舗 Instagram',
+  '#オープンしました Instagram', '#オープン準備中 Instagram', '#開店準備 Instagram', '#独立開業 Instagram',
+  '#移転オープン Instagram', '#リニューアルオープン Instagram', '#本日オープン Instagram', '#明日オープン Instagram',
+  '#近日オープン Instagram', '#予約開始 Instagram', '#受付開始 Instagram',
 ]
-// 高度クエリ（Bing / 有料Serper向け。site:instagram.com＋完全一致）。「日本」は入れない。
+// 高度クエリ（Bing / 有料Serper向け。site:instagram.com＋完全一致）。「日本」「地域名」「業種名」は入れない。
 export const NATIONAL_QUERIES_ADVANCED = [
-  'site:instagram.com "#新規オープン"', 'site:instagram.com "#ニューオープン"', 'site:instagram.com "#開業"',
-  'site:instagram.com "#開店"', 'site:instagram.com "#開院"', 'site:instagram.com "#独立開業"',
-  'site:instagram.com "#グランドオープン"', 'site:instagram.com "#プレオープン"', 'site:instagram.com "#移転オープン"',
+  'site:instagram.com "#新規オープン"', 'site:instagram.com "#ニューオープン"', 'site:instagram.com "#グランドオープン"',
+  'site:instagram.com "#プレオープン"', 'site:instagram.com "#開店"', 'site:instagram.com "#開業"',
+  'site:instagram.com "#開院"', 'site:instagram.com "#新店"', 'site:instagram.com "#新店舗"',
+  'site:instagram.com "#独立開業"', 'site:instagram.com "#移転オープン"', 'site:instagram.com "#リニューアルオープン"',
+  'site:instagram.com "#本日オープン"', 'site:instagram.com "#オープン準備中"', 'site:instagram.com "#開店準備"',
   'site:instagram.com "新規オープンしました"', 'site:instagram.com "オープンしました"', 'site:instagram.com "開業しました"',
   'site:instagram.com "開店しました"', 'site:instagram.com "開院しました"', 'site:instagram.com "本日オープン"',
-  'site:instagram.com "グランドオープンしました"', 'site:instagram.com "プレオープンしました"',
+  'site:instagram.com "グランドオープンしました"', 'site:instagram.com "プレオープンしました"', 'site:instagram.com "リニューアルオープン"',
+  'site:instagram.com "予約開始"', 'site:instagram.com "受付開始"', 'site:instagram.com "独立開業"',
 ]
 // 後方互換（既存参照用）。既定は簡易クエリ。
 export const NATIONAL_QUERIES = NATIONAL_QUERIES_SIMPLE
@@ -76,8 +95,11 @@ function isFreePatternError(msg: string): boolean {
 
 interface WebResult { title: string; url: string; snippet: string }
 
-export async function webSearch(query: string, num: number): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string }> {
-  const prov = searchProvider()
+export async function webSearch(query: string, num: number, preferProvider?: 'serper' | 'bing'): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string; provider?: string }> {
+  // preferProvider のキーがあればそれを使う。無ければ既定（Serper優先）
+  const prov = (preferProvider === 'bing' && process.env.BING_SEARCH_API_KEY) ? 'bing'
+    : (preferProvider === 'serper' && process.env.SERPER_API_KEY) ? 'serper'
+    : searchProvider()
   // 1回の検索（504回避: 8秒で打ち切り）
   const doFetch = async (q: string): Promise<{ results: WebResult[]; error: string | null }> => {
     const ctrl = new AbortController()
@@ -114,10 +136,10 @@ export async function webSearch(query: string, num: number): Promise<{ results: 
     const simple = simplifyQuery(query)
     if (simple && simple !== query) {
       const r2 = await doFetch(simple)
-      return { results: r2.results, error: r2.error, usedQuery: simple, fallbackFrom: query }
+      return { results: r2.results, error: r2.error, usedQuery: simple, fallbackFrom: query, provider: prov || undefined }
     }
   }
-  return { results: r1.results, error: r1.error, usedQuery: query }
+  return { results: r1.results, error: r1.error, usedQuery: query, provider: prov || undefined }
 }
 
 // ---- ルールベース粗選別（Anthropic判定の前に必ず実行） ----
@@ -495,8 +517,9 @@ const ANTHROPIC_JPY_PER_JUDGE = 0.3
 export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSettings: any, userId: string | null) {
   const s = { ...getDefaultIwSettings(), ...(rawSettings || {}) }
   const perQuery = Math.max(1, Math.min(20, Number(s.iwPerQuery) || 10))
-  const perRun = Math.max(1, Number(s.iwPerRun) || 20)
-  const maxQueriesPerDay = Math.max(1, Number(s.iwMaxQueriesPerDay) || 80)
+  const perRun = Math.max(1, Math.min(50, Number(s.iwMaxQueriesPerRun) || Number(s.iwPerRun) || 30))  // 1回30〜50クエリ
+  const maxQueriesPerDay = Math.max(1, Number(s.iwMaxQueriesPerDay) || 120)
+  const sameQuerySkipDays = Math.max(0, Number(s.iwSameQuerySkipDays) || 0)  // 既定0=同一クエリ毎日OK
   const maxRunsPerDay = Math.max(1, Number(s.iwMaxRunsPerDay) || 4)
   const anthropicDailyCap = Math.max(0, Number(s.iwAnthropicDailyCap) || 100)
   const useAnthropic = s.iwAnthropic !== false && !!process.env.ANTHROPIC_API_KEY
@@ -509,7 +532,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -545,18 +568,34 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       .eq('source', 'instagram_web_search').gte('first_seen_at', startToday.toISOString())
     let anthropicBudget = Math.max(0, anthropicDailyCap - (judgedToday || 0))
 
-    // 7日以内に実行したクエリはスキップ → 未実行/古い順に runQueryLimit 件
+    // 同一クエリのスキップ（既定0=スキップしない。Instagramは同じ検索語でも新着が増えるため）。URLは別途7日スキップ。
     const since7 = new Date(Date.now() - 7 * 86400000).toISOString()
-    const { data: recentRows } = await admin.from('ig_web_query_log').select('query').gte('last_run_at', since7).limit(5000)
-    const recent = new Set<string>((recentRows || []).map((r: any) => String(r.query)))
-    // 検索モード＆プロバイダでクエリ集合を選択（Serperは無料枠でsite:/完全一致が拒否されるため簡易クエリ）
-    const provider = searchProvider()
+    const recent = new Set<string>()
+    if (sameQuerySkipDays > 0) {
+      const sinceQ = new Date(Date.now() - sameQuerySkipDays * 86400000).toISOString()
+      const { data: recentRows } = await admin.from('ig_web_query_log').select('query').gte('last_run_at', sinceQ).limit(5000)
+      for (const r of (recentRows || [])) recent.add(String(r.query))
+    }
+    // プロバイダ＆検索モードでクエリ集合を選択（Serperは無料枠でsite:/完全一致が拒否されるため簡易クエリ）
+    const envProvider = searchProvider()
+    const iwProvider = ['serper', 'bing', 'both'].includes(s.iwProvider) ? s.iwProvider : 'serper'
     const searchMode = s.iwSearchMode || 'serper_free'
-    const useAdvanced = (searchMode === 'bing_advanced' && provider === 'bing') || searchMode === 'serper_paid'
-    const querySet = useAdvanced ? NATIONAL_QUERIES_ADVANCED : NATIONAL_QUERIES_SIMPLE
-    debug.searchMode = searchMode; debug.querySet = useAdvanced ? 'advanced(site:)' : 'simple'
-    let picked = querySet.filter((q) => !recent.has(q)).slice(0, runQueryLimit)
+    const useAdvanced = (searchMode === 'bing_advanced' && envProvider === 'bing') || searchMode === 'serper_paid'
+    // both: 簡易＋高度を結合（重複除去）。それ以外は単一集合。
+    const querySet = iwProvider === 'both'
+      ? Array.from(new Set([...NATIONAL_QUERIES_SIMPLE, ...NATIONAL_QUERIES_ADVANCED]))
+      : (useAdvanced ? NATIONAL_QUERIES_ADVANCED : NATIONAL_QUERIES_SIMPLE)
+    debug.searchMode = searchMode; debug.iwProvider = iwProvider; debug.querySet = iwProvider === 'both' ? 'simple+advanced' : (useAdvanced ? 'advanced(site:)' : 'simple')
+    debug.querySetSize = querySet.length
+    const notSkipped = querySet.filter((q) => !recent.has(q))
+    let picked = notSkipped.slice(0, runQueryLimit)
     if (picked.length === 0 && runQueryLimit > 0) picked = querySet.slice(0, runQueryLimit)
+    // ログ: 予定/実行/スキップ/理由
+    debug.plannedQueries = querySet.length
+    debug.skippedByRecent = querySet.length - notSkipped.length
+    debug.skippedByLimit = Math.max(0, notSkipped.length - picked.length)
+    debug.runQueryLimit = runQueryLimit
+    debug.queryLimitReason = runQueryLimit < perRun ? `本日のクエリ上限(残り${remainingQueries}/${maxQueriesPerDay})` : (picked.length < perRun ? `クエリ定義/スキップにより${picked.length}件` : 'OK')
     // 補完: 1日の補完候補上限と、7日以内に実行済みの補完クエリ
     const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
       .eq('source', 'instagram_web_search').not('last_enriched_at', 'is', null).gte('last_enriched_at', startToday.toISOString())
@@ -585,7 +624,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       counts.queries++
       const before = { hot: counts.hot, hold: counts.hold, excluded: counts.excluded }
       const q: any = { query, results: 0, igUrls: 0, rulePassed: 0, judged: 0, heuristic: 0, hot: 0, hold: 0, excluded: 0, areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0, error: null }
-      const { results, error, usedQuery, fallbackFrom } = await webSearch(query, perQuery)
+      // both: site:クエリはBing優先（無料Serperはsite:不可）、それ以外はSerper。単一プロバイダ時は preferProvider 指定で env 既定に従う
+      const preferProvider: ('serper' | 'bing' | undefined) = iwProvider === 'both' ? (/site:/i.test(query) ? 'bing' : 'serper') : (iwProvider === 'bing' ? 'bing' : iwProvider === 'serper' ? 'serper' : undefined)
+      const { results, error, usedQuery, fallbackFrom, provider: usedProvider } = await webSearch(query, perQuery, preferProvider)
+      if (error) { if (usedProvider === 'bing') counts.bingError = (counts.bingError || 0) + 1; else counts.serperError = (counts.serperError || 0) + 1 }
       // 簡易クエリへ自動フォールバックした場合は記録（失敗ではない）
       if (fallbackFrom) {
         counts.fallback = (counts.fallback || 0) + 1
@@ -805,7 +847,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
     // 注意: counts.error は数値（検索失敗回数）。UIの error 表示と衝突しないよう errorCount に退避し、
     //       error は最後のエラーメッセージ（文字列 or null）にする。
-    return { ok: true, runId, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
+    debug.executedQueries = counts.queries
+    debug.queryReport = `予定${debug.plannedQueries ?? querySet.length} / 実行${counts.queries} / スキップ(同一クエリ)${debug.skippedByRecent ?? 0} / 上限カット${debug.skippedByLimit ?? 0} / 理由:${debug.queryLimitReason || 'OK'} / Serperエラー${counts.serperError} / Bingエラー${counts.bingError}${debug.stoppedEarly ? ' / 時間上限で打ち切り' : ''}`
+    return { ok: true, runId, ...counts, executedQueries: counts.queries, plannedQueries: debug.plannedQueries, skippedQueries: (debug.skippedByRecent || 0) + (debug.skippedByLimit || 0), queryReport: debug.queryReport, errorCount: counts.error, error: errorMessage || null, debug }
   } catch (e: any) {
     const msg = String(e?.message || e)
     console.error('[instagram-web] run failed', { failed_step: 'runInstagramWeb', message: msg, stack: e?.stack, timestamp: new Date().toISOString() })

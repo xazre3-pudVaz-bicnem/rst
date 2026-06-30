@@ -380,6 +380,7 @@ export default function Leads() {
             // 全国検索: 地域・業種はクエリに入れない（areaPreset/industriesは送らない）
             iwAutoImport: settings.iwAutoImport, iwSearchMode: settings.iwSearchMode, iwAllowNoPhone: settings.iwAllowNoPhone, iwRequirePhone: settings.iwRequirePhone, iwPlacesRequired: settings.iwPlacesRequired,
             iwAnthropic: settings.iwAnthropic, iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
+            iwMaxQueriesPerRun: settings.iwMaxQueriesPerRun, iwProvider: settings.iwProvider, iwSameQuerySkipDays: settings.iwSameQuerySkipDays, iwSameUrlSkipDays: settings.iwSameUrlSkipDays,
             iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
             iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
             dailyCap: settings.dailyCap,
@@ -635,6 +636,7 @@ export default function Leads() {
         iwEnabled: settings.iwEnabled, iwSearchMode: settings.iwSearchMode, iwAllowNoPhone: settings.iwAllowNoPhone, iwAutoImport: settings.iwAutoImport, iwRequirePhone: settings.iwRequirePhone,
         iwPlacesRequired: settings.iwPlacesRequired, iwAnthropic: settings.iwAnthropic,
         iwMaxQueriesPerDay: settings.iwMaxQueriesPerDay, iwPerQuery: settings.iwPerQuery,
+        iwMaxQueriesPerRun: settings.iwMaxQueriesPerRun, iwProvider: settings.iwProvider, iwSameQuerySkipDays: settings.iwSameQuerySkipDays, iwSameUrlSkipDays: settings.iwSameUrlSkipDays,
         iwMaxRunsPerDay: settings.iwMaxRunsPerDay, iwPerRun: settings.iwPerRun, iwAnthropicDailyCap: settings.iwAnthropicDailyCap,
         iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
         dailyCap: settings.dailyCap,
@@ -1239,9 +1241,15 @@ export default function Leads() {
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
                   <div className="space-y-1"><Label>1日最大実行回数</Label><Input type="number" min={1} value={settings.iwMaxRunsPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxRunsPerDay: Math.max(1, Number(e.target.value) || 4) })} className="h-8" /></div>
-                  <div className="space-y-1"><Label>1回最大クエリ数</Label><Input type="number" min={1} value={settings.iwPerRun} onChange={(e) => saveSettings({ ...settings, iwPerRun: Math.max(1, Number(e.target.value) || 20) })} className="h-8" /></div>
-                  <div className="space-y-1"><Label>1日最大クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 80) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1回最大クエリ数（30〜50推奨）</Label><Input type="number" min={1} max={50} value={settings.iwMaxQueriesPerRun ?? 30} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 30)), iwPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 30)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 120) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.iwPerQuery} onChange={(e) => saveSettings({ ...settings, iwPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 10)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>検索プロバイダ</Label>
+                    <select value={settings.iwProvider || 'serper'} onChange={(e) => saveSettings({ ...settings, iwProvider: e.target.value as any })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm">
+                      <option value="serper">Serper（簡易クエリ）</option><option value="bing">Bing</option><option value="both">both（簡易＋site:・重複除外）</option>
+                    </select></div>
+                  <div className="space-y-1"><Label>同一クエリのスキップ日数（0=毎日OK）</Label><Input type="number" min={0} value={settings.iwSameQuerySkipDays ?? 0} onChange={(e) => saveSettings({ ...settings, iwSameQuerySkipDays: Math.max(0, Number(e.target.value) || 0) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>同一URLのスキップ日数</Label><Input type="number" min={0} value={settings.iwSameUrlSkipDays ?? 7} onChange={(e) => saveSettings({ ...settings, iwSameUrlSkipDays: Math.max(0, Number(e.target.value) || 7) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1日最大AI判定件数</Label><Input type="number" min={0} value={settings.iwAnthropicDailyCap} onChange={(e) => saveSettings({ ...settings, iwAnthropicDailyCap: Math.max(0, Number(e.target.value) || 100) })} className="h-8" /></div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwEnrichEnabled} onChange={(e) => saveSettings({ ...settings, iwEnrichEnabled: e.target.checked })} />外部情報補完（電話/住所探索）</label>
                   <div className="space-y-1"><Label>1候補の補完検索数</Label><Input type="number" min={0} value={settings.iwEnrichMaxQueries} onChange={(e) => saveSettings({ ...settings, iwEnrichMaxQueries: Math.max(0, Number(e.target.value) || 3) })} className="h-8" /></div>
@@ -1862,6 +1870,9 @@ export default function Leads() {
             <div className="mt-1 text-[10px] text-muted-foreground">全国・新店ハッシュタグのみ（地域/業種をクエリに入れない）。ルール粗選別→新店候補のみAI判定。HOTは初期OFFでHOLD中心保存→手動投入。同一URL重複・同一クエリ7日はスキップ。</div>
             {iwResult && (
               <div className="mt-2 space-y-1">
+                {(iwResult.queryReport || iwResult.debug?.queryReport) && (
+                  <div className="rounded border bg-muted/40 p-1.5 text-[10px] text-muted-foreground">クエリ実行状況: {iwResult.queryReport || iwResult.debug?.queryReport}</div>
+                )}
                 {iwResult.ok === false ? (
                   <div className="rounded bg-red-50 p-2 text-[11px] text-red-700 dark:bg-red-500/10 dark:text-red-300">
                     <div className="font-bold">Instagram Web検索でエラーが発生しました</div>

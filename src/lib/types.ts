@@ -449,7 +449,11 @@ export interface LeadImportSettings {
   iwRequirePhone: boolean      // 電話番号必須（初期OFF）
   iwPlacesRequired: boolean    // Google Places照合必須（初期OFF）
   iwAnthropic: boolean         // Anthropic判定（初期ON）
-  iwMaxQueriesPerDay: number   // 1日最大検索クエリ数（既定80）
+  iwMaxQueriesPerDay: number   // 1日最大検索クエリ数（既定120）
+  iwMaxQueriesPerRun: number   // 1回最大クエリ数（既定30・最大50）
+  iwProvider: 'serper' | 'bing' | 'both'  // 検索プロバイダ
+  iwSameQuerySkipDays: number  // 同一クエリのスキップ日数（既定0）
+  iwSameUrlSkipDays: number    // 同一URLのスキップ日数（既定7）
   iwPerQuery: number           // 1クエリ取得件数（既定10）
   iwMaxRunsPerDay: number      // 1日最大実行回数（既定4）
   iwPerRun: number             // 1回最大クエリ数（既定20）
