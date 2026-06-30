@@ -657,6 +657,22 @@ export default function Leads() {
   const sigBadge = (on: boolean, label: string) =>
     on ? <span className="rounded-sm bg-primary/10 px-1 text-[9px] text-primary">{label}</span> : null
 
+  // 補完の取得元ラベル（住所/電話をどこから取ったか）
+  const enrSrcLabel = (s?: string | null): string => ({ google_places: 'Google Places', google_maps_url: 'Google Mapsリンク', official_site: '公式サイト', instagram_profile: 'IGプロフィール', snippet: '検索スニペット' } as Record<string, string>)[s || ''] || (s || '')
+
+  // 補完結果の詳細表示（プロフィール/Maps/Places/取得元/信頼度/失敗理由）
+  function renderEnrichInfo(c: LeadCandidate) {
+    return (
+      <>
+        {c.enrichment_profile_fetched != null && <span className={cn('w-fit rounded px-1 text-[9px]', c.enrichment_profile_fetched ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700')}>プロフ{c.enrichment_profile_fetched ? '取得✓' : '取得✗'}</span>}
+        {c.enriched_google_maps_url && <a href={c.enriched_google_maps_url} target="_blank" rel="noreferrer" className="w-fit rounded bg-sky-100 px-1 text-[9px] text-sky-700 hover:underline dark:bg-sky-500/20 dark:text-sky-300">Mapsリンク</a>}
+        {c.enriched_phone_source && <span className="text-[9px] text-muted-foreground">電話元: {enrSrcLabel(c.enriched_phone_source)}</span>}
+        {c.enriched_address_source && <span className="text-[9px] text-muted-foreground">住所元: {enrSrcLabel(c.enriched_address_source)}</span>}
+        {c.enrichment_fail_reason && c.lead_temperature !== 'HOT' && <span className="line-clamp-2 text-[9px] text-amber-600 dark:text-amber-300" title={c.enrichment_fail_reason}>未取得理由: {c.enrichment_fail_reason}</span>}
+      </>
+    )
+  }
+
   // HOTチェック項目のラベル（hot_check_result のキー → 日本語）
   const HOT_CHECK_LABELS: Record<string, string> = {
     has_japan: '日本国内', has_shop_name: '店名', has_industry: '業種推定', has_area: '住所/市区町村',
@@ -1748,6 +1764,7 @@ export default function Leads() {
                               {c.enriched_phone && <span className="text-[9px] text-green-700 dark:text-green-300">📞{c.enriched_phone}</span>}
                               {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
                               {c.enriched_google_place_id && <a href={`https://www.google.com/maps/place/?q=place_id:${c.enriched_google_place_id}`} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">Places</a>}
+                              {renderEnrichInfo(c)}
                               {srcCount > 0 && <span className="text-[9px] text-muted-foreground">補完元 {srcCount}件</span>}
                             </div>
                           )
@@ -1821,6 +1838,7 @@ export default function Leads() {
                               {c.enriched_address && <span className="line-clamp-1 text-[9px] text-muted-foreground" title={c.enriched_address}>{c.enriched_address}</span>}
                               {c.enriched_instagram_url && <a href={c.enriched_instagram_url} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">IG</a>}
                               {c.enriched_google_place_id && <a href={`https://www.google.com/maps/place/?q=place_id:${c.enriched_google_place_id}`} target="_blank" rel="noreferrer" className="text-[9px] text-primary hover:underline">Places</a>}
+                              {renderEnrichInfo(c)}
                               {srcCount > 0 && <span className="text-[9px] text-muted-foreground">補完元 {srcCount}件</span>}
                             </div>
                           )

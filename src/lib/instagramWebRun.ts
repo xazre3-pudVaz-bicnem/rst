@@ -7,6 +7,7 @@
 import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './googlePlacesRun.js'
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
+import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose } from './enrichProfile.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -185,6 +186,10 @@ function buildEnrichQueries(shop: string, username: string, area: string, max: n
 export interface EnrichResult {
   phone: string; address: string; prefecture: string; city: string
   official: string; reservation: string; line: string; instagram: string; place_id: string
+  // 取得元・信頼度（どこから住所/電話を取ったか）
+  phone_source: string; address_source: string; google_maps_url: string
+  profile_fetched: boolean; profile_reason: string; link_count: number; links_checked: number
+  places_matched: boolean; fail_reason: string
   // Google Places openingDate / businessStatus（口コミより強い新店シグナル）
   business_status: string; opening_raw: string | null; opening_confidence: number
   opening_year: number | null; opening_month: number | null; opening_day: number | null
@@ -193,61 +198,138 @@ export interface EnrichResult {
   confidence: number; reason: string; queriesUsed: number
 }
 
-/** 外部情報補完: 関連サイト/予約サイト/Google Placesから電話・住所を補完 */
+// 取得元ごとの信頼度の目安
+const SRC_CONF: Record<string, number> = { google_places: 90, google_maps_url: 90, official_site: 85, instagram_profile: 75, snippet: 40 }
+const SRC_LABEL: Record<string, string> = { google_places: 'Google Places', google_maps_url: 'Google Mapsリンク', official_site: '公式サイト', instagram_profile: 'Instagramプロフィール', snippet: '検索スニペット' }
+
+/**
+ * 外部情報補完: Instagramプロフィール本文 → Google Maps短縮URL展開 → 外部リンク(最大3) → Google Places照合（電話番号優先）。
+ * 住所/電話の取得元と信頼度も返す。各fetchは8秒timeout・呼び出し回数は上限付き。
+ */
 export async function enrichCandidate(
   mapsKey: string | null,
-  ctx: { shop: string; username: string; areaHint: string; industry: string; havePhone: string; haveAddress: string },
-  opts: { maxQueries: number; perQuery: number; skipQuery?: Set<string>; onQuery?: (q: string) => void },
+  ctx: { shop: string; username: string; areaHint: string; industry: string; havePhone: string; haveAddress: string; instagramUrl?: string },
+  opts: { maxQueries: number; perQuery: number; skipQuery?: Set<string>; onQuery?: (q: string) => void; fetchProfile?: boolean },
 ): Promise<EnrichResult> {
   let phone = ctx.havePhone || '', address = ctx.haveAddress || '', prefecture = '', city = ''
-  let official = '', reservation = '', line = '', instagram = '', place_id = ''
+  let official = '', reservation = '', line = '', instagram = ctx.instagramUrl || '', place_id = ''
+  let phoneSource = phone ? 'snippet' : '', addressSource = address ? 'snippet' : '', googleMapsUrl = ''
   let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
   let businessStatus = ''
+  let profileFetched = false, profileReason = '', linkCount = 0, linksChecked = 0, placesMatched = false
   const sources: { url: string; got: string }[] = []
+  const failReasons: string[] = []
   let queriesUsed = 0
+  // 住所/電話を取得元の信頼度つきで採用（より高信頼の元なら上書き）
+  const setPhone = (v: string, src: string, url: string) => { if (v && isJapanPhone(v) && (!phone || (SRC_CONF[src] || 0) > (SRC_CONF[phoneSource] || 0))) { phone = v.trim(); phoneSource = src; sources.push({ url, got: `phone:${src}` }) } }
+  const setAddr = (v: string, pf: string, ct: string, src: string, url: string) => { if (v && (!address || (SRC_CONF[src] || 0) > (SRC_CONF[addressSource] || 0))) { address = v; addressSource = src; if (pf) prefecture = pf; if (ct) city = ct; sources.push({ url, got: `address:${src}` }) } }
   try {
-    const queries = buildEnrichQueries(ctx.shop, ctx.username, ctx.areaHint || '', opts.maxQueries)
-    for (const q of queries) {
-      if (phone && address) break
-      if (opts.skipQuery?.has(q)) continue
-      opts.onQuery?.(q)
-      queriesUsed++
-      const { results } = await webSearch(q, opts.perQuery)
-      for (const r of results) {
-        const c = extractContacts(`${r.title} ${r.snippet} ${r.url}`)
-        if (c.phone && !phone) { phone = c.phone; sources.push({ url: r.url, got: 'phone' }) }
-        if (c.address && !address) { address = c.address; prefecture = prefecture || c.prefecture; city = city || c.city; sources.push({ url: r.url, got: 'address' }) }
-        if (c.reservation && !reservation) { reservation = c.reservation; sources.push({ url: c.reservation, got: 'reservation' }) }
-        if (c.official && !official) official = c.official
-        if (c.line && !line) line = c.line
-        if (c.instagram && !instagram) { instagram = c.instagram; sources.push({ url: c.instagram, got: 'instagram' }) }
+    let mapUrl = ''
+    // 1) Instagramプロフィール取得（投稿スニペットより優先）
+    if (opts.fetchProfile !== false && ctx.username) {
+      const prof = await fetchInstagramProfile(ctx.username)
+      profileFetched = prof.ok
+      profileReason = prof.reason
+      if (!prof.ok && prof.reason) failReasons.push(prof.reason)
+      const purl = `https://www.instagram.com/${ctx.username}/`
+      if (prof.phone) setPhone(prof.phone, 'instagram_profile', purl)
+      if (prof.address) setAddr(prof.address, prof.prefecture, prof.city, 'instagram_profile', purl)
+      else if (prof.prefecture || prof.city) { prefecture = prefecture || prof.prefecture; city = city || prof.city }
+      if (prof.externalUrl && !official) official = prof.externalUrl
+      linkCount = prof.links.length
+      mapUrl = prof.mapUrl
+    } else if (!ctx.username) { failReasons.push('Instagramユーザー名が取得できず') }
+
+    // 2) Google Maps短縮URL展開（住所補完の最優先情報源）
+    if (mapUrl) {
+      googleMapsUrl = mapUrl
+      const ex = await expandMapUrl(mapUrl)
+      if (ex.timedOut) failReasons.push('Google Maps短縮URL展開タイムアウト')
+      else if (!ex.ok) failReasons.push('Google Maps短縮URL展開失敗')
+      if (ex.address) { const r = extractAddressLoose(ex.address); setAddr(ex.address, r.prefecture, r.city, 'google_maps_url', ex.finalUrl) }
+      // 展開後の店名でPlaces照合（住所/電話/openingDate）
+      if (mapsKey && (ex.name || ex.placeId) && (!phone || !address)) {
+        const sr = await searchLight(mapsKey, `${ex.name || ctx.shop} ${prefecture || city || ctx.areaHint || ''}`.trim(), 3)
+        const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress)) || null
+        if (top) {
+          place_id = top.id || place_id; placesMatched = true
+          const d = top.id ? await placeDetails(mapsKey, top.id) : null
+          const p: any = d || top
+          businessStatus = p.businessStatus || businessStatus
+          const og2 = parseGoogleOpening(p.openingDate, p.businessStatus); if (og2.has) og = og2
+          if (phoneOf(p)) setPhone(phoneOf(p), 'google_places', `https://www.google.com/maps/place/?q=place_id:${top.id}`)
+          if (p.formattedAddress) { const reg = extractRegion(p.formattedAddress); setAddr(p.formattedAddress, reg.prefecture, reg.city, 'google_places', `https://www.google.com/maps/place/?q=place_id:${top.id}`) }
+          if (!official && p.websiteUri) official = p.websiteUri
+        }
       }
+    } else if (opts.fetchProfile !== false) { failReasons.push('Google Mapsリンクなし') }
+
+    // 3) 外部リンク（最大3件・Maps以外の公式/予約サイト）から電話・住所
+    if ((!phone || !address) && official && /^https?:\/\//i.test(official)) {
+      linksChecked++
+      const pr = await fetchPage(official)
+      if (pr.ok) {
+        const c = extractContacts(pr.html.replace(/<[^>]+>/g, ' '))
+        if (c.phone) setPhone(c.phone, 'official_site', official)
+        if (c.address) { const r = extractAddressLoose(c.address || pr.html); setAddr(c.address, r.prefecture, r.city, 'official_site', official) }
+      } else if (pr.timedOut) failReasons.push('外部リンク確認タイムアウト')
     }
-    // Google Places 照合（店名＋エリア/業種）
-    if (mapsKey && ctx.shop && (!phone || !address)) {
-      const sr = await searchLight(mapsKey, `${ctx.shop} ${ctx.areaHint || ctx.industry || ''}`.trim(), 3)
-      // 日本国内の候補のみ採用（海外Placesは無視。languageCode=ja/regionCode=JPで日本寄せ）
-      const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress)) || null
-      if (top && nameMatch(ctx.shop, top.displayName?.text || '')) {
-        place_id = top.id || ''
-        const d = place_id ? await placeDetails(mapsKey, place_id) : null
+
+    // 4) Google Places照合: 電話番号優先 → 店名+市区町村（電話一致は同一店舗の強シグナル）
+    let placesCalls = 0
+    if (mapsKey && (!phone || !address) && placesCalls < 2) {
+      const area = [prefecture, city].filter(Boolean).join('') || ctx.areaHint || ''
+      const q = phone ? phone : `${ctx.shop} ${area || ctx.industry || ''}`.trim()
+      const sr = await searchLight(mapsKey, q, 3); placesCalls++
+      const top = (sr.places || []).find((pl: any) => !isForeignAddress(pl.formattedAddress) && (phone ? true : nameMatch(ctx.shop, pl.displayName?.text || ''))) || null
+      if (top) {
+        place_id = top.id || place_id; placesMatched = true
+        const d = top.id ? await placeDetails(mapsKey, top.id) : null
         const p: any = d || top
-        businessStatus = p.businessStatus || ''
-        og = parseGoogleOpening(p.openingDate, p.businessStatus)
-        if (og.has) sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_openingDate' })
-        if (!phone && phoneOf(p)) { phone = phoneOf(p); sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_phone' }) }
-        if (!address && p.formattedAddress) { address = p.formattedAddress; const reg = extractRegion(address); prefecture = prefecture || reg.prefecture; city = city || reg.city; sources.push({ url: `https://www.google.com/maps/place/?q=place_id:${place_id}`, got: 'places_address' }) }
+        businessStatus = p.businessStatus || businessStatus
+        const og2 = parseGoogleOpening(p.openingDate, p.businessStatus); if (og2.has) og = og2
+        if (phoneOf(p)) setPhone(phoneOf(p), 'google_places', `https://www.google.com/maps/place/?q=place_id:${top.id}`)
+        if (p.formattedAddress) { const reg = extractRegion(p.formattedAddress); setAddr(p.formattedAddress, reg.prefecture, reg.city, 'google_places', `https://www.google.com/maps/place/?q=place_id:${top.id}`) }
         if (!official && p.websiteUri) official = p.websiteUri
+      } else if (!phone) failReasons.push('Google Places一致なし')
+    }
+
+    // 5) 既存のWeb検索フォールバック（プロフィール/Mapsで取れない時のみ）
+    if (!phone || !address) {
+      const queries = buildEnrichQueries(ctx.shop, ctx.username, [prefecture, city].filter(Boolean).join('') || ctx.areaHint || '', opts.maxQueries)
+      for (const qq of queries) {
+        if (phone && address) break
+        if (opts.skipQuery?.has(qq)) continue
+        opts.onQuery?.(qq)
+        queriesUsed++
+        const { results } = await webSearch(qq, opts.perQuery)
+        for (const r of results) {
+          const c = extractContacts(`${r.title} ${r.snippet} ${r.url}`)
+          if (c.phone) setPhone(c.phone, 'snippet', r.url)
+          if (c.address) { const rr = extractAddressLoose(`${r.title} ${r.snippet}`); setAddr(c.address, rr.prefecture || c.prefecture, rr.city || c.city, 'snippet', r.url) }
+          if (c.reservation && !reservation) { reservation = c.reservation; sources.push({ url: c.reservation, got: 'reservation' }) }
+          if (c.official && !official) official = c.official
+          if (c.line && !line) line = c.line
+          if (c.instagram && !instagram) instagram = c.instagram
+        }
       }
     }
-    if (!prefecture && address) { const reg = extractRegion(address); prefecture = reg.prefecture; city = city || reg.city }
-    const confidence = (phone ? 40 : 0) + (address ? 40 : 0) + (place_id ? 20 : 0)
-    const status: EnrichResult['status'] = (phone || address) ? 'enriched' : (queriesUsed > 0 ? 'searched' : 'not_started')
+
+    if (!prefecture && address) { const reg = extractAddressLoose(address); prefecture = reg.prefecture; city = city || reg.city }
+    if (!phone) failReasons.push('電話番号を検出できず')
+    if (!address) failReasons.push(prefecture || city ? '住所が市区町村までで番地不明' : 'プロフィール本文/外部リンクに住所なし')
+
+    // 信頼度: 取得元のうち最も高い信頼度（電話/住所）を採用
+    const confidence = Math.max(phone ? (SRC_CONF[phoneSource] || 40) : 0, address ? (SRC_CONF[addressSource] || 40) : 0, place_id ? 80 : 0)
+    const status: EnrichResult['status'] = (phone || address) ? 'enriched' : (queriesUsed > 0 || profileFetched ? 'searched' : 'not_started')
     const reason = status === 'enriched'
-      ? `補完: ${phone ? '電話' : ''}${phone && address ? '＋' : ''}${address ? '住所' : ''}${place_id ? '（Places含む）' : ''} / ${queriesUsed}クエリ`
-      : `補完未取得（${queriesUsed}クエリ実行）`
+      ? `補完: ${phone ? `電話(${SRC_LABEL[phoneSource] || phoneSource})` : ''}${phone && address ? ' ＋ ' : ''}${address ? `住所(${SRC_LABEL[addressSource] || addressSource})` : ''}${placesMatched ? ' / Places一致' : ''} 信頼度${confidence}`
+      : `補完未取得: ${failReasons.slice(0, 3).join(' / ') || '手がかりなし'}`
     return {
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
+      phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
+      profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
+      places_matched: placesMatched, fail_reason: (phone && address) ? '' : failReasons.slice(0, 4).join(' / '),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
       sources, status, confidence, reason, queriesUsed,
@@ -255,6 +337,9 @@ export async function enrichCandidate(
   } catch (e: any) {
     return {
       phone, address, prefecture, city, official, reservation, line, instagram, place_id,
+      phone_source: phoneSource, address_source: addressSource, google_maps_url: googleMapsUrl,
+      profile_fetched: profileFetched, profile_reason: profileReason, link_count: linkCount, links_checked: linksChecked,
+      places_matched: placesMatched, fail_reason: String(e?.message || e).slice(0, 120),
       business_status: businessStatus, opening_raw: og.raw, opening_confidence: og.confidence, opening_year: og.year, opening_month: og.month, opening_day: og.day,
       days_until_opening: og.daysUntil, days_since_opening: og.daysSince, has_opening: og.has,
       sources, status: 'failed', confidence: 0, reason: String(e?.message || e).slice(0, 120), queriesUsed,
@@ -465,10 +550,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         let enrich: EnrichResult | null = null
         // 504回避: 時間予算を超えたら補完はせず軽量判定のみ（続きは次回実行）
         const overBudget = Date.now() - startMs > TIME_BUDGET
-        const needEnrich = enrichEnabled && !overBudget && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture) && !base.is_foreign
+        const needEnrich = enrichEnabled && !overBudget && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture || !base.address_candidate) && !base.is_foreign
         if (needEnrich) {
-          enrich = await enrichCandidate(mapsKey, { shop, username, areaHint: baseRegion.area, industry: industry0, havePhone: base.phone_candidate || '', haveAddress: '' }, {
-            maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,
+          enrich = await enrichCandidate(mapsKey, { shop, username, areaHint: baseRegion.area, industry: industry0, havePhone: base.phone_candidate || '', haveAddress: '', instagramUrl: r.url }, {
+            maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent, fetchProfile: true,
             onQuery: (qq) => { counts.enrichQueries++; q.enrichQueries = (q.enrichQueries || 0) + 1; enrichQueriesToLog.add(qq) },
           })
           enrichBudget--; counts.enrichTried++
@@ -568,6 +653,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           enriched_line_url: enrich?.line || null, enriched_google_place_id: enrich?.place_id || null,
           enrichment_reason: enrich?.reason || null, enrichment_confidence: enrich?.confidence ?? null,
           last_enriched_at: enrich ? nowIso : null,
+          // 取得元・信頼度（どこから住所/電話を取ったか）
+          enriched_phone_source: enrich?.phone_source || null, enriched_address_source: enrich?.address_source || null,
+          enriched_google_maps_url: enrich?.google_maps_url || null,
+          enrichment_profile_fetched: enrich?.profile_fetched ?? null, enrichment_fail_reason: enrich?.fail_reason || null,
           // Google openingDate / businessStatus（補完経由）
           google_business_status: enrich?.business_status || null, google_opening_date_raw: enrich?.opening_raw || null,
           google_opening_date_year: enrich?.opening_year ?? null, google_opening_date_month: enrich?.opening_month ?? null, google_opening_date_day: enrich?.opening_day ?? null,

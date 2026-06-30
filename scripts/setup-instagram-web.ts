@@ -48,6 +48,11 @@ ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enriched_google_place_id TE
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enrichment_reason TEXT;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enrichment_confidence INTEGER;
 ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS last_enriched_at TIMESTAMPTZ;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enriched_phone_source TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enriched_address_source TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enriched_google_maps_url TEXT;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enrichment_profile_fetched BOOLEAN;
+ALTER TABLE lead_candidates ADD COLUMN IF NOT EXISTS enrichment_fail_reason TEXT;
 
 CREATE TABLE IF NOT EXISTS ig_enrich_log (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

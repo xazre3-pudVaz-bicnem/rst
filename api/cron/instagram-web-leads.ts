@@ -82,18 +82,20 @@ export default async function handler(req: any, res: any) {
       if (!cand) return res.status(404).json({ ok: false, error: '候補が見つかりません' })
       const shop = cand.extracted_shop_name || cand.name || ''
       const username = usernameFromUrl(cand.instagram_url || '')
+      // 手動の再補完は強制実行（プロフィール/Maps/外部リンク/Places照合）
       const e = await enrichCandidate(process.env.GOOGLE_MAPS_API_KEY || null,
-        { shop, username, areaHint: cand.extracted_area || '', industry: cand.extracted_industry || '', havePhone: cand.phone_number || '', haveAddress: cand.address || '' },
-        { maxQueries: 3, perQuery: 5 })
-      // 既存値は保持し、空のところだけ補完
-      const phone = cand.phone_number || e.phone || null
-      const prefecture = cand.extracted_prefecture || e.prefecture || null
-      const city = cand.extracted_city || e.city || null
+        { shop, username, areaHint: cand.extracted_area || '', industry: cand.extracted_industry || '', havePhone: cand.phone_number || '', haveAddress: cand.address || '', instagramUrl: cand.instagram_url || '' },
+        { maxQueries: 3, perQuery: 5, fetchProfile: true })
+      // 補完で得た値を優先（再補完は最新情報で上書き）
+      const phone = e.phone || cand.phone_number || null
+      const prefecture = e.prefecture || cand.extracted_prefecture || null
+      const city = e.city || cand.extracted_city || null
       const area = [prefecture, city].filter(Boolean).join('') || cand.extracted_area || null
+      const address = e.address || cand.address || null
       // 補完で電話/住所/openingDateが取れたらHOT判定を再計算＋未達理由を更新
-      const rc = recomputeIwHot(cand, { phone, address: cand.address || e.address || null, prefecture, area, hasOpening: e.has_opening || cand.has_google_opening_date, placeMatched: !!e.place_id, confidence: cand.match_confidence ?? e.confidence ?? 0 })
+      const rc = recomputeIwHot(cand, { phone, address, prefecture, area, hasOpening: e.has_opening || cand.has_google_opening_date, placeMatched: !!e.place_id, confidence: e.confidence ?? cand.match_confidence ?? 0 })
       await admin.from('lead_candidates').update({
-        phone_number: phone, extracted_phone: phone, address: cand.address || e.address || null,
+        phone_number: phone, extracted_phone: phone, address,
         lead_temperature: rc.temperature, should_exclude_from_call_list: rc.temperature === 'EXCLUDED',
         hot_reject_reasons: rc.hr.hot_reject_reasons, hot_reject_summary: rc.hr.hot_reject_summary,
         hot_check_result: rc.hr.hot_check_result, hot_missing_requirements: rc.hr.hot_missing_requirements,
@@ -104,6 +106,8 @@ export default async function handler(req: any, res: any) {
         enriched_prefecture: e.prefecture || null, enriched_city: e.city || null, enriched_official_url: e.official || null,
         enriched_reservation_url: e.reservation || null, enriched_line_url: e.line || null, enriched_google_place_id: e.place_id || null,
         enrichment_reason: e.reason, enrichment_confidence: e.confidence, last_enriched_at: new Date().toISOString(),
+        enriched_phone_source: e.phone_source || null, enriched_address_source: e.address_source || null, enriched_google_maps_url: e.google_maps_url || null,
+        enrichment_profile_fetched: e.profile_fetched ?? null, enrichment_fail_reason: e.fail_reason || null,
         google_business_status: e.business_status || null, google_opening_date_raw: e.opening_raw || null,
         google_opening_date_year: e.opening_year ?? null, google_opening_date_month: e.opening_month ?? null, google_opening_date_day: e.opening_day ?? null,
         has_google_opening_date: e.has_opening, opening_date_confidence: e.opening_confidence ?? null,

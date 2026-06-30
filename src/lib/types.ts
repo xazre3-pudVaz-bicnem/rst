@@ -294,6 +294,12 @@ export interface LeadCandidate {
   enrichment_reason?: string | null
   enrichment_confidence?: number | null
   last_enriched_at?: string | null
+  // 取得元・信頼度
+  enriched_phone_source?: string | null
+  enriched_address_source?: string | null
+  enriched_google_maps_url?: string | null
+  enrichment_profile_fetched?: boolean | null
+  enrichment_fail_reason?: string | null
   // 地域メディア記事由来（元情報）
   source_article_excerpt?: string | null
   source_media_family?: string | null
