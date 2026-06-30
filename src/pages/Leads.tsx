@@ -279,7 +279,7 @@ export default function Leads() {
     const activeCount = probeSites.filter((x: any) => x.is_active).length
     if (activeCount === 0) { toast.error('有効な連番URL探索ソースがありません。先にソースを有効化してください。'); return }
     setProbing(true)
-    try { const json = await regionalApi({ probe: {}, settings: { aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay } })
+    try { const json = await regionalApi({ probe: {}, settings: { aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay, probeDailyCap: settings.probeDailyCap ?? 500 } })
       if (json?.ok && !json.noActiveSources) { setProbeResult(json); toast.success(`連番探索: valid${json.valid} / HOT-A${json.hotA}/HOT-B${json.hotB} / 投入${json.imported}`); loadProbeSites(); load() }
       else if (json?.noActiveSources) { toast.error('有効な連番URL探索ソースがありません。') }
       else toast.error(json?.error || '連番探索に失敗しました')
@@ -291,7 +291,7 @@ export default function Leads() {
   }
   async function probeSiteAction(id: string, o: { forwardCount?: number; backfillCount?: number; startId?: number; force?: boolean; probeMode?: 'safe' | 'advance' }) {
     setProbing(true)
-    try { const json = await regionalApi({ probeSite: { id, ...o }, settings: { aiInjectMode: settings.aiInjectMode } })
+    try { const json = await regionalApi({ probeSite: { id, ...o }, settings: { aiInjectMode: settings.aiInjectMode, probeDailyCap: settings.probeDailyCap ?? 500 } })
       if (json?.ok) { setProbeResult({ ...json, single: true }); toast.success(`探索: ${json.fromId}〜${json.toId} valid${json.valid}/invalid${json.invalid} 次回${json.nextId}`); loadProbeSites(); load() } else toast.error(json?.error || '探索に失敗しました')
     } finally { setProbing(false) }
   }
@@ -2045,6 +2045,7 @@ export default function Leads() {
               )}
               {/* 一括有効化＋状態フィルタ */}
               <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                <label className="flex items-center gap-1 text-muted-foreground">1日最大探索件数<input type="number" min={20} max={5000} value={settings.probeDailyCap ?? 500} onChange={(e) => saveSettings({ ...settings, probeDailyCap: Math.max(20, Math.min(5000, Number(e.target.value) || 500)) })} className="h-6 w-16 rounded border border-input bg-card px-1" /></label>
                 <span className="text-muted-foreground">有効 {probeSites.filter((x: any) => x.is_active && !x.review_flag).length} / 要確認 {probeSites.filter((x: any) => x.is_active && x.review_flag).length} / 無効 {probeSites.filter((x: any) => !x.is_active).length}</span>
                 <span className="ml-1">一括:</span>
                 <button onClick={() => bulkProbeActive('all', true)} className="rounded border border-green-500 px-2 py-0.5 text-green-700 hover:bg-green-50 dark:text-green-300 dark:hover:bg-green-500/10">全ソースを有効化</button>
@@ -2075,6 +2076,7 @@ export default function Leads() {
                   <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">invalid {probeResult.invalid ?? 0}</span>
                   {Number(probeResult.fetchFail ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">fetch失敗 {probeResult.fetchFail}（要再試行）</span>}
                   {Number(probeResult.parserFail ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">parser失敗 {probeResult.parserFail}（要確認）</span>}
+                  {Number(probeResult.probed ?? 0) === 0 && <span className="rounded bg-red-100 px-1.5 py-0.5 font-bold text-red-700 dark:bg-red-500/20 dark:text-red-300">探索0件: {String(probeResult.reason || (probeResult.debug?.siteResults?.[0]?.reason) || '1日の探索上限に到達の可能性（上の「1日最大探索件数」を増やしてください）')}</span>}
                   {Number(probeResult.alreadyImported ?? 0) > 0 && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">既存投入済 {probeResult.alreadyImported}</span>}
                   {(Number(probeResult.saveError ?? 0) > 0 || Number(probeResult.importFailed ?? 0) > 0) && <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">保存失敗 {(probeResult.saveError ?? 0)} / 投入失敗 {(probeResult.importFailed ?? 0)}</span>}
                   {Number(probeResult.mojibake ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">文字化け {probeResult.mojibake}</span>}

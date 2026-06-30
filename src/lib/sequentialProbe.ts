@@ -525,7 +525,7 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     const { data: sites } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').eq('is_active', true).limit(50)
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: probedTodayCount } = await admin.from('sequential_probe_results').select('id', { count: 'exact', head: true }).gte('checked_at', startToday.toISOString())
-    let dayRemaining = Math.max(0, 100 - (probedTodayCount || 0))
+    let dayRemaining = Math.max(0, (Number(s.probeDailyCap) || 500) - (probedTodayCount || 0))
     const { count: importedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
     const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)

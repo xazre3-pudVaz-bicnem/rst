@@ -111,7 +111,7 @@ export default async function handler(req: any, res: any) {
     const pr = await runSequentialProbe(admin, process.env.GOOGLE_MAPS_API_KEY || null, site, {
       userId: userData.user.id, runId: null, nowIso: new Date().toISOString(), mode: (body.settings?.aiInjectMode) || 'standard',
       forwardCount: Number(body.probeSite.forwardCount) || 20, backfillCount: Number(body.probeSite.backfillCount ?? 5), startIdOverride: body.probeSite.startId != null ? Number(body.probeSite.startId) : undefined, force: !!body.probeSite.force, probeMode: body.probeSite.probeMode === 'advance' ? 'advance' : 'safe',
-      dayRemaining: Math.max(0, 100 - (probedToday || 0)), autoImportPerRun: 50, autoImportPerDay: 200, importedToday: importedToday || 0, delayMs: 800,
+      dayRemaining: Math.max(0, (Number(body.settings?.probeDailyCap) || 500) - (probedToday || 0)), autoImportPerRun: 50, autoImportPerDay: 200, importedToday: importedToday || 0, delayMs: 800,
     })
     return res.status(200).json({ ok: true, ...pr })
   }

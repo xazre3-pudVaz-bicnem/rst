@@ -337,6 +337,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   regionalMaxSites: 3,
   regionalBatchSites: 8,
   horbyMaxDetails: 2,
+  probeDailyCap: 500,
   regionalMaxArticles: 5,
   regionalPeriodDays: 30,
   regionalEnrichEnabled: true,

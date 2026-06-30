@@ -438,6 +438,7 @@ export interface LeadImportSettings {
   regionalMaxSites: number     // 1日の巡回サイト数（既定3）
   regionalBatchSites: number   // 全サイト巡回の1バッチあたりサイト数（既定8）
   horbyMaxDetails: number      // HORBY等で1回に詳細クリック取得するカード数（既定2・60s制限）
+  probeDailyCap: number        // 連番URL探索の1日最大probe件数（既定500）
   regionalMaxArticles: number  // 1サイトの最大記事数（既定5）
   regionalPeriodDays: number   // 記事公開の対象期間（既定30日）
   regionalEnrichEnabled: boolean   // 地域メディアの外部情報補完ON/OFF
