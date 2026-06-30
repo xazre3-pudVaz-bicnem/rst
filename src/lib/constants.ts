@@ -332,6 +332,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   igMaxHashtagsPerDay: 5,
   regionalEnabled: true,
   regionalMaxSites: 3,
+  regionalBatchSites: 8,
   regionalMaxArticles: 5,
   regionalPeriodDays: 30,
   regionalEnrichEnabled: true,

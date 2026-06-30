@@ -433,6 +433,7 @@ export interface LeadImportSettings {
   // 地域メディア巡回
   regionalEnabled: boolean     // 地域メディア取得ON/OFF
   regionalMaxSites: number     // 1日の巡回サイト数（既定3）
+  regionalBatchSites: number   // 全サイト巡回の1バッチあたりサイト数（既定8）
   regionalMaxArticles: number  // 1サイトの最大記事数（既定5）
   regionalPeriodDays: number   // 記事公開の対象期間（既定30日）
   regionalEnrichEnabled: boolean   // 地域メディアの外部情報補完ON/OFF

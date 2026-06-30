@@ -184,7 +184,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const s = { ...getDefaultRegionalSettings(), ...(rawSettings || {}) }
   const recentDays = Math.max(1, Number(s.saveDays) || 3)
   const recentMs = recentDays * 86400000
-  const maxSites = Math.max(1, Number(s.maxSitesPerDay) || 3)
+  // 実行モード: test=3件 / all=有効全件（バッチ分割で完走）/ priority=信頼度順 / selected=指定のみ
+  const runMode: string = ['test', 'all', 'priority', 'selected'].includes(s.runMode) ? s.runMode : 'all'
+  const batchSites = Math.max(1, Number(s.batchSites) || 8)  // 1バッチのサイト数（Vercelタイムアウト対策）
+  const selectedSiteIds: string[] = Array.isArray(s.selectedSiteIds) ? s.selectedSiteIds.filter(Boolean) : []
+  const excludeSiteIds: string[] = Array.isArray(s.excludeSiteIds) ? s.excludeSiteIds.filter(Boolean) : []
+  const maxSites = runMode === 'test' ? 3 : runMode === 'selected' ? Math.max(1, selectedSiteIds.length || 50) : batchSites
   const maxArticles = Math.max(1, Number(s.maxArticlesPerSite) || 5)
   const dailyCap = Math.max(1, Number(s.dailyCap) || 30)
   const delay = Math.max(200, Number(s.fetchDelayMs) || 800)
@@ -213,9 +218,17 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const runId: string | null = runRow?.id ?? null
 
   try {
-    const { data: sites } = await admin.from('source_sites').select('*').eq('is_active', true).neq('source_type', 'sequential_id_probe')
-      .order('last_crawled_at', { ascending: true, nullsFirst: true }).limit(maxSites)
+    // 有効サイト総数（進捗表示用・連番探索は別タブなので除外）
+    const { count: totalActiveSites } = await admin.from('source_sites').select('id', { count: 'exact', head: true }).eq('is_active', true).neq('source_type', 'sequential_id_probe')
+    let sq = admin.from('source_sites').select('*').eq('is_active', true).neq('source_type', 'sequential_id_probe')
+    if (runMode === 'selected' && selectedSiteIds.length) sq = sq.in('id', selectedSiteIds)
+    if (excludeSiteIds.length) sq = sq.not('id', 'in', `(${excludeSiteIds.join(',')})`)  // 全サイト巡回: 既に処理済みを除外して次バッチへ
+    // 優先順位: 信頼度が高い → 最終巡回が古い（最終的に全件を巡回。順番付けのみ）
+    if (runMode === 'priority' || runMode === 'all') sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
+    else sq = sq.order('last_crawled_at', { ascending: true, nullsFirst: true })
+    const { data: sites } = await sq.limit(maxSites)
     const list = sites || []
+    const failedSites: { id: string; name: string; reason: string }[] = []
     const nowIso = new Date().toISOString()
     const now = Date.now()
 
@@ -286,6 +299,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         counts.error++; if (idx.timedOut) { counts.timeouts++; diag.timeouts++ }
         diag.reason = idx.timedOut ? `リスト取得がタイムアウト（外部サイト応答遅延）` : `リスト取得失敗（${idx.error}）`
         debug.siteResults.push(diag)
+        failedSites.push({ id: site.id, name: site.name, reason: idx.timedOut ? 'timeout' : `fetch失敗(${idx.error || idx.status})` })
         await admin.from('source_sites').update({ last_crawled_at: nowIso, last_crawl_result: (idx.timedOut ? 'timeout ' : '取得失敗 ') + (idx.error || '') }).eq('id', site.id)
         continue
       }
@@ -817,7 +831,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       imported_count: counts.imported, error_count: counts.error, error_message: errorMessage || null,
     }).eq('id', runId)
 
-    return { ok: true, runId, ...counts, errorCount: counts.error, error: errorMessage || null, debug }
+    return {
+      ok: true, runId, ...counts, errorCount: counts.error, error: errorMessage || null,
+      runMode, totalActiveSites: totalActiveSites || 0, processedSiteCount: list.length,
+      processedSiteIds: list.map((x: any) => x.id), failedSites, batchSites,
+      debug,
+    }
   } catch (e: any) {
     const msg = String(e?.message || e)
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg }).eq('id', runId)

@@ -93,6 +93,8 @@ export default function Leads() {
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
   const [rmResult, setRmResult] = useState<any>(null)
+  const [rmProgress, setRmProgress] = useState<any>(null)  // 全サイト巡回の進捗
+  const [rmFailedSites, setRmFailedSites] = useState<any[]>([])  // 失敗サイト（再巡回用）
   const [discovering, setDiscovering] = useState(false)
   const [discoveryResult, setDiscoveryResult] = useState<any>(null)
   const [siteCandidates, setSiteCandidates] = useState<any[]>([])
@@ -171,34 +173,78 @@ export default function Leads() {
   }, [])
   useEffect(() => { checkRmStatus() }, [checkRmStatus])
 
-  async function runRegional() {
+  async function callRegional(extra: any) {
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    if (!token) { toast.error('ログインが必要です'); return null }
+    const res = await fetch('/api/leads/regional-media/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        settings: {
+          regionalEnabled: settings.regionalEnabled,
+          maxArticlesPerSite: settings.regionalMaxArticles, periodDays: settings.regionalPeriodDays, dailyCap: settings.dailyCap,
+          regionalEnrichEnabled: settings.regionalEnrichEnabled, regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
+          regionalEnrichPerQuery: settings.regionalEnrichPerQuery, regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
+          aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
+          batchSites: settings.regionalBatchSites || 8,
+          ...extra,
+        },
+      }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { toast.error(json.error || '地域メディア取得に失敗しました'); return { error: json.error } }
+    return json
+  }
+
+  // 単発（テスト/選択/前回継続）
+  async function runRegional(mode: 'test' | 'selected' | 'all-once' = 'test', selectedSiteIds?: string[]) {
     if (!settings.regionalEnabled) { toast.error('設定で地域メディア取得がOFFです'); return }
-    setRmRunning(true); setRmResult(null)
+    setRmRunning(true); setRmResult(null); setRmProgress(null)
     try {
-      const { data: sess } = await supabase.auth.getSession()
-      const token = sess.session?.access_token
-      if (!token) { toast.error('ログインが必要です'); return }
-      const res = await fetch('/api/leads/regional-media/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          settings: {
-            regionalEnabled: settings.regionalEnabled, maxSitesPerDay: settings.regionalMaxSites,
-            maxArticlesPerSite: settings.regionalMaxArticles, periodDays: settings.regionalPeriodDays, dailyCap: settings.dailyCap,
-            regionalEnrichEnabled: settings.regionalEnrichEnabled, regionalEnrichMaxQueries: settings.regionalEnrichMaxQueries,
-            regionalEnrichPerQuery: settings.regionalEnrichPerQuery, regionalEnrichDailyCap: settings.regionalEnrichDailyCap,
-            aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
-          },
-        }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) { toast.error(json.error || '地域メディア取得に失敗しました'); setRmResult({ error: json.error }); return }
-      setRmResult(json)
-      toast.success(`地域メディア完了: 記事${json.newArticles ?? 0} / HOT${json.hot ?? 0} / 投入${json.imported ?? 0}`)
+      const runMode = mode === 'selected' ? 'selected' : mode === 'test' ? 'test' : 'all'
+      const json = await callRegional({ runMode, selectedSiteIds: selectedSiteIds || [] })
+      if (!json || json.error) { setRmResult({ error: json?.error }); return }
+      setRmResult(json); setRmFailedSites(json.failedSites || [])
+      toast.success(`完了: サイト${json.processedSiteCount ?? 0} / HOT${json.hot ?? 0} / 投入${json.imported ?? 0}`)
       load(); loadRuns()
-    } catch (e) {
-      toast.error('実行に失敗しました: ' + jpError(e))
-    } finally { setRmRunning(false) }
+    } catch (e) { toast.error('実行に失敗しました: ' + jpError(e)) } finally { setRmRunning(false) }
+  }
+
+  // 全サイト巡回: 有効サイトをバッチ分割で最後まで自動継続
+  async function runRegionalAll(priority = false) {
+    if (!settings.regionalEnabled) { toast.error('設定で地域メディア取得がOFFです'); return }
+    setRmRunning(true); setRmResult(null); setRmFailedSites([])
+    const processed = new Set<string>()
+    const failed: any[] = []
+    const agg: any = { hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, newArticles: 0, candidates: 0, error: 0 }
+    let total = 0, batches = 0, success = 0
+    setRmProgress({ running: true, total: 0, processed: 0, success: 0, failed: 0, ...agg })
+    try {
+      while (batches < 200) {  // 安全上限（最大200バッチ）
+        batches++
+        const json = await callRegional({ runMode: priority ? 'priority' : 'all', excludeSiteIds: Array.from(processed) })
+        if (!json || json.error) { toast.error(json?.error || 'バッチ実行に失敗'); break }
+        total = json.totalActiveSites || total
+        for (const id of (json.processedSiteIds || [])) processed.add(id)
+        for (const f of (json.failedSites || [])) { if (!failed.find((x) => x.id === f.id)) failed.push(f) }
+        success = processed.size - failed.length
+        for (const k of Object.keys(agg)) agg[k] += Number(json[k] || 0)
+        setRmProgress({ running: true, total, processed: processed.size, success, failed: failed.length, remaining: Math.max(0, total - processed.size), ...agg })
+        load()
+        if ((json.processedSiteCount || 0) === 0 || processed.size >= total) break
+      }
+      setRmFailedSites(failed)
+      setRmProgress({ running: false, total, processed: processed.size, success, failed: failed.length, remaining: Math.max(0, total - processed.size), ...agg })
+      setRmResult({ ...agg, processedSiteCount: processed.size, totalActiveSites: total, failedSites: failed, allDone: true })
+      toast.success(`全サイト巡回完了: ${processed.size}/${total}サイト / HOT${agg.hot} / 投入${agg.imported}`)
+      load(); loadRuns()
+    } catch (e) { toast.error('実行に失敗しました: ' + jpError(e)) } finally { setRmRunning(false) }
+  }
+  // 失敗サイトだけ再巡回
+  async function runRegionalFailed() {
+    const ids = rmFailedSites.map((f) => f.id).filter(Boolean)
+    if (!ids.length) { toast.info('再巡回する失敗サイトがありません'); return }
+    await runRegional('selected', ids)
   }
 
   // 巡回サイト自動発見
@@ -1136,8 +1182,12 @@ export default function Leads() {
                     地域メディア取得を有効化
                   </label>
                   <div className="space-y-1">
-                    <Label>1日の巡回サイト数</Label>
+                    <Label>テスト巡回のサイト数</Label>
                     <Input type="number" min={1} value={settings.regionalMaxSites} onChange={(e) => saveSettings({ ...settings, regionalMaxSites: Math.max(1, Number(e.target.value) || 3) })} className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>全サイト巡回の1バッチ数（Vercel対策）</Label>
+                    <Input type="number" min={1} max={20} value={settings.regionalBatchSites ?? 8} onChange={(e) => saveSettings({ ...settings, regionalBatchSites: Math.max(1, Math.min(20, Number(e.target.value) || 8)) })} className="h-8" />
                   </div>
                   <div className="space-y-1">
                     <Label>1サイト最大記事数</Label>
@@ -1590,12 +1640,34 @@ export default function Leads() {
                 )}
                 <button onClick={checkRmStatus} className="text-[10px] text-primary hover:underline">再確認</button>
               </div>
-              <Button size="sm" onClick={runRegional} disabled={rmRunning || !settings.regionalEnabled}>
-                <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '地域メディア巡回・実行'}
+              <Button size="sm" onClick={() => runRegionalAll(false)} disabled={rmRunning || !settings.regionalEnabled}>
+                <Store className="h-3.5 w-3.5" />{rmRunning ? '巡回中...' : '全サイト巡回'}
               </Button>
+              <Button size="sm" variant="outline" onClick={() => runRegionalAll(true)} disabled={rmRunning || !settings.regionalEnabled}>優先サイト巡回</Button>
+              <Button size="sm" variant="outline" onClick={() => runRegional('test')} disabled={rmRunning || !settings.regionalEnabled}>テスト巡回（3件）</Button>
+              <Button size="sm" variant="outline" onClick={runRegionalFailed} disabled={rmRunning || rmFailedSites.length === 0}>失敗サイトだけ再巡回{rmFailedSites.length ? `（${rmFailedSites.length}）` : ''}</Button>
               <Button size="sm" variant="outline" onClick={runDiscovery} disabled={discovering}>{discovering ? '発見中...' : '巡回サイトを自動発見'}</Button>
               <Button size="sm" variant="outline" onClick={loadCandidates}>発見候補を確認</Button>
             </div>
+            {/* 全サイト巡回 進捗 */}
+            {rmProgress && (
+              <div className="mt-2 rounded-lg border bg-card p-2 text-[11px]">
+                <div className="mb-1 font-semibold">{rmProgress.running ? `全サイト巡回中：${rmProgress.processed} / ${rmProgress.total}サイト完了` : `全サイト巡回完了：${rmProgress.processed} / ${rmProgress.total}サイト`}</div>
+                <div className="mb-1 h-1.5 w-full overflow-hidden rounded bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${rmProgress.total ? Math.min(100, Math.round((rmProgress.processed / rmProgress.total) * 100)) : 0}%` }} /></div>
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">成功 {rmProgress.success}</span>
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">失敗 {rmProgress.failed}</span>
+                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">HOT {rmProgress.hot}（A{rmProgress.hotA}/B{rmProgress.hotB}）</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {rmProgress.hold}</span>
+                  <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {rmProgress.excluded}</span>
+                  <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">案件投入 {rmProgress.imported}</span>
+                  {rmProgress.running && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">残り {rmProgress.remaining ?? 0}サイト</span>}
+                </div>
+                {rmFailedSites.length > 0 && !rmProgress.running && (
+                  <div className="mt-1 text-[10px] text-muted-foreground">失敗: {rmFailedSites.map((f) => `${f.name}(${f.reason})`).join(' / ').slice(0, 200)}</div>
+                )}
+              </div>
+            )}
             {/* 巡回サイト自動発見 結果＋候補 */}
             {(discoveryResult || siteCandidates.length > 0) && (
               <div className="mt-2 rounded-lg border bg-card p-2 text-[10px]">
