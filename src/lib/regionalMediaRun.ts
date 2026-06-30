@@ -13,6 +13,7 @@ import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirecto
 import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
+import { detectBigOrPublic } from './targetFilter.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -880,16 +881,19 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         // 新店根拠（店名の有無に依存させない・新方針）
         const articleNew = recentOk || strongOpening || !!ex.open_date
         const chA = detectChain(shopName || ex.shop_name || '', bestTitle || '')
+        const bigA = detectBigOrPublic(`${shopName || ex.shop_name || ''} ${address}`)
         const sc = scoreCandidate({
           source: 'regional_media', isJapan: japanOk, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone),
           hasArea: haveArea, hasOpeningDate: strongOpening || !!ex.open_date, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew: false, regionalNew: articleNew, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
-          isChain: !!ex.is_chain || chA.definite, chainSuspect: chA.suspect && !chA.definite, isOrg: false, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
+          isChain: !!ex.is_chain || chA.definite || bigA.exclude, chainSuspect: chA.suspect && !chA.definite, isOrg: bigA.exclude, isEventRecruit: !!ex.is_excluded, isForeign, isDup: false, reviewMany: false,
         }, mode)
         const tt = tierToTemperature(sc.tier)
         let hotTier = tt.hot_tier
         temperature = tt.temperature
         reason = sc.reason
+        // 大手/公共/大型施設/道の駅/産直/JA等は営業対象外（個人事業主・小規模店ではない）→ EXCLUDED
+        if (bigA.exclude) { temperature = 'EXCLUDED'; hotTier = null; reason = `${bigA.reason}${reason}` }
         // ===== 新方針のHOT判定 =====
         const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
         const hasAreaOk = !!haveArea

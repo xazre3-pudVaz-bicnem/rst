@@ -10,6 +10,7 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
+import { detectBigOrPublic } from './targetFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -717,16 +718,19 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: Instagram投稿の新店根拠＋電話/住所で営業可能ならHOT
         const igNew = !!(j.newness_type && j.newness_type !== 'unknown')
         const ch = detectChain(j.shop_name || shop || '', `${r.title} ${r.snippet}`)
+        // 道の駅/産直/JA/公共/大型施設/大手 は営業対象外（ターゲット=個人事業主・小規模店）。プロフィール名/本文/タイトルから検出
+        const bigIW = detectBigOrPublic(`${enrich?.profile_name || ''} ${j.shop_name || shop || ''} ${addressVal || ''}`)
         const sc = scoreCandidate({
           source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone),
           hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew, regionalNew: false, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
-          isChain: ch.definite, chainSuspect: ch.suspect && !ch.definite, isOrg: false, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
+          isChain: ch.definite || bigIW.exclude, chainSuspect: ch.suspect && !ch.definite, isOrg: bigIW.exclude, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,
           allowNoPhone: !!s.iwAllowNoPhone,
         }, iwMode)
         const tt = tierToTemperature(sc.tier)
         let temperature: string = tt.temperature
-        const hotTier = tt.hot_tier
+        let hotTier = tt.hot_tier
+        if (bigIW.exclude) { temperature = 'EXCLUDED'; hotTier = null }  // 道の駅/産直/大型施設/公共/大手 → EXCLUDED
         // 設定: 電話必須/Places必須が有効なら未充足はHOLDに戻す
         if (temperature === 'HOT' && ((s.iwRequirePhone && !finalPhone) || (s.iwPlacesRequired && !placeMatched))) temperature = 'HOLD'
         if (temperature === 'HOT') { counts.hot++; q.hot++; if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }
@@ -736,10 +740,12 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         // 店名は Instagramプロフィール表示名を最優先（投稿タイトル『プレオープン始まります！！』等を店名にしない）
         const POST_TITLE_RE = /(プレ|グランド|ニュー)?オープン(しました|します|予定|のお知らせ|始まり)|開店|開業|開院|新規オープン|本日|お知らせ|キャンペーン|セール|！|!/
         const titleish = (s: string) => !s || POST_TITLE_RE.test(s) || s.length > 28
+        // 店名: プロフィール表示名 > AI抽出店名 > ヒューリスティック店名。取れなければ『店名未確定』（地名プレースホルダは使わない）
         const name = (enrich?.profile_name && !titleish(enrich.profile_name)) ? enrich.profile_name
           : (j.shop_name && !titleish(j.shop_name)) ? j.shop_name
           : (shop && !titleish(shop)) ? shop
-          : enrich?.profile_name || (usernameFromUrl(r.url) || (area ? `${area}の新店候補` : 'Instagram新店候補'))
+          : (enrich?.profile_name && enrich.profile_name.length <= 28) ? enrich.profile_name
+          : '店名未確定'
         const sourcePostTitle = (r.title || '').slice(0, 200)
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''
         const reason = foreignFinal

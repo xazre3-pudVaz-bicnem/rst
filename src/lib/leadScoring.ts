@@ -6,6 +6,7 @@ import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japan
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { scoreCandidate, tierToTemperature } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
+import { detectBigOrPublic } from './targetFilter.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -134,11 +135,13 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const japanConfirmed = !isForeign && (addrIsJapan || hasJapanPhone)
 
   // 法人/団体/研究会系（営業対象の新店舗ではない）。本当に新規開業で電話＋住所＋openingDateがあればHOLDで残す
-  const orgLike = isOrgNonStore(name)
+  // ＋ 大手/公共/大型施設/道の駅/産直/JA等（ターゲット=個人事業主・小規模店ではない）も org扱いで除外
+  const big = detectBigOrPublic(`${name} ${address}`)
+  const orgLike = isOrgNonStore(name) || big.exclude
 
   // 除外系の検出（大手チェーン/グループ会社を強化）
   const chain = detectChain(name, hay)
-  const isChain = includesAny(name, CHAIN_NAMES) || chain.definite
+  const isChain = includesAny(name, CHAIN_NAMES) || chain.definite || big.exclude
   const chainSuspect = chain.suspect && !chain.definite
   const inMall = includesAny(hay, MALL_KEYWORDS)
   const inStation = includesAny(hay, STATION_KEYWORDS)

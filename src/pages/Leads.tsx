@@ -330,6 +330,13 @@ export default function Leads() {
     try { const json = await regionalApi({ recorrectNames: { limit: 1000 } }); if (json?.ok) { toast.success(`再補正: ${json.scanned}件中 修正${json.fixed} / 店名未確定HOT-B昇格${json.promotedHotB ?? 0} / HOLD${json.held}`); load() } else toast.error(json?.error || '再補正に失敗しました') }
     finally { setRecorrecting(false) }
   }
+  const [excludingBig, setExcludingBig] = useState(false)
+  async function excludeBigPublic() {
+    if (!window.confirm('道の駅・産直・JA・大型商業施設・公共施設・大手チェーン等を一覧から除外します（ターゲット=個人事業主・5人以下の小規模店）。実行しますか？')) return
+    setExcludingBig(true)
+    try { const json = await regionalApi({ excludeBigPublic: { limit: 3000 } }); if (json?.ok) { toast.success(`ターゲット絞り込み: ${json.scanned}件中 ${json.excluded}件を除外（大手/公共/大型施設）`); load() } else toast.error(json?.error || '除外に失敗しました') }
+    finally { setExcludingBig(false) }
+  }
   const [rescuing, setRescuing] = useState(false)
   async function rescueHolds() {
     if (!window.confirm('電話番号が無いHOLD候補に対し、Google Places・公式サイト・検索で電話番号を補完し、取れたらHOTへ昇格します（架電リストを増やす）。地域が矛盾する電話は採用しません。実行しますか？')) return
@@ -2406,6 +2413,7 @@ export default function Leads() {
             <button onClick={recorrectNames} disabled={recorrecting} className="ml-auto rounded border border-amber-500 px-2 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-500/10">{recorrecting ? '再補正中...' : '既存の店名を再補正（サイト名/カテゴリをHOLDへ）'}</button>
             <button onClick={recorrectProbe} disabled={recorrecting} className="rounded border border-indigo-500 px-2 py-0.5 text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-500/10">{recorrecting ? '再取得中...' : '連番候補を再取得（食べログ正式店名へ）'}</button>
             <button onClick={rescueHolds} disabled={rescuing} className="rounded border border-rose-500 px-2 py-0.5 font-bold text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{rescuing ? '救済中...' : '🔥HOLD救済（電話補完→HOT昇格）'}</button>
+            <button onClick={excludeBigPublic} disabled={excludingBig} className="rounded border border-zinc-500 px-2 py-0.5 text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-700/30">{excludingBig ? '除外中...' : '大手/公共/道の駅を除外（個人事業主に絞る）'}</button>
           </div>
 
           {/* テーブル */}

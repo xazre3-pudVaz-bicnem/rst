@@ -7,6 +7,7 @@
 import { isForeignAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, type HotTier, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
+import { detectBigOrPublic } from './targetFilter.js'
 
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
@@ -129,34 +130,49 @@ function pickUrl(html: string, re: RegExp): string {
 /** 店舗詳細ページHTMLから店名・電話・住所・業種・OPEN日などを抽出。 */
 export function extractDirectoryShopInfo(html: string, fallbackTitle = ''): DirectoryShopInfo {
   const body = stripTags(html)
-  // 店名: og:title → <title> → h1（サイト名/区切りは除去）
-  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)
-  const tt = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
-  let shop_name = stripTags(og?.[1] || h1?.[1] || tt?.[1] || fallbackTitle || '')
-  shop_name = shop_name.split(/[|｜\/／–—\-]|＜|≪|｜/)[0].trim().replace(/（[^）]*OPEN[^）]*）/i, (s) => s).slice(0, 40)
-  if (!shop_name) shop_name = stripTags(fallbackTitle).slice(0, 40)
-
-  // 電話: TEL/電話 ラベル優先 → 本文中の日本の番号
-  let phone = ''
-  const telLabel = body.match(/(?:TEL|ＴＥＬ|電話|でんわ|お問い合わせ)[^\d+]{0,6}(0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4})/i)
-  if (telLabel) phone = telLabel[1]
-  if (!phone) {
-    for (const m of body.matchAll(/0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}/g)) {
-      if (isJapanPhone(m[0])) { phone = m[0]; break }
+  const PREF = '北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県'
+  // 店名: h2(店名表示) → og:title/h1から『地名のカテゴリ』パンくず＆サイト名を除去した実店名。ナビ/カテゴリは採用しない
+  const og = stripTags(html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i)?.[1] || '')
+  const h1 = stripTags(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '')
+  const h2 = stripTags(html.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || '')
+  const tt = stripTags(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '')
+  // パンくずカテゴリ判定（例: 千葉市中央区のレジャー・観光スポット / 船橋市のグルメ）
+  const isCrumb = (s: string) => /^[^\s]{1,12}[都道府県市区町村][^\s]{0,10}の(グルメ|カフェ|レジャー|観光|スポット|公共施設|施設|美容|サロン|ショップ|お店|ニュース|エンタメ|ホテル|宿|温泉|病院|クリニック|教室|サービス|ショッピング|買い物)/.test(s.trim())
+  const cleanCand = (raw: string): string => {
+    let s = String(raw || '').replace(/\s*[|｜].*$/, '').trim()  // サイト名(| 以降)除去
+    if (s.includes(' - ') || s.includes(' – ') || s.includes('｜')) {
+      // 「カテゴリ - 店名」型: パンくずでないセグメントの最後を店名に
+      const parts = s.split(/\s*[-–]\s*/).map((x) => x.trim()).filter(Boolean)
+      const nonCrumb = parts.filter((p) => !isCrumb(p))
+      s = (nonCrumb.length ? nonCrumb[nonCrumb.length - 1] : parts[parts.length - 1]) || s
     }
+    if (isCrumb(s)) s = s.replace(/^[^\s]{1,12}[都道府県市区町村][^\s]{0,10}の[^\s]{1,16}?(スポット|グルメ|カフェ|公共施設|施設|美容室|サロン|お店|ニュース|エンタメ|ショップ|教室|サービス)\s*/, '').trim()
+    return s.replace(/（[^）]*）\s*$/, '').trim().slice(0, 50)
   }
+  // 優先: h2（実店名のことが多い・パンくびでなければ）→ og:title整形 → h1整形 → title → fallback
+  let shop_name = ''
+  for (const cand of [h2, cleanCand(og), cleanCand(h1), cleanCand(tt), stripTags(fallbackTitle)]) {
+    const s = (cand === h2 ? h2 : cand).trim()
+    if (s && !isCrumb(s) && s.length >= 2 && !/^(ニュース|メニュー|HOME|アクセス|クチコミ|お気に入り|TOP)/.test(s)) { shop_name = s.slice(0, 50); break }
+  }
+  if (!shop_name) shop_name = cleanCand(og) || cleanCand(h1) || stripTags(fallbackTitle).slice(0, 40)
+
+  // 電話: tel:リンク → TEL/電話ラベル → 本文中の日本の番号
+  let phone = (html.match(/href=["']tel:(\+?[\d-]{9,15})["']/i)?.[1] || '').replace(/^\+81/, '0')
+  if (!phone) { const telLabel = body.match(/(?:TEL|ＴＥＬ|電話|でんわ|お問い合わせ)[^\d+]{0,6}(0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4})/i); if (telLabel) phone = telLabel[1] }
+  if (!phone) { for (const m of body.matchAll(/0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}/g)) { if (isJapanPhone(m[0])) { phone = m[0]; break } } }
   phone = phone.trim()
 
-  // 住所: 〒/都道府県/市区町村+番地（彩北なびは県なし「深谷市上柴町東5-1-23」もある）
+  // 住所: 都道府県アンカー最優先（『アクセス』ラベルはナビ誤爆するので使わない）。住所/所在地ラベル＋都道府県 → 都道府県アンカー → 市区町村+番地
   let address = ''
-  const addrLabel = body.match(/(?:住所|所在地|アクセス)[^\S\n]{0,4}[:：]?\s*(〒?\d{0,3}-?\d{0,4}\s*[^\n。]{4,50})/)
-  const addr1 = body.match(/(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\n。、）)]{2,40}\d/)
+  const labelPref = body.match(new RegExp(`(?:住所|所在地)[:：\\s]{0,4}(〒?\\s*\\d{0,3}-?\\d{0,4}\\s*)?((?:${PREF})[^\\n。、）)]{3,50})`))
+  const addrPref = body.match(new RegExp(`(?:${PREF})[一-龥ぁ-んァ-ヶ0-9０-９]{2,30}[-－0-9０-９]{1,12}`))
   const addr2 = body.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][一-龥ぁ-んァ-ヶ0-9０-９]{1,20}[-－0-9０-９]{1,10}/)
-  if (addrLabel) address = addrLabel[1].trim()
-  else if (addr1) address = addr1[0].trim()
-  else if (addr2) address = addr2[0].trim()
-  address = address.replace(/\s+/g, '').slice(0, 60)
+  if (labelPref) address = ((labelPref[1] || '') + labelPref[2])
+  else if (addrPref) address = addrPref[0]
+  else if (addr2) address = addr2[0]
+  // 末尾に続くナビ/付帯情報を切る（アクセス/営業時間/交通/地図/TEL等）
+  address = address.replace(/(アクセス|営業時間|交通|地図|ＭＡＰ|MAP|TEL|ＴＥＬ|電話|定休|駐車|お問い?合わせ|ホームページ|公式|クチコミ|ニュース|メニュー).*$/i, '').replace(/\s+/g, '').slice(0, 60)
 
   const industry = INDUSTRY_MAP.find((m) => m.re.test(body))?.name || ''
   const hours = (body.match(/(?:営業時間|営業)[:：]?\s*([0-9０-９:：~〜\-\s]{4,30})/)?.[1] || '').trim().slice(0, 40)
@@ -189,12 +205,16 @@ export function classifyDirectoryCandidate(info: { shop_name: string; phone: str
   const hasPhone = !!info.phone && isJapanPhone(info.phone)
   const hasAddr = !!info.address
   const hasOpen = info.open.confidence === 'high' || info.open.confidence === 'mid'
+  // 大手/公共/大型施設/道の駅/産直/JA等は営業対象外（ターゲット=個人事業主・小規模店）
+  const big = detectBigOrPublic(`${info.shop_name} ${info.address}`)
   const sc = scoreCandidate({
     source: 'regional_media', isJapan: info.isJapan, hasShopName: !!info.shop_name, hasPhone, hasArea: hasAddr,
     hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
     placesMatched: false, hasOfficial: false,
-    isChain, chainSuspect: ch.suspect && !ch.definite, isOrg: isOrgNonStore(info.shop_name), isEventRecruit: false, isForeign, isDup: false, reviewMany: false,
+    isChain, chainSuspect: ch.suspect && !ch.definite, isOrg: isOrgNonStore(info.shop_name) || big.exclude, isEventRecruit: false, isForeign, isDup: false, reviewMany: false,
   }, mode)
-  const { temperature, hot_tier } = tierToTemperature(sc.tier)
-  return { temperature, hot_tier, tier: sc.tier, score: sc.score, reason: sc.reason, priority: sc.priority, isChain, isForeign }
+  let { temperature, hot_tier } = tierToTemperature(sc.tier)
+  let reason = sc.reason
+  if (big.exclude) { temperature = 'EXCLUDED'; hot_tier = null; reason = `${big.reason}${reason}` }
+  return { temperature, hot_tier, tier: sc.tier, score: sc.score, reason, priority: sc.priority, isChain: isChain || big.exclude, isForeign }
 }

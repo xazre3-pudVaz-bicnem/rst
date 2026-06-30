@@ -8,6 +8,7 @@
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
+import { detectBigOrPublic } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -403,13 +404,15 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const excludedFacility = facilityish && !(phone && isJapanPhone(phone))
 
     const chP = detectChain(name)
+    const bigP = detectBigOrPublic(`${name} ${address} ${category}`)
     const sc = scoreCandidate({
       source: 'regional_media', isJapan, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
       placesMatched: false, hasOfficial: !!official,
-      isChain: chP.definite, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
+      isChain: chP.definite || bigP.exclude, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility || bigP.exclude, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
     }, opts.mode)
     let { temperature, hot_tier } = tierToTemperature(sc.tier)
+    if (bigP.exclude) { temperature = 'EXCLUDED'; hot_tier = null }  // 道の駅/産直/大型施設/公共/大手 は営業対象外
     // 新方針: HOTは電話＋住所が必須。店名未確定でも電話＋住所＋新規掲載根拠ありなら HOT-B（営業前に店名確認）
     let recommendedStatus: string = sc.tier
     const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
