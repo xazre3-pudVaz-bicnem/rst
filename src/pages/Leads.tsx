@@ -157,6 +157,13 @@ export default function Leads() {
   const [tShown, setTShown] = useState(60)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [qualityRunning, setQualityRunning] = useState(false)
+  // ===== 自動巡回 =====
+  const [crawlLast, setCrawlLast] = useState<any>(null)
+  const [crawlItems, setCrawlItems] = useState<any[]>([])
+  const [crawlToday, setCrawlToday] = useState<any>({ runs: 0, hotA: 0, hotB: 0, hold: 0, inserted: 0, errors: 0 })
+  const [crawlFailedSites, setCrawlFailedSites] = useState<any[]>([])
+  const [crawlBusy, setCrawlBusy] = useState<string>('')
+  const [autoCrawlOn, setAutoCrawlOn] = useState<boolean>(true)
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -731,7 +738,14 @@ export default function Leads() {
         iwEnrichEnabled: settings.iwEnrichEnabled, iwEnrichMaxQueries: settings.iwEnrichMaxQueries, iwEnrichPerQuery: settings.iwEnrichPerQuery, iwEnrichDailyCap: settings.iwEnrichDailyCap,
         dailyCap: settings.dailyCap,
       })
-      toast.success('自動取得設定を保存しました（毎朝のCron: Places＋地域メディア / Instagram Web に反映）')
+      await AppConfigApi.set('sequential_auto', {
+        sequentialEnabled: (settings as any).sequentialEnabled !== false,
+        probeDailyCap: settings.probeDailyCap ?? 500,
+        autoImportPerRun: settings.autoImportPerRun ?? 50,
+        autoImportPerDay: settings.autoImportPerDay ?? 200,
+        aiInjectMode: settings.aiInjectMode,
+      })
+      toast.success('自動取得設定を保存しました（自動巡回Cron: Places/地域メディア/Instagram Web/連番URL に反映）')
     } catch (e) {
       toast.error('保存に失敗しました: ' + jpError(e))
     } finally {
@@ -877,6 +891,50 @@ export default function Leads() {
       else toast.error(json?.error || '再計算に失敗しました')
     } finally { setQualityRunning(false) }
   }
+  // ===== 自動巡回: 状態読み込み・実行・ON/OFF =====
+  const loadAutoCrawl = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    try {
+      const { data: runs } = await supabase.from('auto_crawl_runs').select('*').order('started_at', { ascending: false }).limit(30)
+      const last = runs && runs[0] ? runs[0] : null
+      setCrawlLast(last)
+      if (last?.id) { const { data: items } = await supabase.from('auto_crawl_run_items').select('*').eq('run_id', last.id); setCrawlItems(items || []) }
+      const startToday = moment().startOf('day').toISOString()
+      const today = (runs || []).filter((r: any) => r.started_at >= startToday)
+      setCrawlToday({
+        runs: today.length,
+        hotA: today.reduce((s: number, r: any) => s + (r.hot_a_count || 0), 0),
+        hotB: today.reduce((s: number, r: any) => s + (r.hot_b_count || 0), 0),
+        hold: today.reduce((s: number, r: any) => s + (r.hold_count || 0), 0),
+        inserted: today.reduce((s: number, r: any) => s + (r.cases_inserted_count || 0), 0),
+        errors: today.reduce((s: number, r: any) => s + (r.failed_sources || 0), 0),
+      })
+      const { data: failed } = await supabase.from('source_sites').select('name,source_type,last_error_type,last_error_message,last_crawl_result,last_crawled_at').or('last_crawl_result.eq.error,error_count.gt.0').limit(20)
+      setCrawlFailedSites(failed || [])
+      const cfg = await AppConfigApi.get('auto_crawl'); setAutoCrawlOn(cfg?.enabled !== false)
+    } catch { /* テーブル未作成等は無視 */ }
+  }, [])
+  useEffect(() => { loadAutoCrawl() }, [loadAutoCrawl])
+
+  async function runCrawl(only: string) {
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    if (!token) { toast.error('ログインが必要です'); return }
+    setCrawlBusy(only)
+    try {
+      const res = await fetch('/api/cron/auto-lead-crawl', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ only }) })
+      const json = await res.json().catch(() => ({}))
+      if (json?.skipped) toast.info(json.reason || 'スキップされました')
+      else if (json?.ok) toast.success(`巡回完了(${only}): HOT-A${json.hot_a_count ?? 0}/HOT-B${json.hot_b_count ?? 0} 投入${json.cases_inserted_count ?? 0} 成功${json.success}/失敗${json.failed} (${Math.round((json.elapsedMs || 0) / 1000)}秒)`)
+      else toast.error(json?.error || '巡回に失敗しました')
+      loadAutoCrawl(); load()
+    } catch (e) { toast.error('巡回に失敗しました: ' + jpError(e)) } finally { setCrawlBusy('') }
+  }
+  async function toggleAutoCrawl() {
+    const next = !autoCrawlOn
+    try { const cur = (await AppConfigApi.get('auto_crawl')) || {}; await AppConfigApi.set('auto_crawl', { ...cur, enabled: next }); setAutoCrawlOn(next); toast.success(`自動巡回を${next ? 'ON' : 'OFF'}にしました`) } catch (e) { toast.error('変更に失敗: ' + jpError(e)) }
+  }
+
   async function autoExcludeBad() {
     if (!window.confirm('閉店/移転/廃業の疑いがある候補（投入済・HOTを除く）を一括で除外します。実行しますか？')) return
     setQualityRunning(true)
@@ -1477,6 +1535,66 @@ export default function Leads() {
 
           {/* ===== 取得・投入タブ ===== */}
           {mainView === 'get' && (<>
+          {/* ===== 自動巡回パネル ===== */}
+          <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold">🔁 自動巡回（8〜18時 2時間おき・全取得元）</span>
+                <button onClick={toggleAutoCrawl} className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-bold', autoCrawlOn ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300')}>
+                  自動巡回: {autoCrawlOn ? 'ON' : 'OFF'}
+                </button>
+                <button onClick={loadAutoCrawl} className="text-[10px] text-primary hover:underline">再読込</button>
+              </div>
+              <div className="text-[10px] text-muted-foreground">実行: JST 08/10/12/14/16/18時（Vercel Cron）</div>
+            </div>
+
+            {/* 本日サマリー */}
+            <div className="mt-2 grid grid-cols-3 gap-1.5 text-[11px] sm:grid-cols-6">
+              {[['本日実行', crawlToday.runs], ['HOT-A', crawlToday.hotA], ['HOT-B', crawlToday.hotB], ['HOLD', crawlToday.hold], ['cases投入', crawlToday.inserted], ['失敗', crawlToday.errors]].map(([l, v]: any) => (
+                <div key={l} className="rounded-lg bg-muted/50 px-2 py-1 text-center"><div className="text-base font-bold">{v}</div><div className="text-muted-foreground">{l}</div></div>
+              ))}
+            </div>
+
+            {/* 最終/次回 */}
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <span>最終実行: <b className="text-foreground">{crawlLast?.started_at ? moment(crawlLast.started_at).format('M/D HH:mm') : '—'}</b>{crawlLast?.status && <span className={cn('ml-1 rounded px-1', crawlLast.status === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300' : crawlLast.status === 'partial' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : crawlLast.status === 'skipped' ? 'bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300' : 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300')}>{crawlLast.status}</span>}</span>
+              <span>取得元: 成功{crawlLast?.success_sources ?? 0}/失敗{crawlLast?.failed_sources ?? 0}</span>
+              {crawlLast?.error_message && <span className="text-red-500">{String(crawlLast.error_message).slice(0, 60)}</span>}
+            </div>
+
+            {/* 取得元別の結果 */}
+            {crawlItems.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+                {crawlItems.map((it) => (
+                  <span key={it.id} className={cn('rounded border px-1.5 py-0.5', it.status === 'success' ? 'border-green-300 bg-green-50 text-green-700 dark:border-green-500/30 dark:bg-green-500/10 dark:text-green-300' : it.status === 'skipped' ? 'border-zinc-300 bg-zinc-50 text-zinc-600 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300' : 'border-red-300 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300')} title={it.error_message || ''}>
+                    {it.source_name}: {it.status}{it.status === 'success' ? `（取得${it.fetched_count}/HOT${it.hot_count}/投入${it.inserted_count}）` : it.error_kind ? `（${it.error_kind}）` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* 実行ボタン */}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Button size="sm" onClick={() => runCrawl('all')} disabled={!!crawlBusy} className="bg-primary">{crawlBusy === 'all' ? '巡回中...' : '今すぐ全サイト巡回'}</Button>
+              <Button size="sm" variant="outline" onClick={() => runCrawl('failed')} disabled={!!crawlBusy}>{crawlBusy === 'failed' ? '実行中...' : '失敗分だけ再実行'}</Button>
+              <Button size="sm" variant="outline" onClick={() => runCrawl('places')} disabled={!!crawlBusy}>Google Placesだけ</Button>
+              <Button size="sm" variant="outline" onClick={() => runCrawl('regional')} disabled={!!crawlBusy}>地域メディアだけ</Button>
+              <Button size="sm" variant="outline" onClick={() => runCrawl('instagram')} disabled={!!crawlBusy}>Instagramだけ</Button>
+              <Button size="sm" variant="outline" onClick={() => runCrawl('sequential')} disabled={!!crawlBusy}>連番URLだけ</Button>
+            </div>
+
+            {/* 失敗サイト一覧 */}
+            {crawlFailedSites.length > 0 && (
+              <details className="mt-2 text-[10px]">
+                <summary className="cursor-pointer text-red-600">失敗サイト一覧（{crawlFailedSites.length}）— 次回巡回で優先再実行</summary>
+                <ul className="mt-1 space-y-0.5">
+                  {crawlFailedSites.map((s, i) => <li key={i} className="text-muted-foreground">・{s.name}（{s.source_type}）{s.last_error_type ? `: ${s.last_error_type}` : ''} {s.last_error_message ? String(s.last_error_message).slice(0, 50) : ''}</li>)}
+                </ul>
+              </details>
+            )}
+            <div className="mt-1.5 text-[10px] text-muted-foreground">※2時間おき(6回/日)はVercel Proが必要です（Hobbyはcron1日1回）。手動ボタンはいつでも実行できます。CRON_SECRETで外部実行を保護。</div>
+          </div>
+
           {/* Google Places API パネル */}
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
