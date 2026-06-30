@@ -110,7 +110,7 @@ export default function Leads() {
   const [siteTests, setSiteTests] = useState<Record<string, any>>({})
   const [allTest, setAllTest] = useState<any>(null)
   const [shown, setShown] = useState(50)  // 一覧の表示件数
-  const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr'>('all')  // HOT絞り込み
+  const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr' | 'opening_date' | 'new_gbp'>('all')  // HOT絞り込み
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -521,6 +521,20 @@ export default function Leads() {
     } finally { setIgRunning(false) }
   }
 
+  async function rejudgePlaces() {
+    if (gpConfigured === false) { toast.error('GOOGLE_MAPS_API_KEYが未設定です'); return }
+    if (!window.confirm('既存のGoogle Places候補をPlace Details(New)で再取得し、openingDate最優先で再判定します（最大100件・APIコストあり）。実行しますか？')) return
+    setGpRunning(true)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/leads/google-places/run', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ rejudge: { limit: 100 } }) })
+      const json = await res.json().catch(() => ({}))
+      if (json?.ok) { toast.success(`再判定: ${json.scanned}件走査 / 詳細${json.detailed} / openingDate取得${json.openingFound} / HOT-B${json.hotB} / 除外${json.excluded} / 案件更新${json.caseUpdated}`); load() }
+      else toast.error(json?.error || '再判定に失敗しました')
+    } catch (e) { toast.error('再判定に失敗しました: ' + jpError(e)) } finally { setGpRunning(false) }
+  }
   async function runPlaces(testFixed = false) {
     if (!testFixed && !settings.placesEnabled) { toast.error('設定でGoogle Places実行がOFFです'); return }
     if (gpConfigured === false) { toast.error('GOOGLE_MAPS_API_KEYが未設定です'); return }
@@ -547,6 +561,9 @@ export default function Leads() {
             placesMaxQueriesPerDay: settings.placesMaxQueriesPerDay,
             placesPerQuery: settings.placesPerQuery,
             placesMaxDetailsPerDay: settings.placesMaxDetailsPerDay,
+            placesDetailsLimitPerRun: settings.placesDetailsLimitPerRun ?? 100,
+            placesSkipDetailsIfReviewsOver: settings.placesSkipDetailsIfReviewsOver ?? 100,
+            placesOpeningDatePriority: settings.placesOpeningDatePriority !== false,
             aiInjectMode: settings.aiInjectMode, autoImportPerRun: settings.autoImportPerRun, autoImportPerDay: settings.autoImportPerDay,
             hotMaxReviews: settings.hotMaxReviews,
             warmMaxReviews: settings.warmMaxReviews,
@@ -828,6 +845,8 @@ export default function Leads() {
       if (subFilter === 'named_hot') return c.lead_temperature === 'HOT' && !c.name_unconfirmed_hot
       if (subFilter === 'has_phone') return !!c.phone_number
       if (subFilter === 'has_addr') return !!c.address
+      if (subFilter === 'opening_date') return !!c.has_opening_date_badge || !!c.has_google_opening_date
+      if (subFilter === 'new_gbp') return !!c.is_new_gbp_priority || !!c.is_new_gbp
       return true
     })
   }, [filtered, subFilter])
@@ -1299,6 +1318,9 @@ export default function Leads() {
                 <Button size="sm" onClick={() => runPlaces(false)} disabled={gpRunning || gpConfigured !== true}>
                   <Play className="h-3.5 w-3.5" />{gpRunning ? '取得中…' : '取得・投入'}
                 </Button>
+                <Button size="sm" variant="outline" onClick={rejudgePlaces} disabled={gpRunning || gpConfigured !== true} title="既存Google Places候補をPlace Detailsで再取得し、openingDate最優先で再判定">
+                  {gpRunning ? '再判定中…' : 'openingDate再判定（既存）'}
+                </Button>
               </div>
             </div>
             {gpReachable === false && (
@@ -1342,7 +1364,13 @@ export default function Leads() {
                   <span className="rounded bg-muted px-1.5 py-0.5">Place Details 今回{gpResult.detailCalls ?? 0} / 本日{gpResult.debug?.reconcile?.detailToday ?? gpResult.debug?.detailsToday ?? 0}</span>
                   {Number(gpResult.skipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">SKIPPED {gpResult.skipped}</span>}
                   <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {gpResult.openingDateCount ?? 0}</span>
-                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.futureOpeningCount ?? 0}</span>
+                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">開業予定 {gpResult.openFuture ?? gpResult.futureOpeningCount ?? 0}</span>
+                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">90日以内 {gpResult.openWithin90 ?? 0}</span>
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">180日以内 {gpResult.openWithin180 ?? 0}</span>
+                  {Number(gpResult.newGbpPriority ?? 0) > 0 && <span className="rounded bg-pink-100 px-1.5 py-0.5 font-bold text-pink-700 dark:bg-pink-500/20 dark:text-pink-300">新規GBP優先 {gpResult.newGbpPriority}</span>}
+                  {Number(gpResult.reviews100Excluded ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">口コミ100+除外 {gpResult.reviews100Excluded}</span>}
+                  {Number(gpResult.reviews31Excluded ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">口コミ31+除外 {gpResult.reviews31Excluded}</span>}
+                  {Number(gpResult.closedPermExcluded ?? 0) > 0 && <span className="rounded bg-zinc-300 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300">閉業除外 {gpResult.closedPermExcluded}</span>}
                   {Number(gpResult.dupSkip ?? 0) > 0 && <span className="rounded bg-muted px-1.5 py-0.5">30日内skip {gpResult.dupSkip}</span>}
                   {Number(gpResult.detailCapped ?? 0) > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">詳細上限skip {gpResult.detailCapped}</span>}
                   {Number(gpResult.foreignSkipped ?? 0) > 0 && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-300">日本国外除外 {gpResult.foreignSkipped}</span>}
@@ -2294,8 +2322,8 @@ export default function Leads() {
 
           {/* HOT絞り込み（営業担当が店名未確定HOTだけ確認できる） */}
           <div className="flex flex-wrap items-center gap-1 text-2xs">
-            {([['all', 'すべて'], ['named_hot', '店名ありHOT'], ['unconfirmed_hot', '店名未確定HOT(要確認)'], ['has_phone', '電話あり'], ['has_addr', '住所あり']] as const).map(([k, label]) => (
-              <button key={k} onClick={() => setSubFilter(k)} className={cn('rounded-full border px-2 py-0.5', subFilter === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-muted-foreground hover:bg-accent')}>{label}{k === 'unconfirmed_hot' && ` (${sourceCandidates.filter((c: any) => c.name_unconfirmed_hot).length})`}</button>
+            {([['all', 'すべて'], ['named_hot', '店名ありHOT'], ['unconfirmed_hot', '店名未確定HOT(要確認)'], ['opening_date', 'Google開業日あり'], ['new_gbp', '新規GBP優先'], ['has_phone', '電話あり'], ['has_addr', '住所あり']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => setSubFilter(k)} className={cn('rounded-full border px-2 py-0.5', subFilter === k ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-muted-foreground hover:bg-accent')}>{label}{k === 'unconfirmed_hot' ? ` (${sourceCandidates.filter((c: any) => c.name_unconfirmed_hot).length})` : k === 'new_gbp' ? ` (${sourceCandidates.filter((c: any) => c.is_new_gbp_priority).length})` : k === 'opening_date' ? ` (${sourceCandidates.filter((c: any) => c.has_opening_date_badge || c.has_google_opening_date).length})` : ''}</button>
             ))}
           </div>
           {/* 表示件数 */}
@@ -2776,6 +2804,12 @@ export default function Leads() {
                   </div>
                 )}
                 {(drawerCand as any).source_article_title && <div className="mt-1 text-[10px] text-muted-foreground">記事タイトル: {(drawerCand as any).source_article_title}</div>}
+                {((drawerCand as any).has_opening_date_badge || (drawerCand as any).is_new_gbp_priority) && (
+                  <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
+                    {(drawerCand as any).has_opening_date_badge && <span className="rounded bg-fuchsia-100 px-1.5 py-0.5 font-bold text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300">Google開業日 {(drawerCand as any).google_opening_date_year || ''}{(drawerCand as any).google_opening_date_month ? `年${(drawerCand as any).google_opening_date_month}月` : ''}{(drawerCand as any).opening_date_band === 'future' ? '（開業予定）' : ''}</span>}
+                    {(drawerCand as any).is_new_gbp_priority && <span className="rounded bg-pink-100 px-1.5 py-0.5 font-bold text-pink-700 dark:bg-pink-500/20 dark:text-pink-300">新規GBP優先（登録直後の可能性・成約率高）</span>}
+                  </div>
+                )}
                 <div className="mb-2 text-muted-foreground">{drawerCand.industry || '業種不明'}{drawerCand.extracted_area ? ` ・ ${drawerCand.extracted_area}` : ''}</div>
                 <dl className="space-y-1">
                   {[['電話番号', drawerCand.phone_number], ['電話番号取得元', (drawerCand as any).phone_source === 'login_required' ? 'ログイン制限のため取得不可' : (drawerCand as any).phone_source === 'detail_page' ? '詳細ページ' : (drawerCand as any).phone_source === 'enrich' ? '検索補完(Places/公式)' : (drawerCand as any).phone_source], ['住所', drawerCand.address], ['取得元', drawerCand.lead_source], ['詳細取得モード', (drawerCand as any).detail_rendering_mode], ['parser_used', (drawerCand as any).parser_used], ['補完元電話', (drawerCand as any).enriched_phone_source], ['補完元住所', (drawerCand as any).enriched_address_source], ['新店根拠', drawerCand.newness_reason || (drawerCand as any).regional_media_newness_reason], ['HOT理由/未達', drawerCand.hot_reject_summary], ['AIコメント', drawerCand.ai_comment], ['スコア', (drawerCand as any).match_confidence ?? drawerCand.owner_reachability_score], ['状態', drawerCand.imported_to_cases ? '案件投入済' : '未投入'], ['重複', drawerCand.duplicate_of_case_id ? 'あり' : 'なし']].map(([k, v]) => (

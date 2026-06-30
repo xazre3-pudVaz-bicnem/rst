@@ -111,7 +111,7 @@ function buildComment(c: CommentCtx): string {
  * 生候補を判定して LeadCandidate 相当の確定フィールドを返す。
  * 口コミ件数(user_rating_count)を主軸に新規/既存を厳格に分類する。
  */
-export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): Partial<LeadCandidate> {
+export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): Partial<LeadCandidate> & Record<string, any> {
   const hotMax = opts?.hotMaxReviews ?? 5
   const warmMax = opts?.warmMaxReviews ?? 15
   const exclude100 = opts?.exclude100 ?? true
@@ -186,6 +186,19 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   // businessStatus = FUTURE_OPENING は「開業予定」の強シグナル
   const futureOpening = raw.business_status === 'FUTURE_OPENING'
   const hasOpeningDate = !!raw.opening_date
+  // openingDate を最優先シグナルに: 未来/0-90/91-180/181-365/365超 の帯に分類（正=未来日、負=過去日数）
+  const openingDeltaDays = (() => {
+    if (!raw.opening_date) return null
+    const t = Date.parse(raw.opening_date); if (Number.isNaN(t)) return null
+    return Math.round((t - Date.now()) / 86400000)
+  })()
+  const openingBand: 'future' | 'd0_90' | 'd91_180' | 'd181_365' | 'over365' | 'none' =
+    (openingDeltaDays === null && !futureOpening) ? 'none'
+      : (futureOpening || (openingDeltaDays !== null && openingDeltaDays > 0)) ? 'future'
+        : (openingDeltaDays as number) >= -90 ? 'd0_90'
+          : (openingDeltaDays as number) >= -180 ? 'd91_180'
+            : (openingDeltaDays as number) >= -365 ? 'd181_365'
+              : 'over365'
 
   // ---- 口コミ投稿日(publishTime)による判定（新店判定は最古=oldest を重視） ----
   const toDaysAgo = (s: string | null | undefined): number | null => {
@@ -291,6 +304,43 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     hot_tier = tt.hot_tier
   }
 
+  // ===== openingDate を最優先にしたHOT判定（A〜E）。電話＋住所が無ければHOT禁止 =====
+  const phoneOkFinal = hasJapanPhone
+  const addrOkFinal = addrIsJapan || !!address
+  const reviewsHigh = reviewKnown && (reviewCount as number) >= 31
+  const reviews100 = reviewKnown && (reviewCount as number) >= 100
+  let newGbpPriority = false
+  if (!isForeign && !isDup && !closedPerm && !nonReachable && !orgLike && !excludedName) {
+    if (openingBand === 'future' || openingBand === 'd0_90') {
+      // A: 未来日 or 90日以内 → 電話+住所で HOT-A（未来かつ未営業は HOT-B）
+      if (phoneOkFinal && addrOkFinal) { temperature = 'HOT'; hot_tier = (openingBand === 'future' && raw.business_status && raw.business_status !== 'OPERATIONAL') ? 'B' : 'A' }
+      else { temperature = 'HOLD'; hot_tier = null }
+    } else if (openingBand === 'd91_180') {
+      // C: 91-180日 → 電話+住所+口コミ多すぎない で HOT-B
+      if (phoneOkFinal && addrOkFinal && !reviewsHigh) { temperature = 'HOT'; hot_tier = 'B' }
+      else { temperature = reviews100 ? 'EXCLUDED' : 'HOLD'; hot_tier = null }
+    } else if (openingBand === 'd181_365') {
+      // D: 181-365日 → 電話+住所+口コミ15件以下なら弱HOT-B/HOLD、31件以上はHOLD/EXCLUDED
+      if (phoneOkFinal && addrOkFinal && reviewKnown && (reviewCount as number) <= 5) { temperature = 'HOT'; hot_tier = 'B' }
+      else if (reviewsHigh) { temperature = reviews100 ? 'EXCLUDED' : 'HOLD'; hot_tier = null }
+      else { temperature = 'HOLD'; hot_tier = null }
+    } else if (openingBand === 'over365') {
+      // E: 1年以上前 → 新店扱いしない。新規根拠なければ EXCLUDED/HOLD
+      if (!fromNewOpenQuery) { temperature = reviews100 ? 'EXCLUDED' : 'HOLD'; hot_tier = null }
+    } else {
+      // openingDateなし: 新規GBP優先（口コミ0・登録直後の可能性）。電話+住所あれば HOT-B（GBP登録直後＝集客関心高く成約率高い）
+      if (countZero && phoneOkFinal && addrOkFinal && (oldestRecent || latestDaysAgo === null)) { temperature = 'HOT'; hot_tier = 'B'; newGbpPriority = true }
+      // openingDateなし + 口コミ過多は除外を強化
+      else if (reviews100) { temperature = 'EXCLUDED'; hot_tier = null }
+      else if (reviewsHigh && !newnessStrong) { temperature = 'EXCLUDED'; hot_tier = null }
+    }
+  }
+  // businessStatus 反映
+  if (closedPerm) { temperature = 'EXCLUDED'; hot_tier = null }
+  else if (closedTemp && temperature === 'HOT') { temperature = 'HOLD'; hot_tier = null }
+  // グローバル: HOTは電話＋住所が必須
+  if (temperature === 'HOT' && (!phoneOkFinal || !addrOkFinal)) { temperature = 'HOLD'; hot_tier = null }
+
   const exclusionReasons: string[] = []
   if (isForeign) exclusionReasons.push('日本国外の候補のため除外')
   else if (orgLike && temperature === 'EXCLUDED') exclusionReasons.push('法人/団体/研究会系のため除外（新店営業対象ではない可能性が高い）')
@@ -372,6 +422,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
     auto_import_reason: buildReason(signals as string[], reviewCount),
     ai_comment: comment,
     lead_temperature: temperature,
+    opening_date_band: openingBand,
+    is_new_gbp_priority: newGbpPriority,
     duplicate_of_case_id: dupId,
     user_rating_count: reviewCount,
     opening_date: raw.opening_date ?? null,

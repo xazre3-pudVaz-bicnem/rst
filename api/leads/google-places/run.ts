@@ -5,7 +5,7 @@
 // 共通処理は src/lib/googlePlacesRun.ts に置き、静的importで取り込む
 // （Vercel/esbuild が関数にバンドルするため実行時の module 解決が不要）。
 // ============================================================
-import { getAdminClient, runGooglePlaces } from '../../../src/lib/googlePlacesRun.js'
+import { getAdminClient, runGooglePlaces, rejudgeExistingPlaces } from '../../../src/lib/googlePlacesRun.js'
 
 export default async function handler(req: any, res: any) {
   // ---- 接続状態（依存コードを実行せず process.env のみで即応答） ----
@@ -49,6 +49,14 @@ export default async function handler(req: any, res: any) {
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})
   const settings = body?.settings || {}
+
+  // 既存Google Places候補の openingDate 再判定（item9）
+  if (body?.rejudge) {
+    try {
+      const out = await rejudgeExistingPlaces(admin, apiKey, { limit: Number(body.rejudge.limit) || 100, nowIso: new Date().toISOString() })
+      return res.status(200).json({ ok: true, ...out })
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
 
   try {
     const result = await runGooglePlaces(admin, apiKey, settings, userData.user.id)

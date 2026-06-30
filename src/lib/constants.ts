@@ -319,6 +319,9 @@ export const DEFAULT_LEAD_SETTINGS = {
   placesMaxQueriesPerDay: 30,
   placesPerQuery: 20,
   placesMaxDetailsPerDay: 100,
+  placesDetailsLimitPerRun: 100,        // 1回あたりPlace Details上限
+  placesSkipDetailsIfReviewsOver: 100,  // 口コミN件以上はDetailsスキップ
+  placesOpeningDatePriority: true,       // openingDate最優先（既定ON）
   aiInjectMode: 'standard' as 'strict' | 'standard' | 'aggressive',
   autoImportPerRun: 50,
   autoImportPerDay: 200,

@@ -13,22 +13,23 @@ import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeig
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
 
-// 第1段階（軽い検索：country判定のため addressComponents も取得）
+// 第1段階（軽い検索：country判定のため addressComponents も取得。openingDate/businessStatus を検索段階でも取得し新店を優先）
 const LIGHT_FIELDS = [
   'places.id', 'places.displayName', 'places.formattedAddress', 'places.addressComponents',
   'places.internationalPhoneNumber', 'places.nationalPhoneNumber',
-  'places.userRatingCount', 'places.types', 'places.primaryType', 'places.businessStatus',
+  'places.userRatingCount', 'places.rating', 'places.types', 'places.primaryType', 'places.primaryTypeDisplayName',
+  'places.businessStatus', 'places.openingDate', 'places.googleMapsUri', 'places.websiteUri',
 ].join(',')
 
 // 第2段階（詳細取得：電話・レビュー日・開店日・addressComponents など）
 const DETAIL_FIELDS_EXT = [
   'id', 'displayName', 'formattedAddress', 'addressComponents', 'nationalPhoneNumber', 'internationalPhoneNumber',
-  'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType',
-  'openingDate', 'reviews',
+  'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType', 'primaryTypeDisplayName',
+  'openingDate', 'currentOpeningHours', 'regularOpeningHours', 'reviews',
 ].join(',')
 const DETAIL_FIELDS_BASE = [
   'id', 'displayName', 'formattedAddress', 'addressComponents', 'nationalPhoneNumber', 'internationalPhoneNumber',
-  'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType',
+  'websiteUri', 'googleMapsUri', 'rating', 'userRatingCount', 'businessStatus', 'types', 'primaryType', 'primaryTypeDisplayName', 'openingDate',
 ].join(',')
 
 // 日本全体をカバーする矩形（locationRestriction）。海外を最初から検索結果に入れない。
@@ -174,6 +175,8 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
       body: JSON.stringify({
         textQuery: query, languageCode: 'ja', regionCode: 'JP',
         maxResultCount: Math.max(1, Math.min(20, maxResultCount)),
+        // オープン予定（future opening）のビジネスも検索対象に含める（新店を取りこぼさない）
+        includeFutureOpeningBusinesses: true,
         // 日本国内に限定（locationBiasではなくRestriction）。海外を結果に入れない。
         locationRestriction: { rectangle: JAPAN_RECTANGLE },
       }),
@@ -286,6 +289,9 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   let dayCap = nationwide ? Math.max(1, Number(rawSettings?.placesMaxQueriesPerDay) || def.placesMaxQueriesPerDay) : maxQueriesPerDay
   let useRotation = rotation
   const maxDetailsPerDay = Math.max(1, Number(rawSettings?.placesMaxDetailsPerDay) || def.placesMaxDetailsPerDay)
+  const detailsLimitPerRun = Math.max(1, Number(rawSettings?.placesDetailsLimitPerRun) || 100)  // 1回あたりPlace Details上限
+  const skipDetailsIfReviewsOver = Math.max(1, Number(rawSettings?.placesSkipDetailsIfReviewsOver) || 100)  // 口コミN件以上はDetailsスキップ
+  const openingDatePriority = rawSettings?.placesOpeningDatePriority !== false  // openingDate優先（既定ON）
 
   // テスト固定: 少量・ローテーションなし
   if (testFixed) {
@@ -315,6 +321,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     noPhone: 0, chainExcluded: 0, saved: 0, saveError: 0,
     review0_5: 0, review6_15: 0, review16_99: 0, review100: 0, reviewUnknown: 0,
     phoneYes: 0, detailCalls: 0, oldestRecent: 0, openingDateCount: 0, futureOpeningCount: 0,
+    openFuture: 0, openWithin90: 0, openWithin180: 0, openWithin365: 0, openOver365: 0, newGbpPriority: 0,
+    reviews100Excluded: 0, reviews31Excluded: 0, closedPermExcluded: 0,
     dupSkip: 0, detailCapped: 0, foreignSkipped: 0, orgFiltered: 0,
     detailFailed: 0, judged: 0, skipped: 0, hotA: 0, hotB: 0,
     countryJP: 0, countryNonJP: 0, addressCompMissing: 0, japanByAddrOnly: 0,
@@ -438,10 +446,15 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             counts.skipped++; qstat.skipped++; qReason('実行時間上限(次回継続)')
             logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '実行時間上限・次回継続', saved: false }); continue
           }
-          // Place Details の1日上限（コスト制御）→ SKIPPED（保存しない）
-          if (detailsToday + counts.detailCalls >= maxDetailsPerDay) {
-            counts.detailCapped++; counts.skipped++; qstat.skipped++; qReason('Details1日上限超過')
-            logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: 'Details1日上限', saved: false }); continue
+          // Place Details の1日上限/1回上限（コスト制御）→ SKIPPED（保存しない）
+          if (detailsToday + counts.detailCalls >= maxDetailsPerDay || counts.detailCalls >= detailsLimitPerRun) {
+            counts.detailCapped++; counts.skipped++; qstat.skipped++; qReason('Details上限超過（1回/1日）')
+            logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: 'Details上限', saved: false }); continue
+          }
+          // 口コミ多すぎ（openingDate優先設定時はDetailsを打たずスキップ。ただしFUTURE_OPENINGは取得）
+          if (openingDatePriority && skipDetailsIfReviewsOver > 0 && reviewCount !== null && reviewCount >= skipDetailsIfReviewsOver && businessStatusLight !== 'FUTURE_OPENING') {
+            counts.detailCapped++; counts.skipped++; qstat.skipped++; qReason(`口コミ${reviewCount}件(>=${skipDetailsIfReviewsOver})のためDetailsスキップ`)
+            logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '口コミ多数Detailsスキップ', saved: false }); continue
           }
           const detail = await placeDetails(apiKey, placeId)
           counts.detailCalls++; qstat.detail++
@@ -485,6 +498,17 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           oldest_review_publish_time: oldestPub || undefined,
         }, cases, opts)
         counts.judged++; qstat.judged++
+        // openingDate帯のカウント（UIログ用）
+        const oBand = (classified as any).opening_date_band
+        if (oBand === 'future') counts.openFuture++
+        else if (oBand === 'd0_90') counts.openWithin90++
+        else if (oBand === 'd91_180') counts.openWithin180++
+        else if (oBand === 'd181_365') counts.openWithin365++
+        else if (oBand === 'over365') counts.openOver365++
+        if ((classified as any).is_new_gbp_priority) counts.newGbpPriority++
+        if (classified.lead_temperature === 'EXCLUDED' && p.businessStatus === 'CLOSED_PERMANENTLY') counts.closedPermExcluded++
+        if (classified.lead_temperature === 'EXCLUDED' && !og.has && (reviewCount ?? 0) >= 100) counts.reviews100Excluded++
+        else if (classified.lead_temperature === 'EXCLUDED' && !og.has && (reviewCount ?? 0) >= 31) counts.reviews31Excluded++
 
         // === HOLDフォールバック ===
         // 取得できた日本の新店候補は、明確な除外理由が無ければ最低HOLDで保存（電話/openingDateが無くても確認余地ありとして残す）
@@ -532,8 +556,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           // Google openingDate / businessStatus（口コミより強い新店シグナル）
           google_business_status: p.businessStatus || null,
           google_opening_date_year: og.year, google_opening_date_month: og.month, google_opening_date_day: og.day,
-          google_opening_date_raw: og.raw, has_google_opening_date: og.has,
-          opening_date_source: og.has ? 'google_places_openingDate' : null, opening_date_confidence: og.has ? og.confidence : null,
+          google_opening_date_raw: og.raw, has_google_opening_date: og.has, has_opening_date_badge: og.has,
+          opening_date_source: og.has ? 'google_places' : null, opening_date_confidence: og.has ? og.confidence : null, opening_date_precision: og.has ? (og.day ? 'day' : og.month ? 'month' : 'year') : null,
+          opening_date_band: (classified as any).opening_date_band || null, is_new_gbp_priority: !!(classified as any).is_new_gbp_priority,
+          google_primary_type_display_name: (p.primaryTypeDisplayName?.text || p.primaryTypeDisplayName || null),
           days_until_opening: og.daysUntil, days_since_opening: og.daysSince,
           google_places_checked_at: nowIso, opening_date_checked_at: og.has ? nowIso : null,
           // 全国モード: 検索条件ではなく抽出結果として保存
@@ -661,4 +687,54 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: msg, error_count: counts.error + 1 }).eq('id', runId)
     throw new Error(msg)
   }
+}
+
+/** 既存のGoogle Places候補を Place Details(New) で再取得し、openingDate最優先で再判定（item9）。
+ *  対象: place_id あり ＆ (openingDate未取得 or 口コミ31件以上 or HOLD/EXCLUDED)。コスト制御で上限あり。 */
+export async function rejudgeExistingPlaces(admin: any, apiKey: string, opts: { limit?: number; nowIso: string }): Promise<{ scanned: number; detailed: number; updated: number; openingFound: number; hotB: number; excluded: number; caseUpdated: number }> {
+  const limit = Math.min(300, Math.max(1, opts.limit || 100))
+  const { data: rows } = await admin.from('lead_candidates')
+    .select('id,name,address,phone_number,google_place_id,user_rating_count,imported_to_cases,imported_case_id,lead_temperature,is_new_gbp,has_google_opening_date')
+    .not('google_place_id', 'is', null)
+    .or('has_google_opening_date.is.null,has_google_opening_date.eq.false,user_rating_count.gte.31,lead_temperature.eq.HOLD,lead_temperature.eq.EXCLUDED')
+    .limit(limit)
+  const cases = await fetchCases(admin)
+  let scanned = 0, detailed = 0, updated = 0, openingFound = 0, hotB = 0, excluded = 0, caseUpdated = 0
+  for (const r of (rows || [])) {
+    scanned++
+    const pid = r.google_place_id
+    if (!pid) continue
+    const p = await placeDetails(apiKey, pid)
+    await new Promise((rs) => setTimeout(rs, 120))
+    detailed++
+    if (!p) continue
+    const og = parseGoogleOpening(p.openingDate, p.businessStatus)
+    if (og.has) openingFound++
+    const { latest, oldest } = reviewDates(p)
+    const phone = phoneOf(p) || r.phone_number || ''
+    const name = (p.displayName?.text || p.displayName || r.name || '')
+    const classified: any = classifyLead({
+      name, address: p.formattedAddress || r.address || '', phone_number: phone, website_url: p.websiteUri || '', place_id: pid,
+      is_new_gbp: !!r.is_new_gbp, review_count: (typeof p.userRatingCount === 'number' ? p.userRatingCount : r.user_rating_count) ?? undefined,
+      business_status: p.businessStatus || undefined, opening_date: parseOpeningDate(p.openingDate) || undefined,
+      latest_review_publish_time: latest || undefined, oldest_review_publish_time: oldest || undefined,
+    }, cases, {})
+    const u: any = {
+      lead_temperature: classified.lead_temperature, hot_tier: classified.hot_tier,
+      has_google_opening_date: og.has, has_opening_date_badge: og.has,
+      google_opening_date_year: og.year, google_opening_date_month: og.month, google_opening_date_day: og.day, google_opening_date_raw: og.raw,
+      opening_date_band: classified.opening_date_band || null, is_new_gbp_priority: !!classified.is_new_gbp_priority,
+      google_business_status: p.businessStatus || null, phone_number: phone || null, user_rating_count: typeof p.userRatingCount === 'number' ? p.userRatingCount : r.user_rating_count,
+      ai_comment: classified.ai_comment || null, last_seen_at: opts.nowIso, opening_date_checked_at: opts.nowIso,
+    }
+    await admin.from('lead_candidates').update(u).eq('id', r.id)
+    updated++
+    if (classified.lead_temperature === 'HOT' && classified.hot_tier === 'B') hotB++
+    if (classified.lead_temperature === 'EXCLUDED') excluded++
+    if (r.imported_to_cases && r.imported_case_id) {
+      const cu: any = {}; if (name) cu.name = name; if (phone) cu.phone1 = phone
+      if (Object.keys(cu).length) { await admin.from('cases').update(cu).eq('id', r.imported_case_id).then(() => {}, () => {}); caseUpdated++ }
+    }
+  }
+  return { scanned, detailed, updated, openingFound, hotB, excluded, caseUpdated }
 }

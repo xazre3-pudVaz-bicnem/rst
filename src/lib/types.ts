@@ -417,6 +417,9 @@ export interface LeadImportSettings {
   placesMaxQueriesPerDay: number // 既定30
   placesPerQuery: number         // 既定20
   placesMaxDetailsPerDay: number // 既定100
+  placesDetailsLimitPerRun: number // 1回あたりPlace Details上限（既定100）
+  placesSkipDetailsIfReviewsOver: number // 口コミN件以上はDetailsスキップ（既定100）
+  placesOpeningDatePriority: boolean // openingDate最優先（既定true）
   // 自動投入モード・上限
   aiInjectMode: 'strict' | 'standard' | 'aggressive'
   autoImportPerRun: number       // 既定50
