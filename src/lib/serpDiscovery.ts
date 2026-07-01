@@ -73,7 +73,16 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   // クエリ生成（公開日系は過去7日の日付を展開）
   let queries = [...def.queries]
   if (/published_date|portal/.test(def.type)) { const ds = pastDates(7); queries = ds.flatMap((d) => def.queries!.map((q) => q.replace('{date}', d.slash))) }
-  queries = queries.slice(0, maxQ)
+  // クエリ回転: 以前は queries.slice(0, maxQ) 固定で、maxQ(既定6)より後ろのクエリが永久に実行されなかった。
+  // このsource_typeの過去実行回数でウィンドウをずらし、全クエリを順に網羅する。
+  const allQ = queries
+  if (allQ.length > maxQ) {
+    const { count: srcRuns } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', sourceType)
+    const start = ((srcRuns || 0) * maxQ) % allQ.length
+    queries = [...allQ.slice(start), ...allQ.slice(0, start)].slice(0, maxQ)
+  } else {
+    queries = allQ.slice(0, maxQ)
+  }
 
   const counts: any = { sourceType, label: def.label, queries: 0, results: 0, newUrls: 0, seenSkipped: 0, detailFetched: 0, phoneYes: 0, addrYes: 0, hot: 0, hotB: 0, hold: 0, excluded: 0, saved: 0, imported: 0, dup: 0, error: 0, serperUsed: 0 }
   const debug: any = { samples: [] as any[] }

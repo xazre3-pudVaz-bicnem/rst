@@ -382,7 +382,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       let siteSeenSkipped = 0, siteOldSkipped = 0, siteNewArticles = 0
       const crawlUrl = site.list_url || site.base_url
       let base: URL
-      try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正' }).eq('id', site.id).then(() => {}, () => {}); continue }
+      try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正', last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {}); continue }
 
       const allowed = await robotsAllows(base.origin, base.pathname)
       if (!allowed) {
@@ -430,14 +430,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases,phone_number,address').eq('source_detail_url', item.url).limit(1)
           const existingCand = exC?.[0] || null
           if (skipSeen(exA?.[0], existingCand)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読URLは読み直さない
-          if (siteNewest === null) siteNewest = item.url  // 今回処理する最初の新規＝次回の停止カーソル
           siteNewArticles++
           counts.articles++; counts.newArticles++; used++
 
           const dRes = await fetchHtml(item.url, DETAIL_TIMEOUT_MS)
           counts.detailFetches++
           await sleep(delay)
+          // 詳細取得が一時失敗(timeout/403)したitemはカーソルに採用しない（次回リトライさせるため）。取得成功して初めて停止カーソルにする。
           if (!dRes.ok) { if (dRes.timedOut) { counts.timeouts++; diag.timeouts++ } diag.reason = diag.reason || (dRes.timedOut ? '詳細ページがタイムアウト' : '詳細ページ取得失敗'); continue }
+          if (siteNewest === null) siteNewest = item.url  // 取得成功した最初の新規＝次回の停止カーソル
           const dHtml = dRes.html
           diag.detailFetched++
           const info = extractDirectoryShopInfo(dHtml, item.title)

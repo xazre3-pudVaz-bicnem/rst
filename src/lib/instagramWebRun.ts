@@ -590,9 +590,18 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       : (useAdvanced ? NATIONAL_QUERIES_ADVANCED : NATIONAL_QUERIES_SIMPLE)
     debug.searchMode = searchMode; debug.iwProvider = iwProvider; debug.querySet = iwProvider === 'both' ? 'simple+advanced' : (useAdvanced ? 'advanced(site:)' : 'simple')
     debug.querySetSize = querySet.length
-    const notSkipped = querySet.filter((q) => !recent.has(q))
+    // クエリ回転: 以前は querySet.slice(0, runQueryLimit) 固定で、先頭N件(既定30)より後ろのクエリが
+    // 永久に実行されなかった（querySetは60〜85件）。ig_web_query_log の最終実行日時で「古い順(未実行=最優先)」
+    // に並べ替えてから選ぶことで、全クエリが順に実行される。
+    let ordered = querySet
+    {
+      const { data: qlog } = await admin.from('ig_web_query_log').select('query,last_run_at').in('query', querySet).limit(5000)
+      const lastRun = new Map<string, number>((qlog || []).map((r: any) => [String(r.query), Date.parse(r.last_run_at || '') || 0]))
+      ordered = [...querySet].sort((a, b) => (lastRun.get(a) ?? 0) - (lastRun.get(b) ?? 0))
+    }
+    const notSkipped = ordered.filter((q) => !recent.has(q))
     let picked = notSkipped.slice(0, runQueryLimit)
-    if (picked.length === 0 && runQueryLimit > 0) picked = querySet.slice(0, runQueryLimit)
+    if (picked.length === 0 && runQueryLimit > 0) picked = ordered.slice(0, runQueryLimit)
     // ログ: 予定/実行/スキップ/理由
     debug.plannedQueries = querySet.length
     debug.skippedByRecent = querySet.length - notSkipped.length

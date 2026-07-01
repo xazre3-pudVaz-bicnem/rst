@@ -423,7 +423,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
     // 全国エリアグリッド: 各クエリに地域ブロックを割り当て（東京偏重を避け全国網羅）。実行ごとに開始位置をずらす。
     const useGrid = nationwide && rawSettings?.placesAreaGrid !== false
-    const gridOffset = picked.length  // 実行ごとにpicked件数でずらす（ローテーション近似）
+    // 実行ごとに+1する回転オフセット（過去のgoogle_places実行回数）。以前は picked.length で固定化され
+    // 地域↔クエリ対応が毎回同じになり、高indexの地域が永久に走査されないバグがあった。実行数で全地域を順に網羅する。
+    const { count: gpRunCount } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
+    const gridOffset = (gpRunCount || 0)
     const regionsCovered = new Set<string>()
     let qi = -1
     for (const gq of picked) {

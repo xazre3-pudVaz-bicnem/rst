@@ -608,13 +608,17 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     else if (newLastFound != null) { nextId = Number(newLastFound) + 1; nextIdBasis = `最後に見つかったID(${newLastFound})の次から` }
     else { nextId = lastChecked + 1; nextIdBasis = `${lastChecked}まで確認済み（有効IDなし）` }
   } else { nextId = lastChecked + 1; nextIdBasis = `先行探索モード（${lastChecked}まで確認済み・+1）` }
-  // 暴走防止: advanceモードでlast_valid_idから大きく先へ進みすぎた場合はフロンティア(last_valid+1)へ引き戻す。
-  // 有効IDが尽きた後も404空間を延々と前進し続けて実在の新IDに二度と戻らない、という状態を防ぐ。
-  const MAX_GAP_AHEAD = 3000
+  // フロンティア追従（advanceモードの新ID取りこぼし防止）:
+  //  advanceモードは404を「不存在」として通過しカーソルを前進させるが、フロンティア直上の404は
+  //  「まだ未作成」で後日有効化される。前進し続けるとその新IDに二度と戻れない（じゃらんと同種のバグ）。
+  //  → 今回有効0件（＝フロンティア到達）ならフロンティア(last_valid+1)へ引き戻し、次回そこを再チェックする。
+  //  有効を見つけている間は前進（小さなギャップは前方スキャンで飛び越える）。保険として2000件以上の先行も引き戻す。
   const knownValid = Number(res.lastValidId ?? site.last_valid_id ?? 0)
-  if (probeMode !== 'safe' && firstUnconfirmed == null && knownValid > 0 && nextId - knownValid > MAX_GAP_AHEAD) {
+  if (probeMode !== 'safe' && firstUnconfirmed == null && knownValid > 0 && (res.valid === 0 || nextId - knownValid > 2000)) {
     nextId = knownValid + 1
-    nextIdBasis = `有効IDから${MAX_GAP_AHEAD}件以上先行したためフロンティア(最後の有効ID ${knownValid}の次)へ引き戻し`
+    nextIdBasis = res.valid === 0
+      ? `有効0件(フロンティア到達)のためフロンティア(最後の有効ID ${knownValid}の次)から再チェック`
+      : `有効IDから2000件以上先行したためフロンティアへ引き戻し`
   }
   res.nextId = nextId; res.nextIdBasis = nextIdBasis; res.consecutiveNotFound = consecutiveNotFound
   // invalid の主理由（最多）
