@@ -13,7 +13,8 @@ import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirecto
 import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './targetFilter.js'
+import { looksLikeArticle as looksLikeArticleText, isRealStoreAddress } from './leadQuality.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 
@@ -718,13 +719,21 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
           const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!prefecture || /[市区町村]/.test(address))
           const mSn = sanitizeShopName(info.shop_name, { placesMatched: !!matchedPlaceId })
-          const dName = (matchedPlaceId && enrich?.place_name) ? enrich.place_name : (mSn.valid ? mSn.name : '')
+          // 号外NET系: 記事タイトル/本文の『店名』を店名として補完（『ケーズデンキ女池インター本店』等）
+          const titleName = extractShopFromTitle(cand.blockText || cand.shopName || '')
+          const dName = (matchedPlaceId && enrich?.place_name) ? enrich.place_name : (mSn.valid ? mSn.name : titleName || '')
           const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
           let temperature = dc.temperature
           let dHotTier = dc.hot_tier
-          // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
-          const multiM = detectMultiStore(`${dName} ${info.shop_name || ''} ${cand.blockText || ''}`)
-          if (multiM.exclude) { temperature = 'EXCLUDED'; dHotTier = null }
+          // 多店舗/大手チェーン/量販/ショッピングモール/駅ビル・記事/まとめ・カテゴリ住所 は営業対象外（EXCLUDED）
+          const gateText = `${dName} ${titleName} ${info.shop_name || ''} ${cand.blockText || ''}`
+          const multiM = detectMultiStore(gateText)
+          const chM = detectChain(dName || titleName || '', cand.blockText || '')
+          const bigStrongM = detectBigOrPublicStrong(gateText)
+          const isArticleM = looksLikeArticleText(`${dName} ${titleName} ${cand.blockText || ''}`)
+          if (multiM.exclude || chM.definite || bigStrongM.exclude || isArticleM || !isRealStoreAddress(address)) {
+            temperature = 'EXCLUDED'; dHotTier = null
+          }
           // ===== 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B =====
           const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
           const cardNew = cand.matchedKeywords.length > 0 || open.confidence !== 'none'
@@ -933,6 +942,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         reason = sc.reason
         // 大手/公共/大型施設/道の駅/産直/JA等は営業対象外（個人事業主・小規模店ではない）→ EXCLUDED
         if (bigA.exclude) { temperature = 'EXCLUDED'; hotTier = null; reason = `${bigA.reason}${reason}` }
+        // 実店舗ではない記事/ニュース/まとめ/映画告知、または住所がカテゴリナビ(「最新まとめ」等)→ 新店ではないのでEXCLUDED
+        const gateName = shopName || ex.shop_name || ''
+        const gateAddr = address || areaMerged || ''
+        const isArticleText = looksLikeArticleText(`${gateName} ${bestTitle || ''}`)
+        const bigStrongA = detectBigOrPublicStrong(`${gateName} ${bestTitle || ''}`)  // タイトル内のイオンモール/大手チェーン
+        if (isArticleText || bigStrongA.exclude || !isRealStoreAddress(gateAddr)) {
+          temperature = 'EXCLUDED'; hotTier = null
+          reason = `実店舗ではない/営業対象外（${bigStrongA.exclude ? bigStrongA.hit : isArticleText ? '記事/ニュース/告知の見出し' : '住所がカテゴリ/まとめ等で店舗住所ではない'}）のため除外。${reason}`
+        }
         // ===== 新方針のHOT判定 =====
         const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
         const hasAreaOk = !!haveArea

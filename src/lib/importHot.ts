@@ -6,10 +6,12 @@
 // ============================================================
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone } from './regionalParsers.js'
-import { onlyDigits } from './leadQuality.js'
+import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.js'
+import { detectBigOrPublicStrong } from './targetFilter.js'
+import { detectChain } from './chainFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
-const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count'
+const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count'
 
 // 最古クチコミが30日超 = 既に30日以上前から口コミが付いている＝新規店ではない（投入対象外）。
 // クチコミデータが無い(null/0)候補は判定不能なので許可（新規で口コミ0件のケースを弾かないため）。
@@ -39,6 +41,15 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     // 1.5) 最古クチコミが30日超 = 既存店（新規ではない）→ 投入せずHOLD降格
     if (reviewTooOld(c)) {
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `最古クチコミ${c.oldest_review_days_ago}日前(30日超=既存店)のため新規投入対象外→HOLD` }).eq('id', c.id)
+      downgraded++; continue
+    }
+    // 1.6) 実店舗ではない記事/まとめ・カテゴリ住所・大手チェーン/量販/ショッピングモール → 投入せずHOLD降格
+    const gtext = `${c.name || ''} ${c.regional_media_newness_reason || ''} ${c.search_snippet || ''}`
+    const bigStrong = detectBigOrPublicStrong(gtext)
+    const chainDef = detectChain(c.name || '', c.regional_media_newness_reason || '').definite
+    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef) {
+      const why = bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
+      await admin.from('lead_candidates').update({ lead_temperature: bigStrong.exclude || chainDef ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: bigStrong.exclude || chainDef, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }
     // 2) 既存案件と電話重複なら、二重投入せず候補をリンク

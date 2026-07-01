@@ -76,6 +76,28 @@ export function categorizeIndustry(...texts: (string | null | undefined)[]): Ind
 // --- ネガティブシグナル（投入すべきでない／要注意） ---
 const NEGATIVE_RE = /(閉店|閉院|廃業|移転(しました|済|オープン)?|閉鎖|営業終了|テナント募集|物件募集|跡地|跡)/
 const PORTAL_RE = /(求人|採用|アルバイト募集|スタッフ募集|ポータル|まとめ|ランキング|比較サイト|一覧|検索結果|食べログ|ホットペッパー|エキテン|ぐるなび|Retty|ヒトサラ)/
+// 実店舗ではなく記事/ニュース/まとめ/イベント告知（映画・ドラマ・特集・ランキング等）
+const ARTICLE_LIKE_RE = /(映画|ドラマ|アニメ|話題|ニュース|特集|まとめ|ランキング|一覧|開催|公開|上映|イベント情報|コラム|レビュー|について考え|とは\?|選び方|おすすめ\d|人気\d+選|注目スポット|観光情報|プレゼント|キャンペーン情報|号外|速報)/
+/** タイトル/店名が「実店舗ではなく記事・ニュース・まとめ」に見えるか。 */
+export function looksLikeArticle(...texts: (string | null | undefined)[]): boolean {
+  const t = texts.filter(Boolean).join(' ')
+  return ARTICLE_LIKE_RE.test(t)
+}
+const ADDR_JUNK_RE = /(まとめ|一覧|特集|最新|ランキング|エリア別|カテゴリ|の記事|レポート|ニュース|話題|イベント)/
+const PREF_G = /(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/g
+/** 住所が実在店舗のものか（都道府県＋具体地点。カテゴリ/ナビ文言・複数都道府県連結はNG＝記事のパンくず等）。 */
+export function isRealStoreAddress(addr?: string | null): boolean {
+  const s = String(addr || '').trim()
+  if (!s) return false
+  if (ADDR_JUNK_RE.test(s)) return false                       // 「最新まとめ」等のカテゴリ文言を含む
+  const prefs = s.match(PREF_G) || []
+  if (prefs.length >= 2) return false                          // 都道府県が2つ以上＝カテゴリナビ/パンくず
+  if (!prefs.length) return false                             // 都道府県が無い
+  // 「・」で複数エリアが並ぶ（見沼区・岩槻区…浦和区・緑 のようなカテゴリ列挙）はNG
+  if ((s.match(/[区市町村]/g) || []).length >= 3) return false
+  return true
+}
+
 /** ネガティブ/ポータル系シグナルを検出（閉店・移転・求人・ポータルそのもの）。店名・住所・短いスニペットに対して使う。 */
 export function detectNegative(text?: string | null): { hit: boolean; closed: boolean; portal: boolean; reason: string } {
   const t = String(text || '')

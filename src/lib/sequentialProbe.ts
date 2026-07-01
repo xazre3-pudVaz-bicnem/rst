@@ -644,8 +644,12 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     const { count: importedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
     const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
+    // Vercel 60s上限対策: 全体の時間予算。超えたら残りサイトは次回に継続（レンダリングfallbackが1件~18sあるため余白を大きく）。
+    const runStart = Date.now()
+    const runBudgetMs = Math.max(15000, Math.min(52000, Number(s.runBudgetMs) || 45000))
     for (const site of sites || []) {
       if (site.probe_enabled === false) continue
+      if (Date.now() - runStart > runBudgetMs) { (debug as any).deferred = ((debug as any).deferred || 0) + 1; continue }  // 時間切れ→次回継続
       counts.sources++
       const pr = await runSequentialProbe(admin, mapsKey, site, {
         userId, runId, nowIso, mode,
