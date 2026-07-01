@@ -134,14 +134,39 @@ export default function CallLogFormModal({
 
   async function handleRelease() {
     if (!selectedCase) return
+    setBusy(true)
     try {
-      // 解放は「担当者の割当解除」のみ。ステータスもコール履歴も変更・削除しない。
-      await CaseApi.update(selectedCase.id, { sales_rep: null })
-      toast.success('案件を解放しました（担当者を解除。コール履歴・ステータスは保持）')
+      // 入力中のコール結果があれば、まずコール履歴として保存してから解放（履歴を残す）。
+      const hasEntry = !!(result || (memo && memo.trim()))
+      if (hasEntry) {
+        const effectiveStatus = showAppo && appoAt ? 'アポ獲得' : newStatus
+        const statusChanged = effectiveStatus && effectiveStatus !== selectedCase.status
+        const logPayload: Partial<CallLog> = {
+          case_id: selectedCase.id, case_name: selectedCase.name,
+          call_at: moment(roundTo15(callAt)).toISOString(),
+          contact_type: contactType, result: result || null, memo: memo || null, summary: summary || null,
+          sales_rep: logRep || selectedCase.sales_rep || null,
+          prev_status: statusChanged ? selectedCase.status : null, next_status: statusChanged ? effectiveStatus : null,
+          next_recall_at: recallAt ? moment(roundTo15(recallAt)).toISOString() : null,
+          created_by_id: user?.id ?? null,
+        }
+        if (editingLog) await CallLogApi.update(editingLog.id, logPayload)
+        else await CallLogApi.create(logPayload)
+        if (recallAt) await RecallApi.create({ case_id: selectedCase.id, case_name: selectedCase.name, target_at: moment(roundTo15(recallAt)).toISOString(), created_by_id: user?.id ?? null })
+        // ステータスは反映しつつ担当者だけ解除
+        await CaseApi.update(selectedCase.id, { ...(statusChanged ? { status: effectiveStatus } : {}), sales_rep: null })
+        toast.success('コール履歴を保存し、案件を解放しました（担当者を解除・履歴は保持）')
+      } else {
+        // 入力が無ければ担当者の割当解除のみ（既存の履歴・ステータスは変更しない）
+        await CaseApi.update(selectedCase.id, { sales_rep: null })
+        toast.success('案件を解放しました（担当者を解除。コール履歴・ステータスは保持）')
+      }
       onSaved()
       onClose()
     } catch (e) {
       toast.error('解放に失敗しました: ' + jpError(e))
+    } finally {
+      setBusy(false)
     }
   }
 
