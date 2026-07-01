@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { AppointmentApi, CallLogApi, CaseApi, RecallApi, TemplateApi } from '@/lib/api'
+import { syncAppointment } from '@/lib/calendarSync'
 import type { Template } from '@/lib/types'
 import {
   AGES,
@@ -197,9 +198,9 @@ export default function CallLogFormModal({
         await CallLogApi.create(logPayload)
       }
 
-      // アポ日時があれば Appointment 作成
+      // アポ日時があれば Appointment 作成 → Googleカレンダー反映（設定ON時のみ・TimeRexの空き枠に反映）
       if (showAppo && appoAt) {
-        await AppointmentApi.create({
+        const appt = await AppointmentApi.create({
           case_id: selectedCase.id,
           case_name: selectedCase.name,
           address: selectedCase.address,
@@ -207,6 +208,7 @@ export default function CallLogFormModal({
           appo_at: moment(roundTo15(appoAt)).toISOString(),
           memo: null,
         })
+        syncAppointment(appt, selectedCase)
       }
 
       // ステータス / 担当の更新

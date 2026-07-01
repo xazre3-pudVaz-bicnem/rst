@@ -45,6 +45,9 @@ export interface Appointment {
   memo?: string | null
   organization_id?: string | null
   created_by_id?: string | null
+  google_event_id?: string | null
+  google_synced_at?: string | null
+  google_sync_error?: string | null
   created_date: string
   updated_date: string
 }

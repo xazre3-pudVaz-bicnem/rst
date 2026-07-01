@@ -10,7 +10,8 @@ import { useToast } from '@/components/ui/toast'
 import { copyToClipboard, jpError, cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { TimeRexApi, buildAgencyShareText, type TimeRexSetting, type ShareVariant } from '@/lib/timerex'
-import { Copy, ExternalLink, Calendar, Plus, Trash2 } from 'lucide-react'
+import { CalendarApi, type CalStatus } from '@/lib/calendarSync'
+import { Copy, ExternalLink, Calendar, Plus, Trash2, CalendarCheck } from 'lucide-react'
 
 const SHARE_TABS: { key: ShareVariant; label: string }[] = [
   { key: 'normal', label: 'アポ代行 通常文' }, { key: 'short', label: '短文' }, { key: 'slack', label: 'Slack/チャット' }, { key: 'mail', label: 'メール' },
@@ -76,8 +77,10 @@ export function TimeRexManager() {
   const [form, setForm] = useState<Partial<TimeRexSetting> | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(() => { TimeRexApi.list().then(setRows).catch(() => {}) }, [])
+  const [cal, setCal] = useState<CalStatus | null>(null)
+  const load = useCallback(() => { TimeRexApi.list().then(setRows).catch(() => {}); CalendarApi.status().then(setCal).catch(() => {}) }, [])
   useEffect(() => { load() }, [load])
+  async function toggleCal() { const next = !cal?.enabled; try { await CalendarApi.setEnabled(next); setCal((p) => p ? { ...p, enabled: next } : p); toast.success(`訪問登録のGoogleカレンダー反映を${next ? 'ON' : 'OFF'}にしました`) } catch (e) { toast.error(jpError(e)) } }
 
   async function save() {
     if (!form?.name?.trim()) { toast.error('表示名は必須です'); return }
@@ -112,6 +115,21 @@ export function TimeRexManager() {
       </div>
 
       {!isAdmin && <div className="mt-2 rounded bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">閲覧・コピーのみ可能です（登録・編集・削除は管理者のみ）。</div>}
+
+      {/* 訪問登録→Googleカレンダー反映 */}
+      <div className="mt-2 rounded-lg border border-emerald-300 bg-emerald-50/50 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-1 text-xs font-bold text-emerald-700 dark:text-emerald-300"><CalendarCheck className="h-3.5 w-3.5" />訪問登録をGoogleカレンダーに反映</span>
+          {isAdmin && <button onClick={toggleCal} className={cn('rounded-full px-2 py-0.5 text-[10px] font-bold', cal?.enabled ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-700')}>{cal?.enabled ? 'ON' : 'OFF'}</button>}
+          <span className="text-[10px] text-muted-foreground">
+            {cal == null ? '確認中…' : !cal.configured ? '未設定（サーバーにサービスアカウント/カレンダーID未設定）' : cal.reachable ? `接続OK（${cal.calendarId}）` : `接続エラー: ${cal.error || '要確認'}`}
+          </span>
+        </div>
+        <div className="mt-0.5 text-[10px] text-muted-foreground">
+          RSTで訪問予定を登録すると、TimeRexが連携しているGoogleカレンダーに予定を作成し、その時間帯を自動で空き枠から外します（二重予約防止）。
+          {cal && !cal.configured && <span className="mt-0.5 block text-amber-700 dark:text-amber-300">設定手順: ①GoogleサービスアカウントJSONを作成 ②対象カレンダーを その サービスアカウントのメールに『予定の変更』権限で共有 ③TimeRexを同じカレンダーに連携 ④Vercelの環境変数に GOOGLE_CALENDAR_ID / GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY を設定。</span>}
+        </div>
+      </div>
 
       <div className="mt-2 space-y-1.5">
         {rows.length === 0 && <div className="text-xs text-muted-foreground">まだ登録がありません。{isAdmin ? '「URLを追加」から登録してください。' : ''}</div>}

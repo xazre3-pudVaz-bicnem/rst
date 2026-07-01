@@ -29,6 +29,7 @@ import { useConfirm } from '@/components/ui/confirm'
 import { jpError, roundTo15 } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
 import { TimeRexShare } from '@/components/TimeRex'
+import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const ALL = '__all__'
@@ -126,8 +127,10 @@ export default function Appointments() {
       }
       if (editing) {
         await AppointmentApi.update(editing.id, payload)
+        syncAppointment({ ...editing, ...payload } as any, c)  // Googleカレンダー反映（設定ONかつ設定済みのときのみ）
       } else {
-        await AppointmentApi.create(payload)
+        const created = await AppointmentApi.create(payload)
+        syncAppointment(created, c)
       }
       toast.success('訪問予定を保存しました')
       setShowModal(false)
@@ -141,6 +144,7 @@ export default function Appointments() {
     if (!editing) return
     if (!(await confirm({ title: 'このアポを削除しますか？', confirmLabel: '削除する', danger: true }))) return
     try {
+      deleteAppointmentEvent(editing)  // カレンダー予定も削除（枠を空きに戻す）
       await AppointmentApi.remove(editing.id)
       toast.success('削除しました')
       setShowModal(false)
