@@ -7,7 +7,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone } from './regionalParsers.js'
 import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.js'
-import { detectBigOrPublicStrong } from './targetFilter.js'
+import { detectBigOrPublicStrong, looksLikeBranchStore } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -75,8 +75,9 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     const gtext = `${c.name || ''} ${c.regional_media_newness_reason || ''} ${c.search_snippet || ''}`
     const bigStrong = detectBigOrPublicStrong(gtext)
     const chainDef = detectChain(c.name || '', c.regional_media_newness_reason || '').definite
-    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef) {
-      const why = bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
+    const branch = looksLikeBranchStore(c.name)
+    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch) {
+      const why = branch ? '支店/チェーン店（○○店）' : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
       await admin.from('lead_candidates').update({ lead_temperature: bigStrong.exclude || chainDef ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: bigStrong.exclude || chainDef, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }

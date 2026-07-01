@@ -55,6 +55,16 @@ export function detectMultiStore(text: string): { exclude: boolean; reason: stri
   return { exclude: false, reason: '', hit: '' }
 }
 
+// 「○○ △△店」= 地名/エリア付きの支店・チェーン店名（例: 田所商店 三田店 / 玄三 天美店 / 資さんうどん 飯塚穂波店 / ○○ 本店）。
+// 個人1店舗ではない（多店舗展開の1店）→ 営業対象外。専門店/直売店/複合語の単店は除外しない。
+const BRANCH_STORE_RE = /[\s　][一-龥ぁ-んァ-ヶ0-9０-９A-Za-z々ヶ・]{1,10}店$/
+export function looksLikeBranchStore(name?: string | null): boolean {
+  const s = String(name || '').trim()
+  if (!s || s === '店名未確定') return false
+  if (/(専門店|直売店|喫茶店|飯店|支那そば店)$/.test(s)) return false  // 専門店・飯店等は単店の可能性が高い
+  return BRANCH_STORE_RE.test(s) || /(本店|支店|[0-9０-９]+号店|[0-9０-９]+号館)$/.test(s)
+}
+
 // 確立済み大型の閾値（厳しめ）
 export const BIG_REVIEW_COUNT = 30       // Google口コミがこれ以上＝既に集客できている → 除外
 export const BIG_IG_FOLLOWERS = 500      // Instagramフォロワーがこれ以上 → 除外

@@ -8,7 +8,7 @@
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -498,7 +498,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const bigP0 = detectBigOrPublic(`${name} ${address} ${category}`)
     const bigStrongP = detectBigOrPublicStrong(name)  // 大手チェーン/量販/モール（元祖ニュータンタンメン/はなまるうどん等）
     const multiP = detectMultiStore(`${name} ${bodyAll.slice(0, 300)}`)
-    const bigP = { exclude: bigP0.exclude || bigStrongP.exclude || multiP.exclude }
+    const bigP = { exclude: bigP0.exclude || bigStrongP.exclude || multiP.exclude || looksLikeBranchStore(name) }
     const sc = scoreCandidate({
       source: 'regional_media', isJapan, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
