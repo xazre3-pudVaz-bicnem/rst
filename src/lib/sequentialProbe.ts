@@ -7,7 +7,7 @@
 //  - 連続not_found停止・1回20/1日100URL・30日再取得回避・robots配慮
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
-import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
+import { extractJpPhone, sanitizeShopName, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
@@ -190,10 +190,14 @@ export function parseTabelog(html: string, mojibake: boolean): JalanSpot {
   const official = html.match(/href=["'](https?:\/\/(?!tabelog\.com)[^"']+)["'][^>]*>\s*(?:お店のホームページ|公式|オフィシャル)/i)?.[1] || ''
   const mapUrl = html.match(/href=["'](https?:\/\/(?:maps\.google|www\.google\.[^/]*\/maps|maps\.app\.goo\.gl)[^"']+)["']/i)?.[1] || ''
 
+  // 口コミ件数（既存店フィルタ用。新店ほど0〜少数。掲載が古い＝新店ではない）
+  const rv = body.match(/口コミ[（(]?\s*(\d{1,5})\s*[)）]?\s*件/) || body.match(/(\d{1,5})\s*件の口コミ/) || html.match(/rdheader-rating__review-target[\s\S]{0,80}?<em[^>]*>\s*(\d{1,5})\s*<\/em>/i)
+  const reviews = rv ? rv[1] : ''
+
   let invalidReason = ''
   if (!name && !address) invalidReason = '店名/住所が取れない'
   else if (!name) invalidReason = '食べログ詳細ページから店名抽出失敗'
-  return { name, address, phone, category: genre, official, mapUrl, reviews: '', valid: !invalidReason, invalidReason }
+  return { name, address, phone, category: genre, official, mapUrl, reviews, valid: !invalidReason, invalidReason }
 }
 
 // EPARK店舗/EPARK歯科/Caloo病院/petCaloo動物病院 の詳細ページ共通パーサー（店名h1優先・〒/都道府県住所・tel/電話・口コミ件数）
@@ -496,9 +500,10 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const hasOpen = OPEN_RE.test(bodyAll)
     const newness_type = hasOpen ? 'possible_new_open' : 'source_new_listing'
     const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || /[市区町村]/.test(address))
-    // 観光名所/公共施設のみ（電話なし）は営業対象外
+    // 観光名所/公共施設（神社/寺/公園/温泉/博物館/城/駅/役所等）は電話の有無に関係なく営業対象外。
+    // 以前は「電話があれば対象」にしていたため、電話番号を載せる観光施設(じゃらんに多い)がHOTに漏れていた。
     const facilityish = FACILITY_RE.test(`${name} ${category}`)
-    const excludedFacility = facilityish && !(phone && isJapanPhone(phone))
+    const excludedFacility = facilityish
 
     const chP = detectChain(name)
     const bigP0 = detectBigOrPublic(`${name} ${address} ${category}`)
@@ -509,13 +514,14 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       source: 'regional_media', isJapan, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
       placesMatched: false, hasOfficial: !!official,
-      isChain: chP.definite || bigP.exclude, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility || bigP.exclude, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false, reviewMany: false,
+      isChain: chP.definite || bigP.exclude, chainSuspect: chP.suspect && !chP.definite, isOrg: excludedFacility || bigP.exclude, isEventRecruit: false, isForeign: isForeignAddress(address), isDup: false,
+      reviewMany: Number(spot?.reviews || 0) >= 30,  // 掲載サイトの口コミ30件以上＝既存店（新規ではない）
     }, opts.mode)
     let { temperature, hot_tier } = tierToTemperature(sc.tier)
     if (bigP.exclude) { temperature = 'EXCLUDED'; hot_tier = null }  // 道の駅/産直/大型施設/公共/大手 は営業対象外
     // 新方針: HOTは電話＋住所が必須。店名未確定でも電話＋住所＋新規掲載根拠ありなら HOT-B（営業前に店名確認）
     let recommendedStatus: string = sc.tier
-    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)  // フリーダイヤルは店舗直通でないためHOT不可
     let nameUnconfirmedHot = false
     let hotBlock = ''
     if (temperature === 'HOT') {

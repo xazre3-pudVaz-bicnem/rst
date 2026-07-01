@@ -10,7 +10,8 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
+import { isTollFreeJp } from './regionalParsers.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -729,17 +730,20 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const japanOk = !foreignFinal && (!!prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: Instagram投稿の新店根拠＋電話/住所で営業可能ならHOT
         // 新店根拠: 投稿本文の新店ワード or 補完で得たGoogle開業日 or 新店検索クエリ経由（このソースは全て新店検索）。
-        const fromNewOpenQuery = /新規|オープン|open|新店|ニューオープン|開業|開店|開院/i.test(query)
-        const igNew = !!(j.newness_type && j.newness_type !== 'unknown') || !!enrich?.has_opening || fromNewOpenQuery
+        // 新店根拠は「投稿本文/検出の新店シグナル」または「補完で得たGoogle開業日」に限る。
+        // 以前は検索クエリに新店ワードが含まれるだけで igNew=true にしていた（全クエリが該当＝新店バーが崩壊し、
+        // 電話+住所さえあれば古い店でもHOTになっていた）ため、クエリ由来フラグは新店根拠に使わない。
+        const igNew = !!(j.newness_type && j.newness_type !== 'unknown') || !!enrich?.has_opening
         const ch = detectChain(j.shop_name || shop || '', `${r.title} ${r.snippet}`)
         // 道の駅/産直/JA/公共/大型施設/大手 は営業対象外（ターゲット=個人事業主・小規模店）。プロフィール名/本文/タイトルから検出
         const bigIW = detectBigOrPublic(`${enrich?.profile_name || ''} ${j.shop_name || shop || ''} ${addressVal || ''}`)
         // 確立済み大型: フォロワー数万 / 多店舗・フランチャイズ語
         const igFollowers = enrich?.profile_followers || 0
         const multiStoreIW = detectMultiStore(`${enrich?.profile_name || ''} ${enrich?.profile_bio || ''} ${r.title} ${r.snippet}`)
-        const bigEstablishedIW = igFollowers >= BIG_IG_FOLLOWERS || multiStoreIW.exclude
+        const branchIW = looksLikeBranchStore(enrich?.profile_name || j.shop_name || shop || '')
+        const bigEstablishedIW = igFollowers >= BIG_IG_FOLLOWERS || multiStoreIW.exclude || branchIW
         const sc = scoreCandidate({
-          source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone),
+          source: 'instagram_web', isJapan: japanOk, hasShopName: !!(j.shop_name || shop), hasPhone: !!finalPhone && isJapanPhone(finalPhone) && !isTollFreeJp(finalPhone),
           hasArea: !!area || !!addressVal, hasOpeningDate: !!enrich?.has_opening, isFuture: enrich?.business_status === 'FUTURE_OPENING',
           igNew, regionalNew: false, newListing: false, placesMatched: !!placeMatched, hasOfficial: !!(officialVal || reservationVal || lineVal),
           isChain: ch.definite || bigIW.exclude, chainSuspect: ch.suspect && !ch.definite, isOrg: bigIW.exclude, isEventRecruit: false, isForeign: foreignFinal, isDup: false, reviewMany: false,

@@ -7,7 +7,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.js'
-import { detectBigOrPublicStrong, looksLikeBranchStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublicStrong, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
 import { fetchInstagramProfile } from './enrichProfile.js'
@@ -134,9 +134,11 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     const bigStrong = detectBigOrPublicStrong(gtext)
     const chainDef = detectChain(c.name || '', c.regional_media_newness_reason || '').definite
     const branch = looksLikeBranchStore(c.name)
-    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch) {
-      const why = branch ? '支店/チェーン店（○○店）' : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
-      await admin.from('lead_candidates').update({ lead_temperature: bigStrong.exclude || chainDef ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: bigStrong.exclude || chainDef, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
+    const multi = detectMultiStore(gtext)  // 2店舗以上/姉妹店/FC（分類時のみ検査で投入ゲートに無かった＝バイパスしていた）
+    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude) {
+      const excludeHard = bigStrong.exclude || chainDef || multi.exclude
+      const why = branch ? '支店/チェーン店（○○店）' : multi.exclude ? `2店舗以上/姉妹店/FC(${String(multi.hit).trim()})` : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
+      await admin.from('lead_candidates').update({ lead_temperature: excludeHard ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: excludeHard, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }
     // 1.7) Instagramフォロワー1000人以上 = 確立済み → 投入しない。IGリンクがある候補のみ確認（ログイン壁で取れない場合はスキップ）。
@@ -150,9 +152,14 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
         reviewExcluded++; continue
       }
     }
-    // 2) 既存案件と電話重複なら、二重投入せず候補をリンク
+    // 2) 既存案件と電話重複なら、二重投入せず候補をリンク。
+    //    ※桁が欠けた部分番号(%digits%)は無関係な案件に誤マッチして"重複扱い"で新店を握り潰すため、
+    //      完全な10/11桁のときだけ末尾10桁で照合する。
     const digits = onlyDigits(phone)
-    const { data: exCase } = await admin.from('cases').select('id').or(`phone1.eq.${phone},phone1.ilike.%${digits}%`).limit(1)
+    const dial = digits.slice(-10)
+    const exCase = (digits.length === 10 || digits.length === 11)
+      ? (await admin.from('cases').select('id').ilike('phone1', `%${dial}%`).limit(1)).data
+      : null
     if (exCase?.[0]) {
       await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: exCase[0].id, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', c.id)
       linkedDup++; continue

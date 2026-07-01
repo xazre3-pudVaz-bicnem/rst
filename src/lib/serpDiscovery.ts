@@ -6,11 +6,12 @@
 // 件数より質。電話/住所なしはHOT禁止。日本国内のみ。大手/公共/閉店/重複は除外。差分(既読URLスキップ)対応。
 // ============================================================
 import { webSearch, enrichCandidate } from './instagramWebRun.js'
-import { sanitizeShopName, isValidJpPhone, extractJpPhone } from './regionalParsers.js'
+import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from './regionalParsers.js'
+import { hardExcludeReason } from './excludeGate.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
-import { computeQuality, detectNegative } from './leadQuality.js'
+import { computeQuality, detectNegative, isRealStoreAddress } from './leadQuality.js'
 import { addSignals, applySalesScore } from './leadSignals.js'
 import { getSourceDef, pastDates } from './discoverySources.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -132,7 +133,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const matchedPlaceId = enrich?.place_id || null
         const sn = sanitizeShopName(enrich?.place_name || d.name, { placesMatched: !!matchedPlaceId })
         const name = sn.valid ? sn.name : '店名未確定'
-        const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+        const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
         if (phoneOk) counts.phoneYes++; if (address) counts.addrYes++
         const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!enrich?.prefecture)
         const big = detectBigOrPublic(`${name} ${address}`)
@@ -145,9 +146,12 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const portalNoise = closed.portal || /ツール|まとめ記事|ランキング|比較サイト|一覧表|収集|代行業者|料金表|求人サイト|ポータル|事業者様|業者向け|toB|BtoB|システム|アプリ/.test(noiseText)
         const genericName = !sn.valid || /^(店舗|お店|新規オープン|ショップ|サロン|クリニック|会社|お知らせ|ニュース)$/.test(name)
         const shopConfirmed = (sn.valid && !genericName) || !!matchedPlaceId
+        // 共通ハード除外（フリーダイヤル/○○店支店/大手量販モール/2店舗以上FC/大手チェーン/記事まとめ）を全ソース一貫適用
+        const hardEx = hardExcludeReason({ name, phone, text: `${d.name} ${rr.title || ''} ${rr.snippet || ''}` })
         let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null
-        if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise) temperature = 'EXCLUDED'
-        else if (phoneOk && address && isJapan && shopConfirmed) { temperature = 'HOT'; hotTier = 'B' }
+        if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
+        // HOTは実店舗の住所であること必須（ページ全体から拾った無関係な住所でのHOTを防ぐ）
+        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed) { temperature = 'HOT'; hotTier = 'B' }
         else temperature = 'HOLD'  // 電話/住所欠け or 実店舗未確定（SERPノイズ）は営業前確認のためHOLD
         if (temperature === 'HOT') { counts.hot++; counts.hotB++ } else if (temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
 

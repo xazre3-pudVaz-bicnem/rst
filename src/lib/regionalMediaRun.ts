@@ -10,7 +10,7 @@ import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
-import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone } from './regionalParsers.js'
+import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './targetFilter.js'
@@ -481,7 +481,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 200)}`)
           if (multiD.exclude) { temperature = 'EXCLUDED'; dHotTier = null }
           // 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B
-          const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+          const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
           const cardNew = open.confidence !== 'none' || true  // 店舗ディレクトリ新着＝新規掲載根拠
           let nameUnconfirmedHot = false
           if (temperature === 'HOT') {
@@ -737,7 +737,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             temperature = 'EXCLUDED'; dHotTier = null
           }
           // ===== 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B =====
-          const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+          const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
           const cardNew = cand.matchedKeywords.length > 0 || open.confidence !== 'none'
           let nameUnconfirmedHot = false
           if (temperature === 'HOT') {
@@ -954,7 +954,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           reason = `実店舗ではない/営業対象外（${bigStrongA.exclude ? bigStrongA.hit : isArticleText ? '記事/ニュース/告知の見出し' : '住所がカテゴリ/まとめ等で店舗住所ではない'}）のため除外。${reason}`
         }
         // ===== 新方針のHOT判定 =====
-        const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone)
+        const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
         const hasAreaOk = !!haveArea
         let nameUnconfirmedHot = false
         if (temperature === 'HOT') {

@@ -6,7 +6,8 @@ import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japan
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { scoreCandidate, tierToTemperature } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore, BIG_REVIEW_COUNT } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_REVIEW_COUNT } from './targetFilter.js'
+import { isTollFreeJp } from './regionalParsers.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
 const includesAny = (text: string, list: readonly string[]) =>
@@ -122,10 +123,10 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const address = (raw.address ?? '').trim()
   const hay = `${name} ${address}`
   const phoneNorm = phoneDigits(raw.phone_number)
-  // 日本国内限定: 海外の電話番号は採用しない（HOT条件で日本番号を要求）
+  // 日本国内限定: 海外の電話番号は採用しない（HOT条件で日本番号を要求）。フリーダイヤル(0120等)は店舗直通でないためHOT不可。
   const phoneIsJapan = isJapanPhone(raw.phone_number)
   const hasPhone = !!phoneNorm
-  const hasJapanPhone = hasPhone && phoneIsJapan
+  const hasJapanPhone = hasPhone && phoneIsJapan && !isTollFreeJp(raw.phone_number)
 
   // 日本国内判定（「日本全国」だが「日本国外」は除外）
   const jp = judgeJapan({ address, phone: raw.phone_number, text: `${name} ${address}` })
@@ -145,7 +146,7 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const chainSuspect = chain.suspect && !chain.definite
   const inMall = includesAny(hay, MALL_KEYWORDS)
   const inStation = includesAny(hay, STATION_KEYWORDS)
-  const isBranch = includesAny(name, BRANCH_KEYWORDS)
+  const isBranch = includesAny(name, BRANCH_KEYWORDS) || looksLikeBranchStore(name)
   const excludedName = includesAny(hay, EXCLUDED_NAME_KEYWORDS)
 
   // オーナー到達スコア
