@@ -141,7 +141,7 @@ export default function Leads() {
   const [allTest, setAllTest] = useState<any>(null)
   const [shown, setShown] = useState(50)  // 一覧の表示件数
   const [subFilter, setSubFilter] = useState<'all' | 'named_hot' | 'unconfirmed_hot' | 'has_phone' | 'has_addr' | 'opening_date' | 'new_gbp'>('all')  // HOT絞り込み
-  const [rankMode, setRankMode] = useState<'priority' | 'newest'>('priority')  // 並び順: 架電優先 / 新着
+  const [rankMode, setRankMode] = useState<'priority' | 'newest'>('newest')  // 並び順: 架電優先 / 新着（既定=最新順・HOTを上に出さない）
   // ===== 統合トリアージ =====
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [tGrade, setTGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C' | 'D'>('all')
@@ -1146,8 +1146,13 @@ export default function Leads() {
   // 並び替え: 架電優先（callPriority降順）/ 新着（発見日降順）
   const subSorted = useMemo(() => {
     const arr = [...subFiltered]
+    // 最新日時: 開店日/公開日/検出日 のうち最も新しいものでソート（HOTを上に出さず純粋に最新順）
+    const newestTs = (c: any) => Math.max(
+      ...[c.source_published_date, c.opening_date, c.extracted_open_date, c.regional_media_detected_at, c.first_discovered_at, c.first_seen_at, c.last_seen_at, c.created_date]
+        .map((v: any) => { const t = v ? Date.parse(String(v).replace(/\//g, '-')) : NaN; return Number.isNaN(t) ? 0 : t }),
+    )
     if (rankMode === 'priority') arr.sort((a: any, b: any) => callPriority(b) - callPriority(a))
-    else arr.sort((a: any, b: any) => Date.parse(b.first_seen_at || b.last_seen_at || 0) - Date.parse(a.first_seen_at || a.last_seen_at || 0))
+    else arr.sort((a: any, b: any) => newestTs(b) - newestTs(a))
     return arr
   }, [subFiltered, rankMode])
   const visible = useMemo(() => (shown >= subSorted.length ? subSorted : subSorted.slice(0, shown)), [subSorted, shown])
