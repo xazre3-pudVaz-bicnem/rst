@@ -63,8 +63,13 @@ export function normalizeAddress(input?: string | null): string {
 }
 
 /** 6文字の大文字英数字セッションキーを生成 */
+// スマホ連携キー: 入力しやすい4桁数字（0000〜9999）
 export function generateSessionKey(): string {
-  return Math.random().toString(36).substring(2, 8).toUpperCase()
+  return String(Math.floor(Math.random() * 10000)).padStart(4, '0')
+}
+/** 4桁数字キーの形式か */
+export function isValidSessionKey(k?: string | null): boolean {
+  return /^\d{4}$/.test(String(k || ''))
 }
 
 /** GoogleマップURLを住所（または店名）から生成 */

@@ -184,9 +184,11 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     }
   }
 
-  // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間があれば実行。
+  // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
+  // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
   let swept: any = null
-  if (Date.now() - startMs < budgetMs - 6000) { try { swept = await sweepHotToCases(admin, { limit: 60, userId: opts.userId || null, mapsKey }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+  const sweepBudget = budgetMs - (Date.now() - startMs) - 4000
+  if (sweepBudget > 4000) { try { swept = await sweepHotToCases(admin, { limit: 40, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
 
   // 明細を保存
   if (items.length) await admin.from('auto_crawl_run_items').insert(items).then(() => {}, () => {})

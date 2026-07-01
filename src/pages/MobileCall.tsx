@@ -148,13 +148,14 @@ export default function MobileCall() {
             </div>
           )}
           <div className="space-y-2">
-            <Label>セッションキー（6文字）</Label>
+            <Label>セッションキー（4桁の数字）</Label>
             <Input
               value={inputKey}
-              onChange={(e) => setInputKey(e.target.value.toUpperCase())}
-              maxLength={6}
-              placeholder="ABC123"
-              className="text-center text-base font-mono tracking-widest"
+              onChange={(e) => setInputKey(e.target.value.replace(/\D/g, '').slice(0, 4))}
+              inputMode="numeric"
+              maxLength={4}
+              placeholder="1234"
+              className="text-center text-lg font-mono tracking-[0.5em]"
             />
             <Button className="w-full" onClick={connect}>接続</Button>
           </div>

@@ -41,7 +41,7 @@ import {
   RECALL_STATUSES,
   type QuickFilterKey,
 } from '@/lib/constants'
-import { generateSessionKey, phoneDigits, toCsv, downloadCsv } from '@/lib/utils'
+import { generateSessionKey, isValidSessionKey, phoneDigits, toCsv, downloadCsv } from '@/lib/utils'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { useAuth } from '@/context/AuthContext'
@@ -63,7 +63,8 @@ function loadAutoSettings(): AutoSearchSettings {
 
 function getOrCreateSessionKey(): string {
   let key = localStorage.getItem(LS_PC_SESSION_KEY)
-  if (!key) {
+  // 旧6桁英数字キーは4桁数字へ移行（入力しやすくするため）
+  if (!key || !isValidSessionKey(key)) {
     key = generateSessionKey()
     localStorage.setItem(LS_PC_SESSION_KEY, key)
   }
@@ -384,7 +385,7 @@ export default function Dashboard() {
     const name = window.prompt('このフィルターを保存する名前を入力してください')
     if (!name?.trim()) return
     const v: SavedView = {
-      id: generateSessionKey(),
+      id: (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
       name: name.trim(),
       quickFilter,
       searchText,

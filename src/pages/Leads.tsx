@@ -957,12 +957,18 @@ export default function Leads() {
     setCrawlBusy(only)
     try {
       const res = await fetch('/api/cron/auto-lead-crawl', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ only }) })
-      const json = await res.json().catch(() => ({}))
-      if (json?.skipped) toast.info(json.reason || 'スキップされました')
-      else if (json?.ok) toast.success(`巡回完了(${only}): HOT-A${json.hot_a_count ?? 0}/HOT-B${json.hot_b_count ?? 0} 投入${json.cases_inserted_count ?? 0} 成功${json.success}/失敗${json.failed} (${Math.round((json.elapsedMs || 0) / 1000)}秒)`)
-      else toast.error(json?.error || '巡回に失敗しました')
+      const json = await res.json().catch(() => null)
+      // 504等でJSONが返らない場合: 全取得元巡回は1回2取得元ずつ処理し裏で継続するため「失敗」ではなく「継続中」を案内
+      if (!json) {
+        if (res.status === 504 || res.status === 408 || res.status === 0) toast.info('時間切れで一部のみ実行しました（残りは次回ローテーションで自動継続）。数十秒後にもう一度押すと続きを処理します。')
+        else toast.error(`巡回に失敗しました（HTTP ${res.status}）`)
+      } else if (json.skipped) toast.info(json.reason || 'スキップされました')
+      else if (json.ok) {
+        const label = json.status === 'error' ? '巡回エラー' : json.status === 'partial' ? '一部完了' : '巡回完了'
+        toast.success(`${label}(${only}): HOT-A${json.hot_a_count ?? 0}/HOT-B${json.hot_b_count ?? 0} 投入${json.cases_inserted_count ?? 0} 成功${json.success}/失敗${json.failed} (${Math.round((json.elapsedMs || 0) / 1000)}秒)`)
+      } else toast.error(json.error || '巡回に失敗しました')
       loadAutoCrawl(); load()
-    } catch (e) { toast.error('巡回に失敗しました: ' + jpError(e)) } finally { setCrawlBusy('') }
+    } catch (e) { toast.info('通信が中断しました（巡回は裏で継続します）。数十秒後に再度お試しください。' + (jpError(e) ? ` [${jpError(e)}]` : '')); loadAutoCrawl() } finally { setCrawlBusy('') }
   }
   async function toggleAutoCrawl() {
     const next = !autoCrawlOn
