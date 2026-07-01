@@ -331,8 +331,10 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
       // E: 1年以上前 → 新店扱いしない。新規根拠なければ EXCLUDED/HOLD
       if (!fromNewOpenQuery) { temperature = reviews100 ? 'EXCLUDED' : 'HOLD'; hot_tier = null }
     } else {
-      // openingDateなし: 新規GBP優先（口コミ0・登録直後の可能性）。電話+住所あれば HOT-B（GBP登録直後＝集客関心高く成約率高い）
-      if (countZero && phoneOkFinal && addrOkFinal && (oldestRecent || latestDaysAgo === null)) { temperature = 'HOT'; hot_tier = 'B'; newGbpPriority = true }
+      // openingDateなし: 新規GBP優先。Googleの開業日はほぼ未設定のため、口コミ0〜5件＝新店/MEO弱者の可能性が高い候補を
+      // 電話+住所+非チェーンで HOT-B に（ユーザー方針: 口コミ0〜5件のGBPはMEO新店候補。口コミ30件以上は別途除外）。
+      const lowReviewNew = reviewKnown && (reviewCount as number) <= 5
+      if ((countZero || lowReviewNew) && phoneOkFinal && addrOkFinal) { temperature = 'HOT'; hot_tier = 'B'; newGbpPriority = true }
       // openingDateなし + 口コミ過多は除外を強化
       else if (reviews100) { temperature = 'EXCLUDED'; hot_tier = null }
       else if (reviewsHigh && !newnessStrong) { temperature = 'EXCLUDED'; hot_tier = null }
