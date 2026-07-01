@@ -102,7 +102,7 @@ export function getDefaultSettings() {
     placesNationwide: true,
     placesMaxQueriesPerDay: 30,
     placesPerQuery: 20,
-    placesMaxDetailsPerDay: 100,
+    placesMaxDetailsPerDay: 300,
     areaPreset: 'ittokensanken',
     maxPerQuery: 10,
     maxQueriesPerDay: 50,
@@ -409,7 +409,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     let importedCount: number = importedToday || 0
     // 本日のPlace Details件数（コスト上限の基準）
-    const { count: detailsTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('google_places_checked_at', startToday.toISOString())
+    // 日次Details上限は「実際にDetailsを取得した候補」で数える（EXCLUDED等のlight判定のみの保存は数えない＝上限を無駄に消費しない）
+    const { count: detailsTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('last_details_fetched_at', startToday.toISOString())
     const detailsToday = detailsTodayCount || 0
     debug.detailsToday = detailsToday
     debug.searchMode = searchMode
@@ -498,6 +499,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
         // === Details取得（hardExcludeでなければ）===
         let p: any = lp
+        let detailFetched = false   // 実際にPlace Details APIを呼んだか（日次上限はこれで数える）
         const fromNewOpen = gq.isNewOpen
         if (!hardExclude) {
           // 504回避: 時間予算を超えたら詳細取得を打ち切り次回へ（SKIPPED）
@@ -516,7 +518,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '口コミ多数Detailsスキップ', saved: false }); continue
           }
           const detail = await placeDetails(apiKey, placeId)
-          counts.detailCalls++; qstat.detail++
+          counts.detailCalls++; qstat.detail++; detailFetched = true
           if (detail) p = detail
           else { counts.detailFailed++; qReason('Details取得失敗'); p = lp } // 取得失敗でもlight情報で判定・保存（握りつぶさない）
         }
@@ -619,7 +621,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           opening_date_source: og.has ? 'google_places' : null, opening_date_confidence: og.has ? og.confidence : null, opening_date_precision: og.has ? (og.day ? 'day' : og.month ? 'month' : 'year') : null,
           opening_date_band: (classified as any).opening_date_band || null, is_new_gbp_priority: !!(classified as any).is_new_gbp_priority,
           google_primary_type_display_name: (p.primaryTypeDisplayName?.text || p.primaryTypeDisplayName || null),
-          google_places_logic_version: GP_LOGIC_VERSION, last_details_fetched_at: nowIso, last_evaluated_at: nowIso,
+          google_places_logic_version: GP_LOGIC_VERSION, last_details_fetched_at: detailFetched ? nowIso : (existing?.last_details_fetched_at ?? null), last_evaluated_at: nowIso,
           days_until_opening: og.daysUntil, days_since_opening: og.daysSince,
           google_places_checked_at: nowIso, opening_date_checked_at: og.has ? nowIso : null,
           // 全国モード: 検索条件ではなく抽出結果として保存
