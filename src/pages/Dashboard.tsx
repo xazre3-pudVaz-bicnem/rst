@@ -280,6 +280,14 @@ export default function Dashboard() {
         case 'notLost':
           if (LOST_STATUSES.includes(c.status as never)) return false
           break
+        case 'aiRecallToday':
+          // 本日再架電対象(AI): 次回架電予定日が今日以前 かつ NGでない
+          if (c.do_not_call) return false
+          if (!c.next_ai_call_at || moment(c.next_ai_call_at).isAfter(moment().endOf('day'))) return false
+          break
+        case 'notNg':
+          if (c.do_not_call) return false
+          break
       }
       // 詳細検索
       if (criteria) {

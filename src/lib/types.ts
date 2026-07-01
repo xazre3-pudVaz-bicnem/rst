@@ -31,6 +31,13 @@ export interface Case {
   created_by_user_name?: string | null
   imported_by_user_id?: string | null
   imported_by_user_name?: string | null
+  // AIテレアポ（denormalize: 一覧表示・フィルタ用）
+  do_not_call?: boolean | null
+  last_ai_call_at?: string | null
+  ai_call_status?: string | null
+  next_ai_call_at?: string | null
+  ai_call_temperature?: string | null
+  ai_call_next_action?: string | null
   created_date: string
   updated_date: string
 }

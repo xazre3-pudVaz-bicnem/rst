@@ -176,17 +176,21 @@ export type QuickFilterKey =
   | 'docSent'
   | 'notLost'
   | 'mine'
+  | 'aiRecallToday'
+  | 'notNg'
 
 export const QUICK_FILTERS: { key: QuickFilterKey; label: string }[] = [
   { key: 'all', label: 'すべて' },
   { key: 'todayCall', label: '今日やる' },
   { key: 'uncalled', label: '未架電' },
   { key: 'recall', label: '再コール' },
+  { key: 'aiRecallToday', label: '本日再架電(AI)' },
   { key: 'overdueRecall', label: '期限切れ' },
   { key: 'prospect', label: '見込み' },
   { key: 'appo', label: 'アポ' },
   { key: 'docSent', label: '資料送付済み' },
   { key: 'notLost', label: '失注以外' },
+  { key: 'notNg', label: 'NG除外' },
   { key: 'mine', label: '自分の担当' },
 ]
 

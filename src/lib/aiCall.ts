@@ -8,7 +8,7 @@
 import { supabase } from './supabaseClient'
 import type { AiCallScript, AiCallJob, AiCallStatus, Appointment, Case } from './types'
 import { getCallProvider } from './aiCallProvider'
-import { syncAppointment } from './calendarSync'
+import { syncAppointmentResult, type SyncResult } from './calendarSync'
 
 function unwrap<T>(data: T | null, error: { message: string } | null): T {
   if (error) throw new Error(error.message)
@@ -82,8 +82,8 @@ export async function runTestCall(kase: Case, script: AiCallScript | null, opts:
       next_action: result.nextAction, provider_call_sid: result.providerCallSid, provider: result.provider, error: result.error ?? null,
     })
 
-    // 4) 案件側: 最新架電ステータス更新＋NGなら再架電防止
-    const caseUpdate: any = { last_ai_call_at: nowIso, ai_call_status: result.status }
+    // 4) 案件側: 最新架電ステータス/温度感/次回アクションを反映（一覧表示用）＋NGなら再架電防止
+    const caseUpdate: any = { last_ai_call_at: nowIso, ai_call_status: result.status, ai_call_temperature: result.temperature ?? null, ai_call_next_action: result.nextAction ?? null }
     if (result.status === 'NG') caseUpdate.do_not_call = true
     await supabase.from('cases').update(caseUpdate).eq('id', kase.id).then(() => {}, () => {})
 
@@ -94,8 +94,20 @@ export async function runTestCall(kase: Case, script: AiCallScript | null, opts:
   }
 }
 
-/** 興味あり→訪問予定を作成し、既存のGoogleカレンダー同期(syncAppointment)を再利用。ジョブに紐付け。 */
-export async function createInterestAppointment(job: AiCallJob, kase: Case, appoAtIso: string, salesRep: string | null, userId: string | null): Promise<Appointment> {
+/** 次回架電予定日を設定（不在/担当者不在/再架電）。案件の next_ai_call_at と状態を更新し、ジョブにも記録。 */
+export async function setNextCall(kase: Case, job: AiCallJob | null, nextAtIso: string): Promise<void> {
+  await supabase.from('cases').update({ next_ai_call_at: nextAtIso, ai_call_status: job?.status ?? kase.ai_call_status ?? null }).eq('id', kase.id).then(() => {}, () => {})
+  if (job?.id) await AiCallJobApi.update(job.id, { next_action: `${new Date(nextAtIso).toLocaleString('ja-JP')} に再架電` }).catch(() => {})
+}
+
+/** NG解除（管理者）: 再架電可能に戻す。 */
+export async function releaseNg(caseId: string): Promise<void> {
+  const { error } = await supabase.from('cases').update({ do_not_call: false, ai_call_status: null }).eq('id', caseId)
+  if (error) throw new Error(error.message)
+}
+
+/** 興味あり→訪問予定を作成し、既存のGoogleカレンダー同期を再利用。カレンダー反映の成否も返す。 */
+export async function createInterestAppointment(job: AiCallJob, kase: Case, appoAtIso: string, salesRep: string | null, userId: string | null): Promise<{ appointment: Appointment; sync: SyncResult }> {
   const memo = [
     '【AIテレアポ 興味ありから登録】',
     job.ai_summary ? `要約: ${job.ai_summary}` : '',
@@ -107,9 +119,9 @@ export async function createInterestAppointment(job: AiCallJob, kase: Case, appo
     appo_at: appoAtIso, memo, created_by_id: userId,
   }).select().single()
   if (error || !appt) throw new Error(error?.message || '訪問予定の作成に失敗しました')
-  // 既存のGoogleカレンダー同期を再利用（設定ON＆サービスアカウント設定時のみ反映）
-  syncAppointment(appt as Appointment, kase)
-  // ジョブに紐付け＋案件を「興味あり」に
+  // 既存のGoogleカレンダー同期を再利用（設定ON＆サービスアカウント設定時のみ反映）。成否を返す。
+  const sync = await syncAppointmentResult(appt as Appointment, kase)
+  // ジョブに紐付け（訪問予定登録済みの印）
   await AiCallJobApi.update(job.id, { appointment_id: (appt as any).id }).catch(() => {})
-  return appt as Appointment
+  return { appointment: appt as Appointment, sync }
 }

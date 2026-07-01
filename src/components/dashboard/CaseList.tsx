@@ -1,4 +1,5 @@
 import { List, type RowComponentProps } from 'react-window'
+import moment from 'moment'
 import { Search, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -52,6 +53,15 @@ function CaseRow({
       </span>
       {/* 住所 */}
       <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{c.address || '—'}</span>
+      {/* AIテレアポ: NG / 温度感 / 本日再架電 */}
+      {c.do_not_call ? (
+        <span title="NG（再架電しない）" className="shrink-0 rounded bg-red-500 px-1 text-[8px] font-bold text-white">NG</span>
+      ) : (
+        <>
+          {c.next_ai_call_at && moment(c.next_ai_call_at).isSameOrBefore(moment().endOf('day')) && <span title={`本日再架電予定 ${moment(c.next_ai_call_at).format('MM/DD')}`} className="shrink-0 text-[10px]">📞</span>}
+          {c.ai_call_temperature && <span title={`温度感 ${c.ai_call_temperature}`} className={cn('shrink-0 text-[10px] font-bold', c.ai_call_temperature === '高' ? 'text-red-600' : c.ai_call_temperature === '中' ? 'text-amber-600' : 'text-sky-600')}>{c.ai_call_temperature === '高' ? '高' : c.ai_call_temperature === '中' ? '中' : '低'}</span>}
+        </>
+      )}
       {/* ステータス（薄色バッジ） */}
       <span className={cn('shrink-0 rounded-sm px-1 py-0.5 text-[9px] font-medium', statusColor(displayStatus(c.status)))}>
         {displayStatus(c.status)}

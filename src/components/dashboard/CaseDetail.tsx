@@ -194,11 +194,18 @@ export default function CaseDetail({
             </div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           <Button variant="ghost" size="icon" onClick={onPrev} disabled={!hasPrev} title="前の案件 (k)"><ChevronLeft className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" onClick={onNext} disabled={!hasNext} title="次の案件 (j)"><ChevronRight className="h-4 w-4" /></Button>
           <Button variant="outline" size="sm" onClick={onNextUncalled} title="次の未架電へ"><SkipForward className="h-3.5 w-3.5" />次の未架電</Button>
-          <Button variant="outline" size="sm" onClick={() => setAiCallOpen(true)} disabled={!canWrite} title="AIがこの番号にテスト架電します（モック）"><Bot className="h-3.5 w-3.5" />AI架電テスト{(c as any).do_not_call && <span className="ml-0.5 rounded bg-red-100 px-1 text-[9px] text-red-600">NG</span>}</Button>
+          {/* AI架電テスト。NG(再架電しない)の場合は赤表示で「架電不可」。モーダルから管理者はNG解除可。 */}
+          <Button
+            variant="outline" size="sm" onClick={() => setAiCallOpen(true)} disabled={!canWrite}
+            title={c.do_not_call ? 'この案件はNG指定のため架電できません（モーダルから管理者は解除可）' : 'AIがこの番号にテスト架電します（モック）'}
+            className={cn(c.do_not_call && 'border-red-400 text-red-600 hover:bg-red-50')}
+          >
+            <Bot className="h-3.5 w-3.5" />{c.do_not_call ? 'NG・架電不可' : 'AI架電テスト'}
+          </Button>
           <Button variant="outline" size="sm" onClick={onEdit} disabled={!canWrite}><Pencil className="h-3.5 w-3.5" />編集</Button>
           <Button variant="destructive" size="sm" onClick={handleDelete} disabled={!canWrite}><Trash2 className="h-3.5 w-3.5" />削除</Button>
         </div>
@@ -214,6 +221,23 @@ export default function CaseDetail({
 
       {/* 本体（縦スクロール） */}
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
+        {/* AI架電サマリー（架電履歴がある場合のみ） */}
+        {(c.last_ai_call_at || c.do_not_call || c.next_ai_call_at) && (
+          <section className={cn('rounded-lg border p-2.5', c.do_not_call ? 'border-red-300 bg-red-50/50 dark:bg-red-500/10' : 'bg-muted/20')}>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="flex items-center gap-1 text-xs font-bold text-muted-foreground"><Bot className="h-3.5 w-3.5" />AIテレアポ</span>
+              <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setAiCallOpen(true)} disabled={!canWrite}>架電ログ・発信</Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
+              {c.do_not_call && <span className="rounded-full bg-red-500 px-2 py-0.5 font-bold text-white">NG（再架電しない）</span>}
+              {c.ai_call_status && !c.do_not_call && <span>ステータス: <b>{c.ai_call_status}</b></span>}
+              {c.ai_call_temperature && <span>温度感: <b className={c.ai_call_temperature === '高' ? 'text-red-600' : c.ai_call_temperature === '中' ? 'text-amber-600' : 'text-sky-600'}>{c.ai_call_temperature}</b></span>}
+              {c.last_ai_call_at && <span className="text-muted-foreground">最終架電: {moment(c.last_ai_call_at).format('MM/DD HH:mm')}</span>}
+              {c.next_ai_call_at && <span className="text-amber-700 dark:text-amber-300">次回架電予定: {moment(c.next_ai_call_at).format('MM/DD HH:mm')}</span>}
+            </div>
+            {c.ai_call_next_action && <div className="mt-1 text-2xs text-muted-foreground">次回アクション: {c.ai_call_next_action}</div>}
+          </section>
+        )}
         {/* ステータス変更カード */}
         <section className="rounded-lg border bg-muted/20 p-2.5">
           <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>
