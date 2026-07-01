@@ -28,7 +28,6 @@ import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError, roundTo15 } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
-import { TimeRexShare } from '@/components/TimeRex'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
@@ -198,7 +197,6 @@ export default function Appointments() {
 
       {/* タイムライングリッド */}
       <div className="flex-1 overflow-auto">
-        <div className="p-2"><TimeRexShare compact /></div>
         <table className="w-full border-collapse text-2xs">
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
