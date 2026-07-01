@@ -596,7 +596,11 @@ export default function Leads() {
 
   async function runInstagram() {
     if (!settings.igEnabled) { toast.error('設定でInstagram取得がOFFです'); return }
-    if (igConfigured === false) { toast.error('IG_ACCESS_TOKEN / IG_USER_ID が未設定です'); return }
+    if (igConfigured === false) {
+      // 公式Meta APIは未設定。設定不要で同等の「Instagram Web検索」への切替を提案。
+      if (window.confirm('ハッシュタグ検索は公式Instagram API（Meta）の IG_ACCESS_TOKEN / IG_USER_ID が必要で、現在未設定です。\n\n設定不要で同じ「新店候補」を探せる Instagram Web検索（稼働中）を代わりに実行しますか？')) { runIw() }
+      return
+    }
     setIgRunning(true); setIgResult(null)
     try {
       const { data: sess } = await supabase.auth.getSession()
@@ -2034,15 +2038,20 @@ export default function Leads() {
                 ) : igConfigured ? (
                   <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-600">接続OK（IGトークン設定済み）</span>
                 ) : (
-                  <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] text-red-600">未設定（IG_ACCESS_TOKEN / IG_USER_ID）</span>
+                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">未設定（任意）— 下の「Instagram Web検索」で代替可</span>
                 )}
               </div>
-              <Button size="sm" onClick={runInstagram} disabled={igRunning || !settings.igEnabled}>
-                <Sparkles className="h-3.5 w-3.5" />{igRunning ? '取得中...' : 'Instagram取得・実行'}
-              </Button>
+              {igConfigured === false ? (
+                <Button size="sm" variant="outline" onClick={runIw} disabled={iwRunning}>{iwRunning ? '検索中...' : '代わりにWeb検索を実行'}</Button>
+              ) : (
+                <Button size="sm" onClick={runInstagram} disabled={igRunning || !settings.igEnabled}>
+                  <Sparkles className="h-3.5 w-3.5" />{igRunning ? '取得中...' : 'Instagram取得・実行'}
+                </Button>
+              )}
             </div>
             <div className="mt-1 text-[10px] text-muted-foreground">
               新規オープン系ハッシュタグを毎朝6:30に巡回（7日30ユニーク制限内）。Places照合は任意。Instagram単体HOT候補は初期は自動投入せずHOLD扱い（このタブの一覧から手動投入できます）。
+              {igConfigured === false && <span className="mt-0.5 block text-amber-700 dark:text-amber-300">※ハッシュタグ検索は公式Instagram API（Meta）の設定が必要です（Metaアプリ＋ビジネスアカウント＋審査）。設定不要で同等の新店候補を探すには、下の「Instagram Web検索（新店候補）」をお使いください（稼働中）。</span>}
             </div>
             {igResult && (
               <div className="mt-2 space-y-1">
