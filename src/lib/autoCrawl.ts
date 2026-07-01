@@ -56,8 +56,8 @@ function mapCounts(r: any) {
 export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: CrawlOpts = {}): Promise<any> {
   const only = opts.only || 'all'
   const trigger = opts.trigger || 'cron'
-  // Vercel maxDuration=60s。最終書き込み＋ロック解放の余白を確保するため48sで打ち切る。
-  const budgetMs = Math.max(20000, Math.min(50000, opts.budgetMs || 48000))
+  // Vercel maxDuration=60s。外部fetchのオーバーシュートを見込み、余白を大きく取り40sで打ち切る。
+  const budgetMs = Math.max(20000, Math.min(50000, opts.budgetMs || 40000))
   const startMs = Date.now()
   const mapsKey = env.GOOGLE_MAPS_API_KEY || null
 
@@ -147,14 +147,18 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     })
   }
 
+  // 60s枠を確実に守るため、全取得元巡回では1回あたり最大2取得元だけ処理し、残りは次回にローテーション。
+  const maxPhases = only === 'all' ? 2 : types.length
+  let phasesRun = 0
   for (const t of types) {
     const elapsed = Date.now() - startMs
     const itemStart = new Date().toISOString()
-    if (elapsed > budgetMs - t.minMs) {
-      // 時間切れ → 次回継続
-      items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'timeout', error_message: '時間予算切れのため次回継続', started_at: itemStart, finished_at: new Date().toISOString() })
+    if (phasesRun >= maxPhases || elapsed > budgetMs - t.minMs) {
+      // 今回は打ち切り → 次回継続（ローテーションで全取得元を順にカバー）
+      items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'deferred', error_message: phasesRun >= maxPhases ? '今回は2取得元まで（次回ローテーションで継続）' : '時間予算切れのため次回継続', started_at: itemStart, finished_at: new Date().toISOString() })
       continue
     }
+    phasesRun++
     try {
       const r = await t.run()
       if (r?.skipped) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); continue }
@@ -174,9 +178,9 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     }
   }
 
-  // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOTはHOLD降格）。時間が残っていれば実行。
+  // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間があれば実行。
   let swept: any = null
-  if (Date.now() - startMs < budgetMs - 4000) { try { swept = await sweepHotToCases(admin, { limit: 100, userId: opts.userId || null }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+  if (Date.now() - startMs < budgetMs - 6000) { try { swept = await sweepHotToCases(admin, { limit: 60, userId: opts.userId || null }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
 
   // 明細を保存
   if (items.length) await admin.from('auto_crawl_run_items').insert(items).then(() => {}, () => {})

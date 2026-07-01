@@ -347,6 +347,9 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   if (bigEstablished || multiStore.exclude) { temperature = 'EXCLUDED'; hot_tier = null }
   // グローバル: HOTは電話＋住所が必須
   if (temperature === 'HOT' && (!phoneOkFinal || !addrOkFinal)) { temperature = 'HOLD'; hot_tier = null }
+  // ユーザー方針: 最古クチコミが30日超＝30日以上前から口コミが付いている＝新規店ではない → 新規投入対象外(HOLD)。
+  // 口コミ投稿日が取れる場合のみ適用（口コミ0件・日付不明は影響しない）。openingDateがあっても実在証拠(古い口コミ)を優先。
+  if (temperature === 'HOT' && oldestDaysAgo !== null && oldestDaysAgo > 30) { temperature = 'HOLD'; hot_tier = null }
 
   const exclusionReasons: string[] = []
   if (isForeign) exclusionReasons.push('日本国外の候補のため除外')
