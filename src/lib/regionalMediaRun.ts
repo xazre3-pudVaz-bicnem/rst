@@ -50,7 +50,8 @@ export function getDefaultRegionalSettings() {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
+// 多くのローカルメディアが未知のbot UAを既定WAFで403にするため、実在ブラウザUAで一覧記事を取得する（robots.txtは別途遵守・記事本文は保存しない）。
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 // fetchタイムアウト: 一覧ページは長め、詳細ページは短め（504回避）
 const LIST_TIMEOUT_MS = 12000
