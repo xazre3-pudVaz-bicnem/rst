@@ -113,7 +113,9 @@ export function parseJalanSpot(html: string, mojibake: boolean): JalanSpot {
   let name = (bracket ? bracket[1] : rawName)
     .replace(/[|｜].*$/, '')
     .replace(/(の)?(アクセス|営業時間|料金|クチコミ|観光情報|詳細|地図|基本情報|周辺).*$/, '')
-    .replace(/\s*[-–|｜]\s*じゃらん.*$/i, '').trim().slice(0, 50)
+    .replace(/\s*[-–|｜]\s*じゃらん.*$/i, '')
+    .replace(/[（(][ァ-ヶー゠-ヿ\s・]+[）)]\s*$/, '')  // 末尾の（カタカナ読み仮名）を除去（じゃらん名称欄）
+    .trim().slice(0, 50)
 
   // 住所: 基本情報「所在地」を最優先 → 本文の所在地ラベル → 緩い抽出
   let address = ''
