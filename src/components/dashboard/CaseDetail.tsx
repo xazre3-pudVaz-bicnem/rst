@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import moment from 'moment'
 import {
   Pencil, Trash2, Save, ExternalLink, MapPin, PhoneCall, CalendarClock,
-  Copy, Search, Building2, Flag, AlertTriangle, ChevronLeft, ChevronRight, SkipForward, Zap,
+  Copy, Search, Building2, Flag, AlertTriangle, ChevronLeft, ChevronRight, SkipForward, Zap, Bot,
 } from 'lucide-react'
+import AiCallModal from '@/components/modals/AiCallModal'
 import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -48,6 +49,7 @@ export default function CaseDetail({
   const [salesRep, setSalesRep] = useState('')
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
+  const [aiCallOpen, setAiCallOpen] = useState(false)
 
   useEffect(() => {
     setSalesRep(selectedCase?.sales_rep ?? '')
@@ -196,6 +198,7 @@ export default function CaseDetail({
           <Button variant="ghost" size="icon" onClick={onPrev} disabled={!hasPrev} title="前の案件 (k)"><ChevronLeft className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" onClick={onNext} disabled={!hasNext} title="次の案件 (j)"><ChevronRight className="h-4 w-4" /></Button>
           <Button variant="outline" size="sm" onClick={onNextUncalled} title="次の未架電へ"><SkipForward className="h-3.5 w-3.5" />次の未架電</Button>
+          <Button variant="outline" size="sm" onClick={() => setAiCallOpen(true)} disabled={!canWrite} title="AIがこの番号にテスト架電します（モック）"><Bot className="h-3.5 w-3.5" />AI架電テスト{(c as any).do_not_call && <span className="ml-0.5 rounded bg-red-100 px-1 text-[9px] text-red-600">NG</span>}</Button>
           <Button variant="outline" size="sm" onClick={onEdit} disabled={!canWrite}><Pencil className="h-3.5 w-3.5" />編集</Button>
           <Button variant="destructive" size="sm" onClick={handleDelete} disabled={!canWrite}><Trash2 className="h-3.5 w-3.5" />削除</Button>
         </div>
@@ -282,6 +285,7 @@ export default function CaseDetail({
         ))}
         </section>
       </div>
+      <AiCallModal open={aiCallOpen} onClose={() => setAiCallOpen(false)} selectedCase={c} canWrite={canWrite} onChanged={onChanged} />
     </div>
   )
 }

@@ -1,0 +1,115 @@
+// ============================================================
+// AIテレアポ サービス層（クライアント）。
+//  - スクリプト/架電ジョブのCRUD
+//  - runTestCall: 1件テスト発信（モック）→結果保存→NGなら再架電防止→ログ化
+//  - createInterestAppointment: 興味あり→訪問予定を作成し、既存のGoogleカレンダー同期を再利用
+// 既存機能は変更しない。実通話はプロバイダ層(aiCallProvider)で差し替え可能。
+// ============================================================
+import { supabase } from './supabaseClient'
+import type { AiCallScript, AiCallJob, AiCallStatus, Appointment, Case } from './types'
+import { getCallProvider } from './aiCallProvider'
+import { syncAppointment } from './calendarSync'
+
+function unwrap<T>(data: T | null, error: { message: string } | null): T {
+  if (error) throw new Error(error.message)
+  return (data ?? ([] as unknown)) as T
+}
+
+export const AiCallScriptApi = {
+  async list(): Promise<AiCallScript[]> {
+    const { data, error } = await supabase.from('ai_call_scripts').select('*').eq('is_active', true).order('is_default', { ascending: false }).order('updated_date', { ascending: false })
+    return unwrap(data, error)
+  },
+  async getDefault(): Promise<AiCallScript | null> {
+    const { data } = await supabase.from('ai_call_scripts').select('*').eq('is_active', true).order('is_default', { ascending: false }).order('updated_date', { ascending: false }).limit(1)
+    return data?.[0] ?? null
+  },
+  async create(payload: Partial<AiCallScript>): Promise<AiCallScript> {
+    const { data, error } = await supabase.from('ai_call_scripts').insert({ ...payload, updated_date: new Date().toISOString() }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<AiCallScript>): Promise<void> {
+    const { error } = await supabase.from('ai_call_scripts').update({ ...payload, updated_date: new Date().toISOString() }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    // 論理削除（is_active=false）。物理削除はしない（ジョブから参照されるため）
+    const { error } = await supabase.from('ai_call_scripts').update({ is_active: false, updated_date: new Date().toISOString() }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const AiCallJobApi = {
+  async listByCase(caseId: string, limit = 30): Promise<AiCallJob[]> {
+    const { data, error } = await supabase.from('ai_call_jobs').select('*').eq('case_id', caseId).order('created_date', { ascending: false }).limit(limit)
+    return unwrap(data, error)
+  },
+  async recent(limit = 100): Promise<AiCallJob[]> {
+    const { data, error } = await supabase.from('ai_call_jobs').select('*').order('created_date', { ascending: false }).limit(limit)
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<AiCallJob>): Promise<void> {
+    const { error } = await supabase.from('ai_call_jobs').update({ ...payload, updated_date: new Date().toISOString() }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export interface RunTestCallOpts { userId?: string | null; forceStatus?: AiCallStatus; provider?: string }
+
+/** 1件テスト発信（モック）。発信中ジョブ作成→プロバイダ実行→結果保存→NGは再架電防止。 */
+export async function runTestCall(kase: Case, script: AiCallScript | null, opts: RunTestCallOpts = {}): Promise<AiCallJob> {
+  if ((kase as any).do_not_call) throw new Error('この会社はNG（再架電しない）に設定されています。架電できません。')
+  const phone = kase.phone1 || ''
+  if (!phone) throw new Error('電話番号が未登録のため架電できません。')
+
+  // 1) 発信中ジョブを作成
+  const nowIso = new Date().toISOString()
+  const { data: job, error: je } = await supabase.from('ai_call_jobs').insert({
+    case_id: kase.id, case_name: kase.name, phone, script_id: script?.id ?? null,
+    status: '発信中' as AiCallStatus, provider: opts.provider || 'mock', called_at: nowIso, created_by_id: opts.userId ?? null,
+  }).select().single()
+  if (je || !job) throw new Error(je?.message || 'ジョブ作成に失敗しました')
+
+  try {
+    // 2) プロバイダ実行（既定モック）
+    const provider = getCallProvider(opts.provider || 'mock')
+    const result = await provider.placeCall({ phone, caseName: kase.name, script: script?.body || '', forceStatus: opts.forceStatus })
+
+    // 3) 結果を保存
+    await AiCallJobApi.update(job.id, {
+      status: result.status, called_at: nowIso, duration_sec: result.durationSec,
+      transcript: result.transcript, ai_summary: result.aiSummary, temperature: result.temperature,
+      next_action: result.nextAction, provider_call_sid: result.providerCallSid, provider: result.provider, error: result.error ?? null,
+    })
+
+    // 4) 案件側: 最新架電ステータス更新＋NGなら再架電防止
+    const caseUpdate: any = { last_ai_call_at: nowIso, ai_call_status: result.status }
+    if (result.status === 'NG') caseUpdate.do_not_call = true
+    await supabase.from('cases').update(caseUpdate).eq('id', kase.id).then(() => {}, () => {})
+
+    return { ...(job as AiCallJob), ...result, called_at: nowIso }
+  } catch (e: any) {
+    await AiCallJobApi.update(job.id, { status: '通話完了', error: String(e?.message || e).slice(0, 300) }).catch(() => {})
+    throw e
+  }
+}
+
+/** 興味あり→訪問予定を作成し、既存のGoogleカレンダー同期(syncAppointment)を再利用。ジョブに紐付け。 */
+export async function createInterestAppointment(job: AiCallJob, kase: Case, appoAtIso: string, salesRep: string | null, userId: string | null): Promise<Appointment> {
+  const memo = [
+    '【AIテレアポ 興味ありから登録】',
+    job.ai_summary ? `要約: ${job.ai_summary}` : '',
+    job.temperature ? `温度感: ${job.temperature}` : '',
+    job.next_action ? `次回アクション: ${job.next_action}` : '',
+  ].filter(Boolean).join('\n')
+  const { data: appt, error } = await supabase.from('appointments').insert({
+    case_id: kase.id, case_name: kase.name, address: kase.address || null, sales_rep: salesRep || null,
+    appo_at: appoAtIso, memo, created_by_id: userId,
+  }).select().single()
+  if (error || !appt) throw new Error(error?.message || '訪問予定の作成に失敗しました')
+  // 既存のGoogleカレンダー同期を再利用（設定ON＆サービスアカウント設定時のみ反映）
+  syncAppointment(appt as Appointment, kase)
+  // ジョブに紐付け＋案件を「興味あり」に
+  await AiCallJobApi.update(job.id, { appointment_id: (appt as any).id }).catch(() => {})
+  return appt as Appointment
+}

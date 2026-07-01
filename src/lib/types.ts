@@ -52,6 +52,42 @@ export interface Appointment {
   updated_date: string
 }
 
+// ===== AIテレアポ MVP =====
+export type AiCallStatus = '未架電' | '発信中' | '通話完了' | '不在' | '担当者不在' | '興味あり' | '興味なし' | '再架電' | 'NG'
+
+export interface AiCallScript {
+  id: string
+  name: string
+  body: string
+  is_default?: boolean | null
+  is_active?: boolean | null
+  created_by_id?: string | null
+  created_date?: string
+  updated_date?: string
+}
+
+export interface AiCallJob {
+  id: string
+  case_id?: string | null
+  case_name?: string | null
+  phone?: string | null
+  script_id?: string | null
+  status: AiCallStatus
+  provider?: string | null
+  provider_call_sid?: string | null
+  called_at?: string | null
+  duration_sec?: number | null
+  transcript?: string | null
+  ai_summary?: string | null
+  temperature?: string | null
+  next_action?: string | null
+  appointment_id?: string | null
+  error?: string | null
+  created_by_id?: string | null
+  created_date?: string
+  updated_date?: string
+}
+
 export interface Recall {
   id: string
   case_id: string
