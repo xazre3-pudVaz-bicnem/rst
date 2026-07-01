@@ -16,6 +16,7 @@ import {
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { cn } from '@/lib/utils'
 import type { Appointment, Case, CallLog, Recall } from '@/lib/types'
+import { TimeRexShare } from '@/components/TimeRex'
 
 export default function Home() {
   const navigate = useNavigate()
@@ -198,6 +199,8 @@ export default function Home() {
                 </Button>
               </div>
             </div>
+
+            <TimeRexShare />
 
             {/* 本日の目標進捗 */}
             <div className="rounded-xl border bg-card p-3">

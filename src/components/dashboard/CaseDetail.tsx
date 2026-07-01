@@ -17,6 +17,7 @@ import { STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } fro
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { mapUrl, googleSearchUrl, normalizeUrl, copyToClipboard, cn, jpError } from '@/lib/utils'
 import type { Case, CallLog, Recall, Template } from '@/lib/types'
+import { TimeRexShare } from '@/components/TimeRex'
 
 interface Props {
   selectedCase: Case | null
@@ -211,6 +212,7 @@ export default function CaseDetail({
 
       {/* 本体（縦スクロール） */}
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
+        <TimeRexShare compact />
         {/* ステータス変更カード */}
         <section className="rounded-lg border bg-muted/20 p-2.5">
           <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>

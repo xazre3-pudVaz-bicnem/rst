@@ -16,6 +16,7 @@ import { ROLES, roleLabel } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { jpError } from '@/lib/utils'
 import type { Profile, SignupRequest } from '@/lib/types'
+import { TimeRexManager } from '@/components/TimeRex'
 
 const isFixedAdmin = (p: Pick<Profile, 'email'>) => (p.email || '').toLowerCase() === FIXED_ADMIN_EMAIL
 
@@ -159,6 +160,8 @@ export default function Users() {
                   <Inbox className="h-3.5 w-3.5" />登録申請（{pendingCount}）
                 </button>
               </div>
+
+              <TimeRexManager />
 
               {tab === 'users' ? (
                 <div className="overflow-x-auto rounded-lg border bg-card">
