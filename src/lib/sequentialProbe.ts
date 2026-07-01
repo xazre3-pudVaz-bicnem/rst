@@ -8,7 +8,7 @@
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
-import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -344,6 +344,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   forwardCount?: number; backfillCount?: number; startIdOverride?: number; force?: boolean
   probeMode?: 'safe' | 'advance'   // safe=last_valid_id+1 / advance=last_checked_id+1
   dayRemaining: number; autoImportPerRun: number; autoImportPerDay: number; importedToday: number; delayMs: number
+  noRender?: boolean   // 一括探索: 重いレンダリングfallback(ScrapingBee~18s)を無効化して高速化
 }): Promise<ProbeResult> {
   const probeMode: 'safe' | 'advance' = opts.probeMode || (site.probe_mode === 'advance' ? 'advance' : 'safe')
   const res: ProbeResult = {
@@ -451,7 +452,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     let c = classify(r)
     // ===== レンダリング fallback: fetch_failed/parser_failed かつ rendering_mode!=static かつ レンダリングAPI設定あり =====
     let rendered = false
-    if ((c.status === 'fetch_failed' || c.status === 'parser_failed') && renderMode !== 'static' && renderConfigured()) {
+    if (!opts.noRender && (c.status === 'fetch_failed' || c.status === 'parser_failed') && renderMode !== 'static' && renderConfigured()) {
       const rr = await renderPage(url, { waitMs: isTabelog ? 6000 : 4000 })
       if (rr.ok && rr.html) {
         rendered = true
@@ -495,8 +496,9 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
 
     const chP = detectChain(name)
     const bigP0 = detectBigOrPublic(`${name} ${address} ${category}`)
+    const bigStrongP = detectBigOrPublicStrong(name)  // 大手チェーン/量販/モール（元祖ニュータンタンメン/はなまるうどん等）
     const multiP = detectMultiStore(`${name} ${bodyAll.slice(0, 300)}`)
-    const bigP = { exclude: bigP0.exclude || multiP.exclude }
+    const bigP = { exclude: bigP0.exclude || bigStrongP.exclude || multiP.exclude }
     const sc = scoreCandidate({
       source: 'regional_media', isJapan, hasShopName: nameValid, hasPhone: !!phone && isJapanPhone(phone), hasArea: !!address,
       hasOpeningDate: hasOpen, isFuture: false, igNew: false, regionalNew: false, newListing: true,
@@ -646,20 +648,27 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     const { count: importedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
     const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
     const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
-    // Vercel 60s上限対策: 全体の時間予算。超えたら残りサイトは次回に継続（レンダリングfallbackが1件~18sあるため余白を大きく）。
-    const runStart = Date.now()
-    const runBudgetMs = Math.max(15000, Math.min(52000, Number(s.runBudgetMs) || 45000))
-    for (const site of sites || []) {
-      if (site.probe_enabled === false) continue
-      if (Date.now() - runStart > runBudgetMs) { (debug as any).deferred = ((debug as any).deferred || 0) + 1; continue }  // 時間切れ→次回継続
-      counts.sources++
-      const pr = await runSequentialProbe(admin, mapsKey, site, {
+    // 「全ソースを確実に追う」: ソースを並列実行（別ドメインなので同時でもレート問題なし）。各ソースは
+    // 内部で delay を入れつつ forwardCount 件を探索。レンダリングfallbackは無効(noRender)で高速化。
+    // 並列なので全体時間 ≒ 最も遅い1ソース。1ソースがハングしても per-source ハード上限で全体を止めない。
+    const bulkForward = Math.max(1, Math.min(30, Number(s.forwardCount) || 15))
+    const bulkDelay = Math.max(150, Math.min(800, Number(s.delayMs) || 400))
+    const perSiteCapMs = Math.max(8000, Math.min(40000, Number(s.perSiteCapMs) || 26000))  // 1ソース上限（cursorはこの範囲で更新される）
+    const activeSites = (sites || []).filter((site: any) => site.probe_enabled !== false)
+    const perSourceDay = Math.max(bulkForward, Math.floor(dayRemaining / Math.max(1, activeSites.length)))
+    const results: any[] = await Promise.all(activeSites.map((site: any) => Promise.race([
+      runSequentialProbe(admin, mapsKey, site, {
         userId, runId, nowIso, mode,
-        forwardCount: Number(s.forwardCount) || undefined, backfillCount: s.backfillCount, startIdOverride: undefined, force: !!s.force,
-        probeMode: s.probeMode === 'advance' ? 'advance' : 'safe',
-        dayRemaining, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: 800,
-      })
-      dayRemaining = Math.max(0, dayRemaining - pr.probed)
+        forwardCount: bulkForward, backfillCount: 0, startIdOverride: undefined, force: !!s.force,
+        probeMode: s.probeMode === 'advance' ? 'advance' : (site.probe_mode === 'advance' ? 'advance' : 'safe'),
+        dayRemaining: perSourceDay, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: bulkDelay, noRender: true,
+      }).then((r: any) => ({ ...r, __site: site })),
+      new Promise<any>((rs) => setTimeout(() => rs({ __timeout: true, __site: site }), perSiteCapMs)),
+    ])))
+    for (const pr of results) {
+      const site = pr.__site
+      if (pr.__timeout) { (debug as any).siteTimeout = ((debug as any).siteTimeout || 0) + 1; debug.siteResults.push({ site: site?.name, timeout: true }); continue }
+      counts.sources++
       counts.probed += pr.probed; counts.valid += pr.valid; counts.invalid += pr.invalid; counts.saved += pr.saved; counts.saveError += pr.saveError
       counts.hot += pr.hot; counts.hotA += pr.hotA; counts.hotB += pr.hotB; counts.hold += pr.hold; counts.excluded += pr.excluded; counts.imported += pr.imported
       counts.alreadyImported += pr.alreadyImported; counts.importFailed += pr.importFailed
@@ -667,7 +676,6 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
       counts.phoneYes += pr.items.filter((i: any) => i.valid && i.phone).length
       counts.addressYes += pr.items.filter((i: any) => i.valid && i.address).length
       debug.siteResults.push(pr)
-      // エラーがあっても自動で無効化しない。要確認(review_flag)＋last_errorに記録するだけ。
       const allInvalid = pr.probed > 0 && pr.valid === 0
       const hadError = pr.fetchFail > 0 || pr.timeouts > 0 || pr.mojibake > 0 || pr.parserFail > 0
       if (hadError || allInvalid) {
