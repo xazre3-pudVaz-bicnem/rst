@@ -5,7 +5,7 @@
 // 自動巡回の各回末尾＋手動ボタンから呼ぶ。重複二重投入はしない。
 // ============================================================
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
-import { isValidJpPhone } from './regionalParsers.js'
+import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.js'
 import { detectBigOrPublicStrong, looksLikeBranchStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
@@ -20,7 +20,21 @@ function igUsername(url?: string | null): string {
   return u && !/^(p|reel|reels|explore|tv|stories|accounts)$/i.test(u) ? u : ''
 }
 
-const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count'
+const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count,phone_source,enriched_phone_source,enriched_address_source,name_unconfirmed_hot,source_detail_url,source_type'
+
+// phone_source/address_source の内部値 → 人が読める取得元ラベル
+function sourceLabel(v?: string | null): string {
+  const map: Record<string, string> = {
+    google_places: 'Google Places', places: 'Google Places', google_maps_url: 'GoogleマップURL',
+    detail_page: '掲載ページ（詳細）', article: '記事本文', list: '一覧ページ', snippet: '検索スニペット',
+    enrich: 'Web補完', instagram_profile: 'Instagramプロフィール', official: '公式サイト',
+  }
+  return v ? (map[v] || v) : '不明'
+}
+// 電話番号の取得元（enriched優先）を人が読める形で
+function phoneOrigin(c: any): string {
+  return sourceLabel(c.enriched_phone_source || c.phone_source)
+}
 
 // 最古クチコミが30日超 = 既に30日以上前から口コミが付いている＝新規店ではない（投入対象外）。
 // クチコミデータが無い(null/0)候補は判定不能なので許可（新規で口コミ0件のケースを弾かないため）。
@@ -84,6 +98,11 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       await admin.from('lead_candidates').update({ lead_temperature: c.should_exclude_from_call_list ? 'EXCLUDED' : 'HOLD', hot_tier: null, auto_insert_skipped_reason: !phoneOk ? '電話番号なし(HOT禁止)→HOLD' : !address ? '住所なし(HOT禁止)→HOLD' : '除外条件' }).eq('id', c.id)
       downgraded++; continue
     }
+    // 1.1) フリーダイヤル/ナビダイヤル(0120/0800/0570) = 店舗直通でない（チェーン/コールセンター）→ 投入せず除外
+    if (isTollFreeJp(phone)) {
+      await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `フリーダイヤル(${phone})は店舗直通でないため対象外` }).eq('id', c.id)
+      reviewExcluded++; continue
+    }
     // 1.5) 最古クチコミが30日超 = 既存店（新規ではない）→ 投入せずHOLD降格（候補が自前の最古日を持つ場合）
     if (reviewTooOld(c)) {
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `最古クチコミ${c.oldest_review_days_ago}日前(30日超=既存店)のため新規投入対象外→HOLD` }).eq('id', c.id)
@@ -140,7 +159,18 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     }
     // 3) 投入
     const name = c.name && c.name !== '店名未確定' ? c.name : (c.name || '（店名未確定）')
-    const memo = [`【一括投入 / HOT-${c.hot_tier || 'B'}${c.sales_priority_grade ? ` / 営業${c.sales_priority_grade}` : ''}】`, `理由: ${c.auto_import_reason || c.regional_media_newness_reason || ''}`, `電話: ${phone}`, `住所: ${address}`, ...(c.call_memo ? ['', c.call_memo] : [])].join('\n')
+    const nameUnclear = !c.name || c.name === '店名未確定'
+    const origin = phoneOrigin(c)
+    const memo = [
+      `【一括投入 / HOT-${c.hot_tier || 'B'}${c.sales_priority_grade ? ` / 営業${c.sales_priority_grade}` : ''}】`,
+      `店名: ${nameUnclear ? '店名未確定' : name}`,
+      `電話: ${phone}　←取得元: ${origin}`,
+      `住所: ${address}${c.enriched_address_source ? `（取得元: ${sourceLabel(c.enriched_address_source)}）` : ''}`,
+      ...(nameUnclear ? [`⚠️ 店名が未確定です。この電話番号（取得元: ${origin}）が対象店のものか、架電前に住所・${c.source_detail_url ? '掲載ページ' : '検索'}で店名をご確認ください。`] : []),
+      `理由: ${c.auto_import_reason || c.regional_media_newness_reason || ''}`,
+      ...(c.source_detail_url ? [`掲載元: ${c.source_detail_url}`] : []),
+      ...(c.call_memo ? ['', c.call_memo] : []),
+    ].join('\n')
     const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: c.industry || c.industry_category || null, status: DEFAULT_STATUS, priority: c.hot_tier === 'A' ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
     if (ce || !created?.id) { skipped++; await admin.from('lead_candidates').update({ auto_insert_attempted: true, auto_insert_success: false, auto_insert_error: ce?.message || 'case作成失敗' }).eq('id', c.id); continue }
     await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)

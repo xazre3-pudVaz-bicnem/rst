@@ -104,6 +104,12 @@ export function isValidJpPhone(raw: string): boolean {
   if (/^0[1-9]\d{8}$/.test(d)) return true             // 固定(10桁・2桁目1-9)
   return false
 }
+
+/** フリーダイヤル/ナビダイヤル（0120/0800/0570）か。店舗直通ではなくチェーン/コールセンターが多いため架電対象から除外する。 */
+export function isTollFreeJp(raw?: string | null): boolean {
+  const d = String(raw || '').replace(/[^\d]/g, '')
+  return /^(0120|0800|0570)/.test(d)
+}
 // 共通: 日本の電話番号抽出（厳格バリデーション付き。0043 370-0043 / 03-52 等は不採用）
 export function extractJpPhone(text: string): string {
   for (const m of text.matchAll(/(?:\+81[\s-]?)?0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}|0120[-\s]?\d{2,3}[-\s]?\d{2,3}|0\d{9,10}/g)) {
