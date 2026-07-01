@@ -21,14 +21,35 @@ function reviewTooOld(c: any): boolean {
   return Number.isFinite(oldest) && oldest > MAX_OLDEST_REVIEW_DAYS
 }
 
-export async function sweepHotToCases(admin: any, opts: { limit?: number; userId?: string | null } = {}): Promise<any> {
+// Google口コミ30件以上 = 確立済み（新店ではない）→ 除外。連番/地域メディア等でGoogle件数が無い候補はPlacesで確認。
+export const BIG_GOOGLE_REVIEWS = 30
+export async function placesReviewCount(mapsKey: string, name: string, address: string): Promise<number | null> {
+  try {
+    const q = `${name} ${address}`.trim()
+    if (!q || !mapsKey) return null
+    const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': mapsKey, 'X-Goog-FieldMask': 'places.userRatingCount,places.displayName,places.formattedAddress' },
+      body: JSON.stringify({ textQuery: q, languageCode: 'ja', regionCode: 'JP', maxResultCount: 1 }),
+    })
+    if (!res.ok) return null
+    const j: any = await res.json()
+    const p = j.places?.[0]
+    return p ? Number(p.userRatingCount || 0) : null
+  } catch { return null }
+}
+
+export async function sweepHotToCases(admin: any, opts: { limit?: number; userId?: string | null; mapsKey?: string | null } = {}): Promise<any> {
   const limit = Math.max(1, Math.min(500, opts.limit || 200))
   const userId = opts.userId || null
+  const mapsKey = opts.mapsKey || null
   const nowIso = new Date().toISOString()
   const { data: rows, error } = await admin.from('lead_candidates').select(FIELDS).eq('lead_temperature', 'HOT').eq('imported_to_cases', false).limit(limit)
   if (error) return { ok: false, error: error.message }
   const list: any[] = rows || []
-  let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0
+  let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0, reviewExcluded = 0
+  let placesLookups = 0
+  const MAX_PLACES = 50
   for (const c of list) {
     const phone = c.phone_number || c.extracted_phone || ''
     const address = c.address || c.extracted_address || ''
@@ -42,6 +63,13 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     if (reviewTooOld(c)) {
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `最古クチコミ${c.oldest_review_days_ago}日前(30日超=既存店)のため新規投入対象外→HOLD` }).eq('id', c.id)
       downgraded++; continue
+    }
+    // 1.55) Google口コミ30件以上 = 確立済み（新店ではない）→ EXCLUDED。※Googleの件数のみで判定（連番等のuser_rating_countはサイト側の件数なので使わない）。Google件数が不明ならPlacesで確認（上限あり）。
+    let gReviews = c.google_user_rating_count == null ? NaN : Number(c.google_user_rating_count)
+    if (!Number.isFinite(gReviews) && mapsKey && placesLookups < MAX_PLACES && (c.name && c.name !== '店名未確定') && address) { placesLookups++; const rc = await placesReviewCount(mapsKey, c.name, address); if (rc != null) { gReviews = rc; await admin.from('lead_candidates').update({ google_user_rating_count: rc }).eq('id', c.id).then(() => {}, () => {}) } }
+    if (Number.isFinite(gReviews) && gReviews >= BIG_GOOGLE_REVIEWS) {
+      await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, user_rating_count: gReviews, auto_insert_skipped_reason: `Google口コミ${gReviews}件(30件以上=確立済み)のため除外` }).eq('id', c.id)
+      reviewExcluded++; continue
     }
     // 1.6) 実店舗ではない記事/まとめ・カテゴリ住所・大手チェーン/量販/ショッピングモール → 投入せずHOLD降格
     const gtext = `${c.name || ''} ${c.regional_media_newness_reason || ''} ${c.search_snippet || ''}`
@@ -67,5 +95,5 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)
     imported++
   }
-  return { ok: true, scanned: list.length, imported, linkedDup, downgraded, skipped }
+  return { ok: true, scanned: list.length, imported, linkedDup, downgraded, reviewExcluded, skipped }
 }

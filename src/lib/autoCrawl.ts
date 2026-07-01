@@ -186,7 +186,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
 
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間があれば実行。
   let swept: any = null
-  if (Date.now() - startMs < budgetMs - 6000) { try { swept = await sweepHotToCases(admin, { limit: 60, userId: opts.userId || null }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+  if (Date.now() - startMs < budgetMs - 6000) { try { swept = await sweepHotToCases(admin, { limit: 60, userId: opts.userId || null, mapsKey }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
 
   // 明細を保存
   if (items.length) await admin.from('auto_crawl_run_items').insert(items).then(() => {}, () => {})

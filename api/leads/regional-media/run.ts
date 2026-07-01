@@ -307,7 +307,7 @@ export default async function handler(req: any, res: any) {
   }
   // 未投入HOTの一括投入スイープ（電話/住所なしHOTはHOLD降格・適格HOTはcases投入・重複はリンク）
   if (body?.sweepHot) {
-    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id }); return res.status(200).json(out) }
+    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null }); return res.status(200).json(out) }
     catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
   // 営業優先度/Web弱点/架電前メモの一括再計算
