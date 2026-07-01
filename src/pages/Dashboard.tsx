@@ -701,8 +701,9 @@ export default function Dashboard() {
           )}
 
           {/* PC: 3カラム（左:案件一覧 / 中央:案件詳細 / 右:コール履歴） */}
+          {/* PC: xl(≧1280px)=一覧/詳細/コール履歴の3カラム。ノートPC(md〜xl)=一覧を広げた2カラム＋履歴は詳細下に折りたたみ。 */}
           <div className="hidden flex-1 overflow-hidden md:flex">
-            <div className="flex w-[34%] min-w-[400px] max-w-[500px] shrink-0 flex-col border-r">
+            <div className="flex w-[40%] min-w-[340px] max-w-[620px] shrink-0 flex-col border-r xl:w-[34%] xl:max-w-[500px]">
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CaseList {...listProps} />
               </div>
@@ -711,11 +712,18 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="min-w-0 flex-1">
-              <CaseDetail {...detailProps} />
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <CaseDetail {...detailProps} />
+              </div>
+              {/* ノートPC(xl未満)ではコール履歴を詳細の下に折りたたみで確保（3カラムが入り切らないため） */}
+              <details className="shrink-0 border-t xl:hidden">
+                <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted/40">📞 コール履歴を開く</summary>
+                <div className="h-[240px] overflow-hidden border-t"><CallLogPanel {...logProps} /></div>
+              </details>
             </div>
 
-            <div className="w-[320px] shrink-0">
+            <div className="hidden w-[320px] shrink-0 xl:block">
               <CallLogPanel {...logProps} />
             </div>
           </div>
