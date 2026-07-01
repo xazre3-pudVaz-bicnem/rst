@@ -96,7 +96,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'lead_auto')
     if (cfg.autoFetch === false) return { skipped: true }
     // 全取得元巡回では10s/5クエリに制限し他フェーズへ譲る。Places単独実行(only=places)は42s/設定値で本格実行。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(10000, 42000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 5 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(9000, 42000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 3 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
@@ -160,7 +160,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     }
     phasesRun++
     try {
-      const r = await t.run()
+      // ハード時間上限: 予算残り or 最大22秒で強制打ち切り（run関数が予算を守らず暴走しても60s枠を死守）。
+      const hardMs = Math.max(6000, Math.min(22000, budgetMs - (Date.now() - startMs) - 8000))
+      const r: any = await Promise.race([
+        t.run(),
+        new Promise((res) => setTimeout(() => res({ __timeout: true }), hardMs)),
+      ])
+      if (r?.__timeout) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'timeout', error_message: `時間上限(${Math.round(hardMs / 1000)}s)で打ち切り・取得済み分は保存・次回継続`, started_at: itemStart, finished_at: new Date().toISOString() }); continue }
       if (r?.skipped) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); continue }
       const c = mapCounts(r)
       agg.hot_a_count += c.hotA; agg.hot_b_count += c.hotB; agg.hold_count += c.hold; agg.excluded_count += c.excluded; agg.cases_inserted_count += c.inserted; agg.lead_saved_count += c.saved
