@@ -748,12 +748,18 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         // 店名は Instagramプロフィール表示名を最優先（投稿タイトル『プレオープン始まります！！』等を店名にしない）
         const POST_TITLE_RE = /(プレ|グランド|ニュー)?オープン(しました|します|予定|のお知らせ|始まり)|開店|開業|開院|新規オープン|本日|お知らせ|キャンペーン|セール|！|!/
-        const titleish = (s: string) => !s || POST_TITLE_RE.test(s) || s.length > 28
-        // 店名: プロフィール表示名 > AI抽出店名 > ヒューリスティック店名。取れなければ『店名未確定』（地名プレースホルダは使わない）
-        const name = (enrich?.profile_name && !titleish(enrich.profile_name)) ? enrich.profile_name
-          : (j.shop_name && !titleish(j.shop_name)) ? j.shop_name
-          : (shop && !titleish(shop)) ? shop
-          : (enrich?.profile_name && enrich.profile_name.length <= 28) ? enrich.profile_name
+        // 店名として不適切: Instagram等の汎用ページ名 / 「新店候補」 / 地名だけ（東京都千代田区 等）
+        const BAD_NAME_RE = /^(instagram|インスタグラム|reels?|ログイン|login|photos?\s|.*新店候補$|.*pickup)/i
+        const PREF_ONLY_RE = /^(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\s]{0,8}(都|道|府|県|市|区|町|村)?$/
+        const isBad = (s?: string) => { const t = (s || '').trim(); return !t || POST_TITLE_RE.test(t) || t.length > 28 || BAD_NAME_RE.test(t) || PREF_ONLY_RE.test(t) }
+        // Instagramハンドル（プロフィール/公式URLから）。店名が取れない時の暫定名に使う（@handle）。
+        const handle = usernameFromUrl(enrich?.instagram || j.instagram_url || r.url || '')
+        const goodHandle = handle && handle.length >= 3 && !/^(p|reel|reels|explore|tv|stories|accounts)$/i.test(handle) ? handle : ''
+        // 店名: プロフィール表示名 > AI抽出店名 > ヒューリスティック > @ハンドル。取れなければ『店名未確定』（地名/Instagram等は使わない）
+        const name = (enrich?.profile_name && !isBad(enrich.profile_name)) ? enrich.profile_name
+          : (j.shop_name && !isBad(j.shop_name)) ? j.shop_name
+          : (shop && !isBad(shop)) ? shop
+          : goodHandle ? `@${goodHandle}`
           : '店名未確定'
         const sourcePostTitle = (r.title || '').slice(0, 200)
         const enrichNote = enrich ? ` / 補完[${enrich.status}:${enrich.reason}]` : ''

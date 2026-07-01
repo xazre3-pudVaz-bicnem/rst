@@ -3377,6 +3377,13 @@ export default function Leads() {
                   <button onClick={() => setDrawerCand(null)} className="rounded border px-2 py-0.5 text-[11px] hover:bg-accent">閉じる</button>
                 </div>
                 <div className="text-base font-bold">{drawerCand.name}{(drawerCand as any).name_unconfirmed_hot && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">要店名確認</span>}</div>
+                <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+                  <span>検出: {(() => { const t = (drawerCand as any).first_seen_at || (drawerCand as any).first_discovered_at || (drawerCand as any).regional_media_detected_at || (drawerCand as any).created_date; return t ? moment(t).format('YYYY/MM/DD HH:mm') : '—' })()}</span>
+                  {(drawerCand as any).imported_to_cases
+                    ? <span className="text-emerald-600 dark:text-emerald-400">投入: {(drawerCand as any).imported_at ? moment((drawerCand as any).imported_at).format('YYYY/MM/DD HH:mm') : '済'}</span>
+                    : <span>投入: 未投入</span>}
+                  <span>取得元: {(drawerCand as any).discovery_source_type || (drawerCand as any).source || (drawerCand as any).lead_source || '—'}</span>
+                </div>
                 {/* 品質サマリー */}
                 {typeof (drawerCand as any).quality_score === 'number' && (() => {
                   const g = (drawerCand as any).quality_grade || 'D'
