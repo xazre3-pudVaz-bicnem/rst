@@ -144,7 +144,7 @@ export async function webSearch(query: string, num: number, preferProvider?: 'se
 }
 
 // ---- ルールベース粗選別（Anthropic判定の前に必ず実行） ----
-const OPEN_WORDS_RE = /(新規オープン|ニューオープン|オープンしました|開業しました|開店しました|開院しました|本日オープン|グランドオープン|プレオープン|移転オープン|独立開業|new[\s_]?open)/i
+const OPEN_WORDS_RE = /(新規オープン|ニューオープン|オープンしました|オープンいたしました|オープンします|オープン予定|オープン致しました|近日オープン|まもなくオープン|本日オープン|明日オープン|グランドオープン|プレオープン|移転オープン|リニューアルオープン|リニューアル|独立開業|開業しました|開業いたしました|開業予定|開店しました|開店いたしました|開院しました|開院いたしました|開院予定|新装開店|オープン日|オープンのお知らせ|オープニング|new[\s_]?open|grand[\s_]?open|now[\s_]?open)/i
 const PRE_EXCLUDE_RE = /(求人|採用|スタッフ募集|アルバイト募集|バイト募集|イベント|マルシェ|催事|ポップアップ|pop-?up|周年|キャンペーン|新メニュー|閉店|閉業|通販|オンラインショップ|EC限定|インフルエンサー|アンバサダー|まとめ記事|ランキング)/i
 
 /** ルール粗選別: AIに回すべきかを判定（excluded_pre / open / no_open_word） */
@@ -658,10 +658,11 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const { data: exU } = await admin.from('lead_candidates').select('id').eq('instagram_url', r.url).limit(1)
         if (exU && exU[0]) { counts.dup++; continue }
 
-        // ルールベース粗選別（AI判定の前に必ず）
+        // ルールベース粗選別（AI判定の前）。除外語/国外は即除外。
+        // 新店ワードが無くても「新店クエリ経由」なので評価は進める（補完でGoogle Placesの開業日・電話・住所を取得してから最終HOT判定）。
         const rf = ruleFilter(r)
         if (rf.result === 'excluded_pre') { counts.preExcluded++; counts.excluded++; q.excluded++; continue }
-        if (!rf.pass) { counts.noOpenWord++; continue }
+        if (!rf.pass) counts.noOpenWord++  // スニペットに新店ワードは無いが破棄せず評価（新店検索の結果のため）
         counts.rulePassed++; q.rulePassed++
 
         // ベース抽出（無料）で店名/username/地域を得る
@@ -718,7 +719,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const foreignFinal = j.is_foreign || isForeignAddress(addressVal) || (!!finalPhone && !isJapanPhone(finalPhone))
         const japanOk = !foreignFinal && (!!prefecture || isJapanAddress(addressVal) || isJapanPhone(finalPhone))
         // 営業向きHOT判定（HOT_A/HOT_B/HOLD/EXCLUDED）: Instagram投稿の新店根拠＋電話/住所で営業可能ならHOT
-        const igNew = !!(j.newness_type && j.newness_type !== 'unknown')
+        // 新店根拠: 投稿本文の新店ワード or 補完で得たGoogle開業日 or 新店検索クエリ経由（このソースは全て新店検索）。
+        const fromNewOpenQuery = /新規|オープン|open|新店|ニューオープン|開業|開店|開院/i.test(query)
+        const igNew = !!(j.newness_type && j.newness_type !== 'unknown') || !!enrich?.has_opening || fromNewOpenQuery
         const ch = detectChain(j.shop_name || shop || '', `${r.title} ${r.snippet}`)
         // 道の駅/産直/JA/公共/大型施設/大手 は営業対象外（ターゲット=個人事業主・小規模店）。プロフィール名/本文/タイトルから検出
         const bigIW = detectBigOrPublic(`${enrich?.profile_name || ''} ${j.shop_name || shop || ''} ${addressVal || ''}`)
