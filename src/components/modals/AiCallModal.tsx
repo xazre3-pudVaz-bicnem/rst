@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import moment from 'moment'
-import { Phone, PhoneOff, Bot, CalendarPlus, Save, Plus, FileText, Ban, Unlock, Clock, CheckCircle2, XCircle } from 'lucide-react'
+import { Phone, PhoneOff, Bot, CalendarPlus, Save, Plus, FileText, Ban, Unlock, Clock, CheckCircle2, XCircle, PhoneOutgoing } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { cn, jpError } from '@/lib/utils'
-import { AiCallScriptApi, AiCallJobApi, runTestCall, createInterestAppointment, setNextCall, releaseNg } from '@/lib/aiCall'
+import { AiCallScriptApi, AiCallJobApi, TwilioApi, runTestCall, createInterestAppointment, setNextCall, releaseNg } from '@/lib/aiCall'
 import type { Case, AiCallScript, AiCallJob, AiCallStatus } from '@/lib/types'
 import type { SyncResult } from '@/lib/calendarSync'
 
@@ -48,6 +48,13 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [editScript, setEditScript] = useState<AiCallScript | null>(null)
   const [showScripts, setShowScripts] = useState(false)
   const [ngReleased, setNgReleased] = useState(false)
+  // Twilio接続テスト（管理者・テスト番号への実発信）
+  const [showTwilio, setShowTwilio] = useState(false)
+  const [twStatus, setTwStatus] = useState<{ provider?: string; configured?: boolean; missingEnv?: string[]; realCallEnabled?: boolean } | null>(null)
+  const [twNumber, setTwNumber] = useState('')
+  const [twMsg, setTwMsg] = useState('こちらはアールエスティーのテスト発信です。')
+  const [twBusy, setTwBusy] = useState(false)
+  const [twResult, setTwResult] = useState<any>(null)
 
   const load = useCallback(async () => {
     const s = await AiCallScriptApi.list().catch(() => [])
@@ -111,6 +118,23 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
     catch (e) { toast.error(jpError(e)) }
   }
 
+  async function openTwilio() {
+    const next = !showTwilio; setShowTwilio(next)
+    if (next && !twStatus) setTwStatus(await TwilioApi.status())
+  }
+  async function twilioTest() {
+    if (!twNumber.trim()) { toast.error('テスト発信先の電話番号を入力してください'); return }
+    // 実際に電話がかかるため必ず確認
+    if (!window.confirm(`【実発信】${twNumber} に実際に電話をかけます（Twilio）。よろしいですか？\n※営業先ではなくテスト番号にかけてください。`)) return
+    setTwBusy(true); setTwResult(null)
+    try {
+      const r = await TwilioApi.testCall(twNumber.trim(), twMsg)
+      setTwResult(r)
+      if (r?.ok) toast.success(`発信しました（SID: ${r.sid ?? '—'}）。通話結果はTwilioのWebhookで反映されます。`)
+      else toast.error(r?.error || '発信に失敗しました')
+    } catch (e) { toast.error(jpError(e)) } finally { setTwBusy(false) }
+  }
+
   async function saveScript() {
     if (!editScript) return
     try {
@@ -148,6 +172,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 </Select>
               </div>
               {isAdmin && <Button variant="outline" size="sm" onClick={() => setShowScripts((v) => !v)}><FileText className="h-3.5 w-3.5" />スクリプト編集</Button>}
+              {isAdmin && <Button variant="outline" size="sm" onClick={openTwilio}><PhoneOutgoing className="h-3.5 w-3.5" />Twilio接続テスト</Button>}
             </div>
             {!selectedCase?.phone1 && <div className="text-[11px] text-red-600">電話番号が未登録のため発信できません。</div>}
 
@@ -163,6 +188,32 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 <Button size="sm" disabled={running || !selectedCase?.phone1} onClick={() => call(undefined)}><Phone className="h-3.5 w-3.5" />ランダム発信</Button>
               </div>
             </div>
+
+            {/* Twilio接続テスト（管理者・テスト番号への"実発信"。営業先への発信とは分離） */}
+            {isAdmin && showTwilio && (
+              <div className="space-y-2 rounded-lg border-2 border-purple-300 bg-purple-50/50 p-2.5 dark:border-purple-500/30 dark:bg-purple-500/10">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-purple-700 dark:text-purple-300"><PhoneOutgoing className="h-3.5 w-3.5" />Twilio接続テスト（実発信・テスト番号のみ）</div>
+                <div className="text-[10px] text-muted-foreground">
+                  接続状態: プロバイダ=<b>{twStatus?.provider ?? '確認中'}</b> ／ Twilio設定={twStatus?.configured ? '✅' : '未設定'} ／ 実発信可否={twStatus?.realCallEnabled ? '✅可能' : '不可'}
+                </div>
+                {twStatus && !twStatus.realCallEnabled && (
+                  <div className="rounded bg-amber-100 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-500/15">
+                    実発信するには Vercel環境変数が必要です{twStatus.provider !== 'twilio' && '（AI_CALL_PROVIDER=twilio）'}{twStatus.missingEnv?.length ? `。未設定: ${twStatus.missingEnv.join(', ')}` : ''}。設定＆再デプロイ後に発信できます。
+                  </div>
+                )}
+                <div className="flex flex-wrap items-end gap-2">
+                  <div><label className="text-[10px] font-bold text-purple-700 dark:text-purple-300">テスト発信先（あなたの番号）</label><Input value={twNumber} onChange={(e) => setTwNumber(e.target.value)} placeholder="09012345678" className="h-8 w-[160px]" /></div>
+                  <div className="min-w-[180px] flex-1"><label className="text-[10px] font-bold text-purple-700 dark:text-purple-300">読み上げメッセージ</label><Input value={twMsg} onChange={(e) => setTwMsg(e.target.value)} className="h-8" /></div>
+                  <Button size="sm" onClick={twilioTest} disabled={twBusy || !twStatus?.realCallEnabled} className="bg-purple-600 hover:bg-purple-700"><PhoneOutgoing className="h-3.5 w-3.5" />{twBusy ? '発信中…' : '実発信テスト'}</Button>
+                </div>
+                <div className="text-[10px] text-red-600">⚠️ 実際に電話がかかります。必ず自分/自社のテスト番号にかけてください（営業先は不可）。発信前に確認ダイアログが出ます。</div>
+                {twResult && (
+                  twResult.ok
+                    ? <div className="rounded bg-green-50 px-2 py-1 text-[11px] text-green-700 dark:bg-green-500/10"><CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />発信しました（発信先 {twResult.to} / SID {twResult.sid}）。通話終了後にログへ反映されます。</div>
+                    : <div className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700 dark:bg-red-500/10"><XCircle className="mr-1 inline h-3.5 w-3.5" />{twResult.error}</div>
+                )}
+              </div>
+            )}
 
             {/* 結果（見やすく） */}
             {job && (

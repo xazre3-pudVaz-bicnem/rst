@@ -1529,7 +1529,7 @@ export default function Leads() {
                   </div>
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
-                  ※Instagramは新規シグナルとして使用。Google Places照合は必須にせず、A:Places一致HOT / B:Instagram単体HOT候補（初期は自動投入せずHOLD扱い）/ C:HOLD に分類します。自動実行は Cron（/api/cron/instagram-leads・毎朝6:30）。
+                  ※Instagramは新規シグナルとして使用。Google Places照合は必須にせず、A:Places一致HOT / B:Instagram単体HOT候補（初期は自動投入せずHOLD扱い）/ C:HOLD に分類します。自動取得はInstagram Web検索（全サイト巡回）に統合されています。
                 </div>
               </div>
 
