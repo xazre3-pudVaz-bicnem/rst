@@ -2,7 +2,7 @@
 // POST /api/leads/regional-media/run … 地域メディア巡回 手動実行（要ログイン）
 // GET  /api/leads/regional-media/run … 接続状態（有効サイト数・MAPSキー有無）
 // ============================================================
-import { getAdminClient } from '../../../src/lib/googlePlacesRun.js'
+import { getAdminClient, runGooglePlaces } from '../../../src/lib/googlePlacesRun.js'
 import { runRegionalMedia } from '../../../src/lib/regionalMediaRun.js'
 import { enrichCandidate } from '../../../src/lib/instagramWebRun.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from '../../../src/lib/japanFilter.js'
@@ -14,7 +14,7 @@ import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/lead
 import { runSerpDiscovery } from '../../../src/lib/serpDiscovery.js'
 import { recomputeSalesBatch } from '../../../src/lib/leadSignals.js'
 import { sweepHotToCases } from '../../../src/lib/importHot.js'
-import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles } from '../../../src/lib/discoverySources.js'
+import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles, getSourceDef } from '../../../src/lib/discoverySources.js'
 import { sanitizeShopName, isValidJpPhone } from '../../../src/lib/regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, BIG_REVIEW_COUNT } from '../../../src/lib/targetFilter.js'
 
@@ -296,10 +296,27 @@ export default async function handler(req: any, res: any) {
     await admin.from('app_config').upsert({ key: 'discovery_sources', value: toggles, updated_date: new Date().toISOString() }, { onConflict: 'key' })
     return res.status(200).json({ ok: true, toggles })
   }
-  // SERPディスカバリ実行（指定source_typeを1つ）
+  // 取得元を1つ実行。mode別にエンジンを振り分ける（serp/places/existing/foundation）。
+  // 全ソースを一律 runSerpDiscovery に流すと places/existing が「SERP対象外」で実際には動かないため必ずmodeで分岐する。
   if (body?.runDiscovery?.sourceType) {
+    const st = body.runDiscovery.sourceType
+    const def = getSourceDef(st)
+    const mapsKey = process.env.GOOGLE_MAPS_API_KEY || null
     try {
-      const out = await runSerpDiscovery(admin, body.runDiscovery.sourceType, process.env.GOOGLE_MAPS_API_KEY || null, {
+      if (!def) return res.status(200).json({ ok: false, error: `未知の取得元: ${st}` })
+      // existing: エキテン公開日7日以内（専用エンジン）
+      if (def.mode === 'existing') {
+        const out = await runEkitenDiscovery(admin, mapsKey, { ...(body.settings || {}), ...(body.runDiscovery.opts || {}) }, userData.user.id)
+        return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: out.detailFetched ?? 0 })
+      }
+      // places: Google Placesエンジン由来（口コミ0〜5件/Instagramのみ/HP未整備/口コミ急増）。APIキー必須。
+      if (def.mode === 'places') {
+        if (!mapsKey) return res.status(200).json({ ok: true, skipped: true, sourceType: st, label: def.label, reason: `${def.label} は Google Places 由来ですが GOOGLE_MAPS_API_KEY が未設定のため実行できません` })
+        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st }, userData.user.id)
+        return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: (out as any).fetched ?? 0, detailFetched: (out as any).fetched ?? 0, hotB: (out as any).hot ?? 0 })
+      }
+      // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）
+      const out = await runSerpDiscovery(admin, st, mapsKey, {
         ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
       }, userData.user.id)
       return res.status(200).json(out)

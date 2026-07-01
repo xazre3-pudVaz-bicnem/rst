@@ -988,9 +988,14 @@ export default function Leads() {
     setDiscoveryBusy(type)
     try {
       const j = await regionalApi({ runDiscovery: { sourceType: type }, settings: { aiInjectMode: settings.aiInjectMode, serperDailyCap: (settings as any).serperDailyCap ?? 50 } })
-      if (j?.skipped) toast.info(j.reason || 'スキップ')
-      else if (j?.ok) { toast.success(`${label}: 新規${j.newUrls ?? 0}/詳細${j.detailFetched ?? 0} HOT-B${j.hotB ?? 0}/HOLD${j.hold ?? 0} 投入${j.imported ?? 0}（既読skip${j.seenSkipped ?? 0}）`); load(); loadDiscovery() }
-      else toast.error(j?.error || '実行に失敗しました')
+      if (j?.skipped) toast.info(`${label}: ${j.reason || '未実装（土台）のためスキップ'}`)
+      else if (j?.ok) {
+        const imp = j.imported ?? 0, hotB = j.hotB ?? j.hot ?? 0, det = j.detailFetched ?? j.newUrls ?? 0
+        const head = imp > 0 ? `✅ ${imp}件を案件へ投入` : hotB > 0 ? `HOT-B ${hotB}件検出（電話/住所の確定待ち・未投入）` : det > 0 ? `${det}件確認したが投入条件を満たす新店なし` : '新規ヒットなし'
+        toast.success(`${label}: ${head}｜詳細${det} HOT-B${hotB} HOLD${j.hold ?? 0} 除外${j.excluded ?? 0} 投入${imp}`)
+        load(); loadDiscovery()
+      }
+      else toast.error(`${label}: ${j?.error || '実行に失敗しました'}`)
     } finally { setDiscoveryBusy('') }
   }
   async function recomputeSales() {
