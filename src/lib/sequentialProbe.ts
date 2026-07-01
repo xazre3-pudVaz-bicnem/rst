@@ -486,8 +486,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       continue
     }
 
-    // valid: 判定して保存
-    res.valid++; totalValid++; res.lastFoundId = probedId; res.lastValidId = probedId; consecutiveNotFound = 0
+    // valid: 判定して保存。lastValid/lastFound は「最大の有効ID」にする（backfillで低いIDを後処理しても
+    // 上書きされないよう Math.max）。これを誤ると safeモードの nextId=lastValid+1 や引き戻しが逆走する。
+    res.valid++; totalValid++
+    res.lastFoundId = Math.max(Number(res.lastFoundId ?? 0), probedId)
+    res.lastValidId = Math.max(Number(res.lastValidId ?? 0), probedId)
+    consecutiveNotFound = 0
     const official = spot?.official || ''
     const hasOpen = OPEN_RE.test(bodyAll)
     const newness_type = hasOpen ? 'possible_new_open' : 'source_new_listing'
