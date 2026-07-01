@@ -134,28 +134,28 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     return agg
   } })
 
-  // 「最後に成功してから時間が経っている順」に並べ替え（未実行/失敗を優先）。
-  // ただし SERPディスカバリ（ノイズ多め）は常に最後に回し、実績ある取得元を先に処理する。
+  // 並べ替え: ①生産的で速く確実な取得元(連番/地域メディア/Places=tier0)を優先、Instagram(tier1)・SERPディスカバリ(tier2)は後回し。
+  // ②同tier内は「最後に成功してから時間が経っている順」でローテーション（毎回同じ取得元に偏らない）。
+  // これにより、失敗続きのPlaces/Instagramが枠を食い潰して連番/地域メディアが毎回deferredになる問題を解消する。
   if (only === 'all') {
     const { data: lastOk } = await admin.from('auto_crawl_run_items').select('source_type,finished_at').eq('status', 'success').order('finished_at', { ascending: false }).limit(200)
     const lastByType = new Map<string, number>()
     for (const r of (lastOk || []) as any[]) { if (!lastByType.has(r.source_type)) lastByType.set(r.source_type, Date.parse(r.finished_at || 0)) }
-    types.sort((a, b) => {
-      if (a.key === 'discovery') return 1
-      if (b.key === 'discovery') return -1
-      return (lastByType.get(a.type) ?? 0) - (lastByType.get(b.type) ?? 0)
-    })
+    // tier0: 連番/地域メディア（速く確実）→ tier1: Places（API・遅くタイムアウトしがち）→ tier2: Instagram → tier3: SERPディスカバリ
+    const tier = (k: CrawlOnly) => (k === 'places' ? 1 : k === 'instagram' ? 2 : k === 'discovery' ? 3 : 0)
+    types.sort((a, b) => (tier(a.key) - tier(b.key)) || ((lastByType.get(a.type) ?? 0) - (lastByType.get(b.type) ?? 0)))
   }
 
-  // 60s枠を確実に守るため、全取得元巡回では1回あたり最大2取得元だけ処理し、残りは次回にローテーション。
-  const maxPhases = only === 'all' ? 2 : types.length
+  // 60s枠を守りつつ生産的な取得元を確実に回すため、全取得元巡回では1回あたり最大3取得元まで実行し、残りは次回ローテーション。
+  // OFF/対象なしで即skipになった取得元は枠を消費しない（生産的な取得元を枠から締め出さないため）。
+  const maxPhases = only === 'all' ? 3 : types.length
   let phasesRun = 0
   for (const t of types) {
     const elapsed = Date.now() - startMs
     const itemStart = new Date().toISOString()
     if (phasesRun >= maxPhases || elapsed > budgetMs - t.minMs) {
       // 今回は打ち切り → 次回継続（ローテーションで全取得元を順にカバー）
-      items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'deferred', error_message: phasesRun >= maxPhases ? '今回は2取得元まで（次回ローテーションで継続）' : '時間予算切れのため次回継続', started_at: itemStart, finished_at: new Date().toISOString() })
+      items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'deferred', error_message: phasesRun >= maxPhases ? '今回は3取得元まで（次回ローテーションで継続）' : '時間予算切れのため次回継続', started_at: itemStart, finished_at: new Date().toISOString() })
       continue
     }
     phasesRun++
@@ -167,7 +167,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
         new Promise((res) => setTimeout(() => res({ __timeout: true }), hardMs)),
       ])
       if (r?.__timeout) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'timeout', error_message: `時間上限(${Math.round(hardMs / 1000)}s)で打ち切り・取得済み分は保存・次回継続`, started_at: itemStart, finished_at: new Date().toISOString() }); continue }
-      if (r?.skipped) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); continue }
+      if (r?.skipped) { phasesRun--; items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); continue }
       const c = mapCounts(r)
       agg.hot_a_count += c.hotA; agg.hot_b_count += c.hotB; agg.hold_count += c.hold; agg.excluded_count += c.excluded; agg.cases_inserted_count += c.inserted; agg.lead_saved_count += c.saved
       if (t.type === 'google_places') agg.google_places_count += c.fetched
