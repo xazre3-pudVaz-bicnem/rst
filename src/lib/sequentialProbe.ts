@@ -368,7 +368,9 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   const startId = opts.startIdOverride ?? (probeMode === 'safe' ? (safeStart ?? advStart ?? fallbackStart) : (advStart ?? safeStart ?? fallbackStart))
   res.startId = startId; res.fromId = startId
   const startedAt = opts.nowIso
-  let consecutiveNotFound = Number(site.consecutive_not_found_count) || 0
+  // 連続not-foundカウンタは「今回の実行内」でのみ使う（毎回0から）。前回値を引き継ぐと、一度フロンティアで
+  // 30連続404に達したソースが以降どの実行でも即停止し、後から追加された新IDを永久に拾えなくなる（じゃらん等の停止バグ）。
+  let consecutiveNotFound = 0
   let importedThisRun = 0
   let importedCount = opts.importedToday
   let totalChecked = 0, totalValid = 0, totalInvalid = 0
@@ -606,6 +608,14 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     else if (newLastFound != null) { nextId = Number(newLastFound) + 1; nextIdBasis = `最後に見つかったID(${newLastFound})の次から` }
     else { nextId = lastChecked + 1; nextIdBasis = `${lastChecked}まで確認済み（有効IDなし）` }
   } else { nextId = lastChecked + 1; nextIdBasis = `先行探索モード（${lastChecked}まで確認済み・+1）` }
+  // 暴走防止: advanceモードでlast_valid_idから大きく先へ進みすぎた場合はフロンティア(last_valid+1)へ引き戻す。
+  // 有効IDが尽きた後も404空間を延々と前進し続けて実在の新IDに二度と戻らない、という状態を防ぐ。
+  const MAX_GAP_AHEAD = 3000
+  const knownValid = Number(res.lastValidId ?? site.last_valid_id ?? 0)
+  if (probeMode !== 'safe' && firstUnconfirmed == null && knownValid > 0 && nextId - knownValid > MAX_GAP_AHEAD) {
+    nextId = knownValid + 1
+    nextIdBasis = `有効IDから${MAX_GAP_AHEAD}件以上先行したためフロンティア(最後の有効ID ${knownValid}の次)へ引き戻し`
+  }
   res.nextId = nextId; res.nextIdBasis = nextIdBasis; res.consecutiveNotFound = consecutiveNotFound
   // invalid の主理由（最多）
   const reasonCounts: Record<string, number> = {}
