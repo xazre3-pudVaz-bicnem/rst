@@ -259,9 +259,41 @@ function connectOpenAI(session, opts = {}) {
   oa.on('error', (e) => { log('[openai] ws error', String(e?.message || e)); if (!session.greeted) fallbackToBeta('ws error') })
 }
 
-// ---- HTTPサーバー（health）＋ WebSocket（/twilio-stream） ----
-const server = http.createServer((req, res) => {
+// OpenAI Realtime へ実際に接続できるか（キー/モデルアクセス権の検証）
+function testOpenAI(model, beta) {
+  return new Promise((resolve) => {
+    if (!OPENAI_API_KEY) return resolve({ model, beta, connected: false, error: 'OPENAI_API_KEY 未設定' })
+    const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` }
+    if (beta) headers['OpenAI-Beta'] = 'realtime=v1'
+    let done = false
+    const t = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, { headers })
+    const finish = (r) => { if (done) return; done = true; try { t.close() } catch {} ; resolve({ model, beta, ...r }) }
+    t.on('open', () => finish({ connected: true }))
+    t.on('unexpected-response', (_q, r) => finish({ connected: false, httpStatus: r.statusCode }))
+    t.on('error', (e) => finish({ connected: false, error: String(e?.message || e) }))
+    setTimeout(() => finish({ connected: false, error: 'timeout(8s)' }), 8000)
+  })
+}
+
+// ---- HTTPサーバー（health/diag）＋ WebSocket（/twilio-stream） ----
+const server = http.createServer(async (req, res) => {
   if (req.url === '/health' || req.url === '/') { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return }
+  // /diag: 環境変数の有無＋OpenAI接続可否（beta/GA両方）をJSONで返す（秘密は出さない）
+  if (req.url === '/diag') {
+    const [betaR, gaR] = await Promise.all([
+      testOpenAI(FALLBACK_BETA_MODEL, true),
+      testOpenAI(OPENAI_REALTIME_MODEL, /realtime-preview/i.test(OPENAI_REALTIME_MODEL)),
+    ])
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      openaiKeySet: !!OPENAI_API_KEY, openaiKeyLen: OPENAI_API_KEY.length,
+      configuredModel: OPENAI_REALTIME_MODEL, configuredVoice: OPENAI_REALTIME_VOICE,
+      preferGa: PREFER_GA, betaFallbackModel: FALLBACK_BETA_MODEL,
+      rstApiBaseSet: !!RST_API_BASE, secretSet: !!AI_CALL_SERVER_SECRET,
+      openaiTest: { betaFallback: betaR, configured: gaR },
+    }, null, 2))
+    return
+  }
   res.writeHead(404); res.end('not found')
 })
 
