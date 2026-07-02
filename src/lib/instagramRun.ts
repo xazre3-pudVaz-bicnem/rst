@@ -8,6 +8,7 @@ import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromCaption, classifyInstagram, IG_HASHTAGS, type IgClassifyOpts } from './instagramExtract.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 
 const GRAPH = 'https://graph.facebook.com/v19.0'
 
@@ -215,6 +216,10 @@ export async function runInstagram(admin: any, igToken: string, igUserId: string
         // 自動投入: A は常に対象 / B は auto_importable のときのみ
         const importable = verdict.classification === 'google_match_hot' || verdict.auto_importable
         if (importable && candidateId && !alreadyImported && importedCount < dailyCap) {
+          const dupCaseId = phone ? await findCaseIdByPhone(admin, phone) : null
+          if (dupCaseId) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+          } else {
           const memo = [`【AI自動投入 / Instagram】`, `分類: ${verdict.classification}`, `理由: ${verdict.reason}`, `投稿: ${m.permalink || ''}`, `#${tag}`].join('\n')
           const { data: created } = await admin.from('cases').insert({
             name, address: ex.address || '', phone1: phone || '', industry: normalizeIndustry(ex.industry) || classifyIndustry(name) || null,
@@ -222,8 +227,9 @@ export async function runInstagram(admin: any, igToken: string, igUserId: string
             source_urls: 'AI自動投入(Instagram)', memo, created_by_id: userId,
           }).select('id').single()
           if (created?.id) {
-            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId)
             counts.imported++; importedCount++
+          }
           }
         }
 

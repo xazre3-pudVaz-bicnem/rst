@@ -11,6 +11,7 @@ import { extractJpPhone, sanitizeShopName, isValidJpPhone, isTollFreeJp } from '
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
@@ -589,9 +590,17 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     // 自動投入は HOT（電話＋住所が揃えば店名未確定でも可。電話なし/住所なしは temperature が HOLD に降格済み）
     const effectiveTier = nameUnconfirmedHot ? 'HOT_B' : sc.tier
     if (temperature === 'HOT' && autoImportAllowed(effectiveTier as any, opts.mode) && address && phoneOk && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
+      // 別経路からの同一店舗（電話重複）は二重作成せずリンク
+      const dupCaseId = await findCaseIdByPhone(admin, phone)
+      if (dupCaseId) {
+        createdCaseId = dupCaseId
+        await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
+        res.alreadyImported = (res.alreadyImported || 0) + 1
+      } else {
       const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
+      }
     }
     await admin.from('sequential_probe_results').insert({
       source_site_id: site.id, run_id: opts.runId, probed_id: probedId, probed_url: url, http_status: r.status, valid_page: true, invalid_reason: null, probe_status: 'valid',

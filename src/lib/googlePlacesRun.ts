@@ -10,6 +10,7 @@ import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPreset
 import { buildLeadQueries } from './leadQueries.js'
 import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -690,6 +691,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             `口コミ: ${payload.user_rating_count ?? '不明'} / 最古口コミ: ${classified.oldest_review_days_ago ?? '不明'}日前`,
             `到達スコア: ${classified.owner_reachability_score}`,
           ].join('\n')
+          const dupCaseId = await findCaseIdByPhone(admin, classified.phone_number)
+          if (dupCaseId) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+          } else {
           const { data: created, error: caseErr } = await admin.from('cases').insert({
             name: classified.name, address: classified.address || '', phone1: classified.phone_number || '',
             industry: classified.industry || null, status: DEFAULT_STATUS, priority: classified.hot_tier === 'A' ? '高' : '中', hp1: payload.website_url,
@@ -700,6 +705,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId)
             counts.imported++; importedCount++
             await admin.from('audit_logs').insert({ action: 'create', entity: 'case', entity_id: created.id, entity_name: classified.name, detail: 'AI自動投入（Google Places）', actor_id: userId }).then(() => {}, () => {})
+          }
           }
         }
       }

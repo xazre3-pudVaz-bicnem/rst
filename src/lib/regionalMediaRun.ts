@@ -13,11 +13,12 @@ import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirecto
 import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { looksLikeArticle as looksLikeArticleText, isRealStoreAddress } from './leadQuality.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 
 // サイトのタイプを正規化（記事型 / 店舗ディレクトリ型 / ハイブリッド）
 export function siteTypeOf(site: any): 'local_directory_new_listing' | 'openclose_article' | 'hybrid' {
@@ -350,10 +351,15 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       else if (importedCount >= autoImportPerDay) { skip = '手動投入待ち（1日上限）'; counts.manualPending++ }
       else if (importedThisRun >= autoImportPerRun) { skip = '手動投入待ち（1回上限）'; counts.manualPending++ }
       else {
-        attempted = true
-        const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
-        if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
-        else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
+        // 別経路からの同一店舗（電話重複）は二重作成しない
+        const dupCaseId = await findCaseIdByPhone(admin, o.phone)
+        if (dupCaseId) { skip = '既存案件と電話重複のためリンク'; caseId = dupCaseId; counts.alreadyImported++ }
+        else {
+          attempted = true
+          const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
+          if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
+          else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
+        }
       }
       if (o.candidateId) {
         await admin.from('lead_candidates').update({
@@ -480,7 +486,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           let dHotTier = dc.hot_tier
           // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
           const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 200)}`)
-          if (multiD.exclude) { temperature = 'EXCLUDED'; dHotTier = null }
+          if (multiD.exclude || looksLikeBranchStore(dName)) { temperature = 'EXCLUDED'; dHotTier = null }
           // 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B
           const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
           const cardNew = open.confidence !== 'none' || true  // 店舗ディレクトリ新着＝新規掲載根拠
@@ -735,7 +741,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const chM = detectChain(dName || titleName || '', cand.blockText || '')
           const bigStrongM = detectBigOrPublicStrong(gateText)
           const isArticleM = looksLikeArticleText(`${dName} ${titleName} ${cand.blockText || ''}`)
-          if (multiM.exclude || chM.definite || bigStrongM.exclude || isArticleM || !isRealStoreAddress(address)) {
+          if (multiM.exclude || chM.definite || bigStrongM.exclude || isArticleM || looksLikeBranchStore(dName) || !isRealStoreAddress(address)) {
             temperature = 'EXCLUDED'; dHotTier = null
           }
           // ===== 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B =====
@@ -952,9 +958,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const gateAddr = address || areaMerged || ''
         const isArticleText = looksLikeArticleText(`${gateName} ${bestTitle || ''}`)
         const bigStrongA = detectBigOrPublicStrong(`${gateName} ${bestTitle || ''}`)  // タイトル内のイオンモール/大手チェーン
-        if (isArticleText || bigStrongA.exclude || !isRealStoreAddress(gateAddr)) {
+        const isBranchA = looksLikeBranchStore(gateName)
+        if (isArticleText || bigStrongA.exclude || isBranchA || !isRealStoreAddress(gateAddr)) {
           temperature = 'EXCLUDED'; hotTier = null
-          reason = `実店舗ではない/営業対象外（${bigStrongA.exclude ? bigStrongA.hit : isArticleText ? '記事/ニュース/告知の見出し' : '住所がカテゴリ/まとめ等で店舗住所ではない'}）のため除外。${reason}`
+          reason = `実店舗ではない/営業対象外（${isBranchA ? '支店/チェーン店（○○店）' : bigStrongA.exclude ? bigStrongA.hit : isArticleText ? '記事/ニュース/告知の見出し' : '住所がカテゴリ/まとめ等で店舗住所ではない'}）のため除外。${reason}`
         }
         // ===== 新方針のHOT判定 =====
         const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)

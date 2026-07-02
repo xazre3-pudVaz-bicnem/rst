@@ -8,9 +8,10 @@ import { webSearch } from './instagramWebRun.js'
 import { sanitizeShopName, isValidJpPhone } from './regionalParsers.js'
 import { isJapanPhone } from './japanFilter.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic } from './targetFilter.js'
+import { detectBigOrPublic, looksLikeBranchStore } from './targetFilter.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 import { computeQuality } from './leadQuality.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -82,7 +83,7 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
         // 公開日7日以内のみHOT-B（電話+住所必須）。8日以上前/取得不可/大手/チェーンは対象外
         let temperature = 'HOLD'
         let hotTier: 'A' | 'B' | null = null
-        if (big.exclude || ch.definite) temperature = 'EXCLUDED'
+        if (big.exclude || ch.definite || looksLikeBranchStore(name)) temperature = 'EXCLUDED'
         else if (pubDays == null) temperature = 'HOLD'
         else if (pubDays > 7) temperature = 'EXCLUDED'
         else if (phoneOk && address) { temperature = 'HOT'; hotTier = 'B' }
@@ -113,8 +114,13 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
         if (candidateId) { await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {}) }
         else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single(); candidateId = ins?.id || null; counts.saved++ }
         if (temperature === 'HOT' && phoneOk && address && candidateId && !alreadyImported && importedThisRun < autoImportPerRun && autoImportAllowed('HOT_B' as any, mode)) {
-          const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(sp.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: sp.official || null, source_urls: url, memo: `【AI自動投入 / エキテン新規掲載候補 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}\n※公開日は掲載公開日（開業日ではない）。営業前に確認推奨。`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
-          if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
+          const dupCaseId = await findCaseIdByPhone(admin, phone)
+          if (dupCaseId) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
+          } else {
+            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(sp.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: sp.official || null, source_urls: url, memo: `【AI自動投入 / エキテン新規掲載候補 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}\n※公開日は掲載公開日（開業日ではない）。営業前に確認推奨。`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
+          }
         }
         if (debug.samples.length < 15) debug.samples.push({ url, name, phone, address, published: sp.published, pubDays, temperature })
       }

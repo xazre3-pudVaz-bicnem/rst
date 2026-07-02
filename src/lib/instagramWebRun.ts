@@ -13,6 +13,7 @@ import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
 import { isTollFreeJp } from './regionalParsers.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
+import { findCaseIdByPhone } from './caseDedup.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -839,12 +840,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const candidateId = ins?.id || null
 
         if (s.iwAutoImport && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
-          const memo = [`【AI自動投入 / Instagram Web(全国) / ${sc.tier}】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
-          const { data: created } = await admin.from('cases').insert({
-            name, address: addressVal || '', phone1: finalPhone, industry,
-            status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: officialVal || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
-          }).select('id').single()
-          if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
+          const dupCaseId = await findCaseIdByPhone(admin, finalPhone)
+          if (dupCaseId) {
+            await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+          } else {
+            const memo = [`【AI自動投入 / Instagram Web(全国) / ${sc.tier}】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
+            const { data: created } = await admin.from('cases').insert({
+              name, address: addressVal || '', phone1: finalPhone, industry,
+              status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: officialVal || null, instagram: r.url, source_urls: r.url, memo, created_by_id: userId,
+            }).select('id').single()
+            if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedCount++; importedThisRun++ }
+          }
         }
 
         if (!debug.sample) debug.sample = { query, url: r.url, title: r.title, snippet: r.snippet, rule: rf.result, judgement: j, area, temperature }
