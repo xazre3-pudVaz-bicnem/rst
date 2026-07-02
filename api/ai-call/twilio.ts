@@ -8,7 +8,7 @@
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, toE164 } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight } from '../../src/lib/twilioCall.js'
 
 export const config = { maxDuration: 30 }
 
@@ -41,11 +41,14 @@ function formBody(req: any): Record<string, string> {
 export default async function handler(req: any, res: any) {
   const action = String(req.query?.action || '')
 
-  // ---- 接続状態（秘密は返さない） ----
+  // ---- 接続状態（秘密は返さない。マスク済みデバッグ＋検証結果を返す） ----
   if (req.method === 'GET') {
+    const pf = preflight('') // toは空だが from/SID の検証とマスク情報を得る
     return res.status(200).json({
       ok: true, provider: getProviderMode(), configured: isTwilioConfigured(),
       missingEnv: missingTwilioEnv(), realCallEnabled: getProviderMode() === 'twilio' && isTwilioConfigured(),
+      fromEnvUsed: pf.debug.fromEnvUsed, accountSidMasked: pf.debug.accountSidMasked, from: pf.debug.from,
+      checks: { sidPrefixOk: pf.debug.sidPrefixOk, sidLenOk: pf.debug.sidLenOk, sidLen: pf.debug.sidLen, tokenPresent: pf.debug.tokenPresent, tokenLen: pf.debug.tokenLen, fromE164: pf.debug.fromE164 },
     })
   }
 
@@ -99,8 +102,9 @@ export default async function handler(req: any, res: any) {
     const phone = String(b.phone || '').trim()
     const caseId = b.caseId ? String(b.caseId) : null
     const message = String(b.message || 'こちらはアールエスティーのテスト発信です。').slice(0, 300)
-    const e164 = toE164(phone)
-    if (!e164) return res.status(400).json({ ok: false, error: '電話番号が空、または形式が不正です（例: 09012345678 / +819012345678）' })
+    // 送信直前チェック（SID/token/from/to）。失敗はマスク済みデバッグ付きで返す。
+    const pf = preflight(phone)
+    if (!pf.ok) return res.status(400).json({ ok: false, error: '発信前チェックに失敗しました', errors: pf.errors, debug: pf.debug })
 
     // NG案件には発信しない
     if (caseId) {
@@ -119,17 +123,15 @@ export default async function handler(req: any, res: any) {
     }).select('id').single()
     if (je || !job) return res.status(500).json({ ok: false, error: je?.message || 'ジョブ作成に失敗' })
 
-    // Twilio発信（TwiML/コールバックURLは自ドメイン＋jobId）
-    const base = baseUrl(req)
-    const twimlUrl = `${base}/api/ai-call/twilio?action=twiml&msg=${encodeURIComponent(message)}`
-    const cbUrl = `${base}/api/ai-call/twilio?action=callback&jobId=${job.id}`
-    const r = await initiateTwilioCall({ to: e164, twimlUrl, statusCallbackUrl: cbUrl })
+    // Twilio発信（公式SDK・TwiMLはインライン、状態通知は自ドメイン＋jobId）
+    const cbUrl = `${baseUrl(req)}/api/ai-call/twilio?action=callback&jobId=${job.id}`
+    const r = await initiateTwilioCall({ toRaw: phone, twiml: buildTwiml(message), statusCallbackUrl: cbUrl })
     if (!r.ok) {
-      await admin.from('ai_call_jobs').update({ status: '通話完了', error: r.error, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-      return res.status(502).json({ ok: false, error: r.error, jobId: job.id })
+      await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
+      return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, debug: r.debug, jobId: job.id })
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: e164 })
+    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, debug: r.debug })
   }
 
   return res.status(400).json({ ok: false, error: '不明なaction' })

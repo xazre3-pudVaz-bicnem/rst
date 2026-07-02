@@ -50,7 +50,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [ngReleased, setNgReleased] = useState(false)
   // Twilio接続テスト（管理者・テスト番号への実発信）
   const [showTwilio, setShowTwilio] = useState(false)
-  const [twStatus, setTwStatus] = useState<{ provider?: string; configured?: boolean; missingEnv?: string[]; realCallEnabled?: boolean } | null>(null)
+  const [twStatus, setTwStatus] = useState<any>(null)
   const [twNumber, setTwNumber] = useState('')
   const [twMsg, setTwMsg] = useState('こちらはアールエスティーのテスト発信です。')
   const [twBusy, setTwBusy] = useState(false)
@@ -193,8 +193,13 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
             {isAdmin && showTwilio && (
               <div className="space-y-2 rounded-lg border-2 border-purple-300 bg-purple-50/50 p-2.5 dark:border-purple-500/30 dark:bg-purple-500/10">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-purple-700 dark:text-purple-300"><PhoneOutgoing className="h-3.5 w-3.5" />Twilio接続テスト（実発信・テスト番号のみ）</div>
-                <div className="text-[10px] text-muted-foreground">
-                  接続状態: プロバイダ=<b>{twStatus?.provider ?? '確認中'}</b> ／ Twilio設定={twStatus?.configured ? '✅' : '未設定'} ／ 実発信可否={twStatus?.realCallEnabled ? '✅可能' : '不可'}
+                <div className="space-y-0.5 text-[10px] text-muted-foreground">
+                  <div>接続状態: プロバイダ=<b>{twStatus?.provider ?? '確認中'}</b> ／ Twilio設定={twStatus?.configured ? '✅' : '未設定'} ／ 実発信可否={twStatus?.realCallEnabled ? '✅可能' : '不可'}</div>
+                  {twStatus && (
+                    <div className="font-mono text-[9px]">
+                      SID={twStatus.accountSidMasked} ({twStatus.checks?.sidPrefixOk ? 'AC✓' : 'AC✗'} {twStatus.checks?.sidLen}文字{twStatus.checks?.sidLenOk ? '✓' : '✗'}) ／ token={twStatus.checks?.tokenPresent ? `${twStatus.checks?.tokenLen}文字` : '空'} ／ 発信元env=<b>{twStatus.fromEnvUsed}</b>={twStatus.from || '(空)'}{twStatus.checks?.fromE164 ? '✓' : '✗E.164'}
+                    </div>
+                  )}
                 </div>
                 {twStatus && !twStatus.realCallEnabled && (
                   <div className="rounded bg-amber-100 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-500/15">
@@ -208,9 +213,36 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 </div>
                 <div className="text-[10px] text-red-600">⚠️ 実際に電話がかかります。必ず自分/自社のテスト番号にかけてください（営業先は不可）。発信前に確認ダイアログが出ます。</div>
                 {twResult && (
-                  twResult.ok
-                    ? <div className="rounded bg-green-50 px-2 py-1 text-[11px] text-green-700 dark:bg-green-500/10"><CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />発信しました（発信先 {twResult.to} / SID {twResult.sid}）。通話終了後にログへ反映されます。</div>
-                    : <div className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700 dark:bg-red-500/10"><XCircle className="mr-1 inline h-3.5 w-3.5" />{twResult.error}</div>
+                  twResult.ok ? (
+                    <div className="rounded bg-green-50 px-2 py-1 text-[11px] text-green-700 dark:bg-green-500/10">
+                      <CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />発信しました（発信先 {twResult.to} / SID {twResult.sid}）。通話終了後にログへ反映されます。
+                    </div>
+                  ) : (
+                    <div className="space-y-1 rounded bg-red-50 px-2 py-1.5 text-[11px] text-red-700 dark:bg-red-500/10">
+                      <div><XCircle className="mr-1 inline h-3.5 w-3.5" />{twResult.error}</div>
+                      {Array.isArray(twResult.errors) && twResult.errors.length > 0 && <ul className="ml-4 list-disc">{twResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}</ul>}
+                      {(twResult.status || twResult.code || twResult.moreInfo || twResult.detail) && (
+                        <div className="font-mono text-[9px] text-red-600">
+                          {twResult.status != null && <div>status: {twResult.status}</div>}
+                          {twResult.code != null && <div>code: {twResult.code}</div>}
+                          {twResult.moreInfo && <div>moreInfo: {twResult.moreInfo}</div>}
+                          {twResult.detail && <div>detail: {twResult.detail}</div>}
+                        </div>
+                      )}
+                      {twResult.debug && (
+                        <details className="text-[9px]">
+                          <summary className="cursor-pointer">送信直前デバッグ（秘密情報マスク済み）</summary>
+                          <div className="mt-0.5 font-mono">
+                            <div>accountSidMasked: {twResult.debug.accountSidMasked}</div>
+                            <div>from: {twResult.debug.from}（env: {twResult.debug.fromEnvUsed}）</div>
+                            <div>to: {twResult.debug.to}</div>
+                            <div>provider: {twResult.debug.provider}</div>
+                            <div>endpoint: {twResult.debug.endpoint}</div>
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  )
                 )}
               </div>
             )}
