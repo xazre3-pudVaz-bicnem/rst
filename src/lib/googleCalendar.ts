@@ -63,6 +63,43 @@ export async function deleteCalendarEvent(eventId: string): Promise<void> {
   const res = await fetch(calUrl(`/${encodeURIComponent(eventId)}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok && res.status !== 404 && res.status !== 410) { const j: any = await res.json().catch(() => ({})); throw new Error(`カレンダー予定削除失敗: ${j.error?.message || res.status}`) }
 }
+/** freebusyで指定期間の予定占有時間帯を取得（[startIso,endIso)の配列）。未設定/失敗時は空配列。 */
+export async function getBusyTimes(startIso: string, endIso: string): Promise<{ start: string; end: string }[]> {
+  if (!isCalendarConfigured()) return []
+  try {
+    const token = await getAccessToken()
+    const res = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timeMin: startIso, timeMax: endIso, timeZone: TZ, items: [{ id: String(process.env.GOOGLE_CALENDAR_ID) }] }),
+    })
+    const j: any = await res.json().catch(() => ({}))
+    const cal = j?.calendars?.[String(process.env.GOOGLE_CALENDAR_ID)]
+    return Array.isArray(cal?.busy) ? cal.busy : []
+  } catch { return [] }
+}
+
+/** 平日の営業時間帯(10-17時)で、Googleカレンダーの空き枠を生成して返す。 */
+export async function getAvailableSlots(days = 3, count = 6): Promise<string[]> {
+  const now = new Date()
+  const startIso = now.toISOString()
+  const end = new Date(now.getTime() + (days + 2) * 86400000)
+  const busy = await getBusyTimes(startIso, end.toISOString())
+  const overlaps = (s: Date, e: Date) => busy.some((b) => new Date(b.start) < e && new Date(b.end) > s)
+  const slots: string[] = []
+  for (let d = 1; d <= days + 3 && slots.length < count; d++) {
+    const day = new Date(now.getTime() + d * 86400000)
+    const dow = day.getDay()
+    if (dow === 0 || dow === 6) continue // 土日除外
+    for (const h of [10, 11, 13, 14, 15, 16]) {
+      if (slots.length >= count) break
+      const s = new Date(day); s.setHours(h, 0, 0, 0)
+      const e = new Date(s.getTime() + 60 * 60000)
+      if (!overlaps(s, e)) slots.push(s.toISOString())
+    }
+  }
+  return slots
+}
+
 /** 接続テスト（トークン取得＋カレンダー存在確認）。 */
 export async function testCalendar(): Promise<{ ok: boolean; error?: string }> {
   try { const token = await getAccessToken(); const res = await fetch(calUrl('?maxResults=1'), { headers: { Authorization: `Bearer ${token}` } }); if (!res.ok) { const j: any = await res.json().catch(() => ({})); return { ok: false, error: j.error?.message || `HTTP ${res.status}` } } return { ok: true } }

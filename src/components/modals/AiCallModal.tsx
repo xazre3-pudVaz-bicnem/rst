@@ -272,7 +272,10 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
             {/* この案件に実発信（Twilio・管理者のみ）。既定はテストモードONで自分の番号へ差し替え。 */}
             {isAdmin && selectedCase?.phone1 && (
               <div className="space-y-2 rounded-lg border-2 border-orange-300 bg-orange-50/50 p-2.5 dark:border-orange-500/30 dark:bg-orange-500/10">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-orange-700 dark:text-orange-300"><PhoneOutgoing className="h-3.5 w-3.5" />この案件に実発信（Twilio・管理者）</div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold text-orange-700 dark:text-orange-300"><PhoneOutgoing className="h-3.5 w-3.5" />この案件に実発信（Twilio・管理者）
+                  {twStatus && <span className={cn('rounded-full px-1.5 py-0.5 text-[9px]', twStatus.realtimeEnabled ? 'bg-indigo-500 text-white' : 'bg-zinc-300 text-zinc-700')}>{twStatus.realtimeEnabled ? 'realtime（AI会話）' : 'fixed（固定音声）'}</span>}
+                </div>
+                {twStatus?.realtimeEnabled && <div className="text-[10px] text-indigo-700 dark:text-indigo-300">リアルタイム音声AIモードです。AIが相手と会話し、前向きなら日程を取得してカレンダー/訪問予定に自動登録します（読み上げメッセージは使いません）。</div>}
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="text-muted-foreground">発信先:</span>
                   {(['phone1', 'phone2', 'phone3'] as const).map((f) => (selectedCase as any)[f] ? (
@@ -473,7 +476,10 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                       {p.ai_summary && <span className="flex-1 truncate text-muted-foreground">{p.ai_summary}</span>}
                     </summary>
                     <div className="mt-1 space-y-1 border-t pt-1">
-                      <div className="text-muted-foreground">通話日時: {p.called_at ? moment(p.called_at).format('YYYY/MM/DD HH:mm') : '—'} ／ 通話時間: {p.duration_sec ?? '—'}秒 ／ ステータス: {p.status}</div>
+                      <div className="text-muted-foreground">通話日時: {p.called_at ? moment(p.called_at).format('YYYY/MM/DD HH:mm') : '—'} ／ 通話時間: {p.duration_sec ?? '—'}秒 ／ ステータス: {p.status} ／ モード: {p.call_mode || 'fixed'}</div>
+                      {p.ai_contact_name && <div><b>取得した相手:</b> {p.ai_contact_name}</div>}
+                      {p.appo_at && <div><b>アポ日時:</b> {moment(p.appo_at).format('YYYY/MM/DD HH:mm')}</div>}
+                      {p.calendar_result && <div><b>カレンダー:</b> {p.calendar_result}</div>}
                       {p.recording_url && (
                         <div className="space-y-0.5">
                           {audioUrls[p.id]

@@ -1,0 +1,15 @@
+{
+  "name": "rst-realtime-voice-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "RST AIテレアポ用 リアルタイム音声中継サーバー（Twilio Media Streams × OpenAI Realtime API）",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

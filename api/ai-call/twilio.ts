@@ -8,7 +8,14 @@
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, buildStreamTwiml } from '../../src/lib/twilioCall.js'
+import { createCalendarEvent, getAvailableSlots, isCalendarConfigured } from '../../src/lib/googleCalendar.js'
+
+// サーバー間シークレット認証（realtime音声サーバーからのツール呼び出し用）
+function verifyServerSecret(req: any): boolean {
+  const s = String(process.env.AI_CALL_SERVER_SECRET || '')
+  return !!s && String(req.headers.authorization || '') === `Bearer ${s}`
+}
 
 export const config = { maxDuration: 30 }
 
@@ -51,6 +58,8 @@ export default async function handler(req: any, res: any) {
       checks: { sidPrefixOk: pf.debug.sidPrefixOk, sidLenOk: pf.debug.sidLenOk, sidLen: pf.debug.sidLen, tokenPresent: pf.debug.tokenPresent, tokenLen: pf.debug.tokenLen, fromE164: pf.debug.fromE164 },
       // 音声AI（録音→文字起こし→AI要約）の設定状況
       voiceAi: { transcription: isTranscriptionConfigured(), summary: isSummaryConfigured(), transcriptionProvider: transcriptionProvider(), summaryProvider: summaryProvider(), missingEnv: missingVoiceAiEnv() },
+      // リアルタイム音声AI会話モード
+      callMode: getCallMode(), realtimeEnabled: isRealtimeConfigured(),
     })
   }
 
@@ -65,6 +74,65 @@ export default async function handler(req: any, res: any) {
 
   const admin = (() => { try { return getAdminClient() } catch { return null } })()
   if (!admin) return res.status(500).json({ ok: false, error: 'SUPABASE未設定（サーバー）' })
+
+  // ---- realtime音声サーバーからのツール呼び出し（サーバー間シークレット認証） ----
+  if (action.startsWith('tool-')) {
+    if (!verifyServerSecret(req)) return res.status(401).json({ ok: false, error: 'server secret 不一致' })
+    const b = req.body || {}
+    let caseId = b.caseId ? String(b.caseId) : null
+    const jobId = b.jobId ? String(b.jobId) : null
+    if (!caseId && jobId) { const { data: j } = await admin.from('ai_call_jobs').select('case_id').eq('id', jobId).maybeSingle(); caseId = j?.case_id || null }
+    const nowIso = new Date().toISOString()
+
+    if (action === 'tool-context') {
+      if (!caseId) return res.status(200).json({ ok: true, context: null })
+      const { data: c } = await admin.from('cases').select('name,industry,address,phone1,hp1,memo').eq('id', caseId).maybeSingle()
+      return res.status(200).json({ ok: true, context: c ? { name: c.name, industry: c.industry, address: c.address, phone: c.phone1, website: c.hp1, memo: c.memo } : null })
+    }
+    if (action === 'tool-slots') {
+      const slots = isCalendarConfigured() ? await getAvailableSlots(3, 6) : []
+      return res.status(200).json({ ok: true, slots, calendarConfigured: isCalendarConfigured() })
+    }
+    if (action === 'tool-appointment') {
+      if (!caseId || !b.datetime) return res.status(400).json({ ok: false, error: 'caseId/datetime がありません' })
+      const { data: c } = await admin.from('cases').select('id,name,address,sales_rep,do_not_call').eq('id', caseId).maybeSingle()
+      if (!c) return res.status(404).json({ ok: false, error: '案件が見つかりません' })
+      const appoIso = new Date(b.datetime).toISOString()
+      const memo = ['【AIテレアポ アポ確定】', b.contactName ? `担当: ${b.contactName}` : '', b.memo || ''].filter(Boolean).join('\n')
+      const { data: appt } = await admin.from('appointments').insert({ case_id: c.id, case_name: c.name, address: c.address || null, sales_rep: c.sales_rep || null, appo_at: appoIso, memo }).select('id').single()
+      let calResult = 'カレンダー未設定'
+      if (isCalendarConfigured()) {
+        try { const eid = await createCalendarEvent({ summary: `訪問: ${c.name}`, description: memo, location: c.address || '', startIso: appoIso, durationMin: 60 }); if (appt?.id) await admin.from('appointments').update({ google_event_id: eid, google_synced_at: nowIso }).eq('id', appt.id); calResult = 'Googleカレンダー登録済み' }
+        catch (e: any) { calResult = 'カレンダー登録失敗: ' + String(e?.message || e) }
+      }
+      await admin.from('cases').update({ status: 'アポ', ai_call_status: 'アポ確定', ai_call_next_action: `訪問予定 ${new Date(appoIso).toLocaleString('ja-JP')}`, last_ai_call_at: nowIso }).eq('id', c.id)
+      if (jobId) await admin.from('ai_call_jobs').update({ status: 'アポ確定', appointment_id: appt?.id || null, appo_at: appoIso, ai_contact_name: b.contactName || null, calendar_result: calResult, next_action: '訪問予定を実施' }).eq('id', jobId)
+      await admin.from('call_logs').insert({ case_id: c.id, case_name: c.name, call_at: nowIso, contact_type: '接触', result: 'AIテレアポ: アポ確定', memo: `${memo}\n${calResult}`, summary: 'AIテレアポでアポ確定', appo_at: appoIso, next_status: 'アポ' }).then(() => {}, () => {})
+      return res.status(200).json({ ok: true, appointmentId: appt?.id, calendar: calResult, appoAt: appoIso })
+    }
+    if (action === 'tool-callback') {
+      if (!caseId || !b.datetime) return res.status(400).json({ ok: false, error: 'caseId/datetime がありません' })
+      const nextIso = new Date(b.datetime).toISOString()
+      await admin.from('cases').update({ status: '再コール', ai_call_status: '再架電', next_ai_call_at: nextIso, ai_call_next_action: `${new Date(nextIso).toLocaleString('ja-JP')} に再架電`, last_ai_call_at: nowIso }).eq('id', caseId)
+      if (jobId) await admin.from('ai_call_jobs').update({ status: '再架電', next_action: `${new Date(nextIso).toLocaleString('ja-JP')} に再架電` }).eq('id', jobId)
+      return res.status(200).json({ ok: true })
+    }
+    if (action === 'tool-nointerest') {
+      if (!caseId) return res.status(400).json({ ok: false, error: 'caseId がありません' })
+      // ※NGは人が確認（do_not_callは立てない）。興味なしまで。
+      await admin.from('cases').update({ ai_call_status: '興味なし', ai_call_next_action: b.reason ? `興味なし: ${b.reason}` : '興味なし', last_ai_call_at: nowIso }).eq('id', caseId)
+      if (jobId) await admin.from('ai_call_jobs').update({ status: '興味なし', next_action: b.reason || '興味なし' }).eq('id', jobId)
+      await admin.from('call_logs').insert({ case_id: caseId, call_at: nowIso, contact_type: '接触', result: 'AIテレアポ: 興味なし', memo: b.reason || null }).then(() => {}, () => {})
+      return res.status(200).json({ ok: true })
+    }
+    if (action === 'tool-summary' || action === 'tool-result') {
+      if (jobId) await admin.from('ai_call_jobs').update({ ai_summary: b.summary || null, next_action: b.nextAction || null, status: b.result || undefined, call_mode: 'realtime' }).eq('id', jobId).then(() => {}, () => {})
+      if (caseId) await admin.from('cases').update({ ai_call_status: b.result || null, ai_call_next_action: b.nextAction || null, last_ai_call_at: nowIso }).eq('id', caseId).then(() => {}, () => {})
+      if (action === 'tool-result' && caseId) await admin.from('call_logs').insert({ case_id: caseId, call_at: nowIso, contact_type: '接触', result: `AIテレアポ(realtime): ${b.result || '通話完了'}`, memo: b.summary || null, summary: b.summary || null }).then(() => {}, () => {})
+      return res.status(200).json({ ok: true })
+    }
+    return res.status(400).json({ ok: false, error: 'unknown tool action' })
+  }
 
   // ---- Twilioの状態通知（認証なし・CallSidで既存ジョブに紐付け） ----
   if (action === 'callback') {
@@ -225,26 +293,31 @@ export default async function handler(req: any, res: any) {
     const { data: dup } = await admin.from('ai_call_jobs').select('id').eq('phone', intended).eq('status', '発信中').gte('created_date', since).limit(1)
     if (dup?.[0]) return res.status(409).json({ ok: false, error: '同じ番号への発信が進行中です。完了までお待ちください。' })
 
+    // 通話モード: realtime(リアルタイム音声AI) が設定済みなら realtime。body.mode==='fixed' で固定に強制可。
+    const useRealtime = isRealtimeConfigured() && req.body?.mode !== 'fixed'
+
     // 発信中ジョブ作成（案件に紐付け・phoneは本来の発信先を記録）
     const nowIso = new Date().toISOString()
     const redirectNote = (caseId && testMode) ? `※テストモード: 実際の発信先は ${dial}（案件番号 ${intended} には発信していません）` : ''
     const { data: job, error: je } = await admin.from('ai_call_jobs').insert({
-      case_id: caseId, case_name: caseName, phone: intended, status: '発信中', provider: 'twilio', called_at: nowIso, created_by_id: auth.user.id,
+      case_id: caseId, case_name: caseName, phone: intended, status: '発信中', provider: 'twilio', call_mode: useRealtime ? 'realtime' : 'fixed', called_at: nowIso, created_by_id: auth.user.id,
       transcript: redirectNote || null,
     }).select('id').single()
     if (je || !job) return res.status(500).json({ ok: false, error: je?.message || 'ジョブ作成に失敗' })
 
     // Twilio発信（公式SDK・TwiMLはインライン、状態通知＋録音完了通知は自ドメイン＋jobId）
+    // realtime: <Connect><Stream> で音声を中継サーバーへ双方向ストリーム。fixed: 固定メッセージ読み上げ。
     const base = baseUrl(req)
     const cbUrl = `${base}/api/ai-call/twilio?action=callback&jobId=${job.id}`
     const recUrl = `${base}/api/ai-call/twilio?action=recording&jobId=${job.id}`
-    const r = await initiateTwilioCall({ toRaw: dial, twiml: buildTwiml(message), statusCallbackUrl: cbUrl, recordingCallbackUrl: recUrl })
+    const twiml = useRealtime ? buildStreamTwiml(job.id, caseId || '') : buildTwiml(message)
+    const r = await initiateTwilioCall({ toRaw: dial, twiml, statusCallbackUrl: cbUrl, recordingCallbackUrl: recUrl })
     if (!r.ok) {
       await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
       return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), debug: r.debug })
+    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), mode: useRealtime ? 'realtime' : 'fixed', debug: r.debug })
   }
 
   return res.status(400).json({ ok: false, error: '不明なaction' })

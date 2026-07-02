@@ -11,6 +11,25 @@ export function getProviderMode(): 'mock' | 'twilio' {
   return process.env.AI_CALL_PROVIDER === 'twilio' ? 'twilio' : 'mock'
 }
 
+// 通話モード: fixed=固定メッセージ / realtime=リアルタイム音声AI会話（別サーバー）。既定fixed（安全）。
+export function getCallMode(): 'fixed' | 'realtime' {
+  return process.env.AI_CALL_MODE === 'realtime' ? 'realtime' : 'fixed'
+}
+export function realtimeServerUrl(): string {
+  return trim(process.env.REALTIME_VOICE_SERVER_URL) // 例: wss://rst-voice.onrender.com
+}
+export function isRealtimeConfigured(): boolean {
+  return getCallMode() === 'realtime' && !!realtimeServerUrl() && !!trim(process.env.AI_CALL_SERVER_SECRET)
+}
+/** realtimeモードのTwiML: <Connect><Stream> で音声を中継サーバーへ双方向ストリーム。 */
+export function buildStreamTwiml(jobId: string, caseId: string): string {
+  const base = realtimeServerUrl().replace(/^https?:\/\//, (m) => (m === 'http://' ? 'ws://' : 'wss://'))
+  const wss = /^wss?:\/\//.test(base) ? base : 'wss://' + base
+  const url = `${wss.replace(/\/+$/, '')}/twilio-stream`
+  const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${esc(url)}"><Parameter name="jobId" value="${esc(jobId)}"/><Parameter name="caseId" value="${esc(caseId)}"/></Stream></Connect></Response>`
+}
+
 const trim = (v?: string | null) => String(v || '').trim()
 
 /** 発信元番号: TWILIO_PHONE_NUMBER を優先、無ければ TWILIO_NUMBER。どちらを読んだかも返す。 */

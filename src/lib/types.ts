@@ -104,6 +104,11 @@ export interface AiCallJob {
   ai_applied?: boolean | null
   processing_status?: string | null
   processing_error?: string | null
+  // リアルタイム音声AI会話
+  call_mode?: string | null
+  ai_contact_name?: string | null
+  appo_at?: string | null
+  calendar_result?: string | null
   created_by_id?: string | null
   created_date?: string
   updated_date?: string
