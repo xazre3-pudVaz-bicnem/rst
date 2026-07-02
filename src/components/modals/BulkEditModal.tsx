@@ -4,7 +4,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
-import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -161,7 +161,7 @@ export default function BulkEditModal({ open, onClose, cases, selectedIds, onDon
           {action === 'recall' && (
             <div className="space-y-1">
               <Label>再コール日時</Label>
-              <Input type="datetime-local" step={900} value={recallAt} onChange={(e) => setRecallAt(e.target.value)} />
+              <DateTime15Input value={recallAt} onChange={setRecallAt} />
             </div>
           )}
         </div>

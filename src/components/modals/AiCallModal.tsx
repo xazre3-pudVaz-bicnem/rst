@@ -4,6 +4,7 @@ import { Phone, PhoneOff, Bot, CalendarPlus, Save, Plus, FileText, Ban, Unlock, 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAuth } from '@/context/AuthContext'
@@ -272,7 +273,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                     </div>
                   ) : (
                     <div className="flex flex-wrap items-end gap-2 rounded-lg border border-green-300 bg-green-50/50 p-2 dark:bg-green-500/10">
-                      <div><label className="text-[10px] font-bold text-green-700 dark:text-green-300">訪問/商談 日時</label><Input type="datetime-local" step={900} value={appoAt} onChange={(e) => setAppoAt(e.target.value)} className="h-8" /></div>
+                      <div><label className="text-[10px] font-bold text-green-700 dark:text-green-300">訪問/商談 日時</label><DateTime15Input value={appoAt} onChange={setAppoAt} className="h-8" /></div>
                       <Button size="sm" onClick={registerAppo} disabled={appoBusy || !canWrite}><CalendarPlus className="h-3.5 w-3.5" />{appoBusy ? '登録中…' : '訪問予定を登録'}</Button>
                     </div>
                   )
@@ -281,7 +282,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 {/* 不在/担当者不在/再架電 → 次回架電予定日 */}
                 {NEXT_STATUSES.includes(job.status) && (
                   <div className="flex flex-wrap items-end gap-2 rounded-lg border border-amber-300 bg-amber-50/50 p-2 dark:bg-amber-500/10">
-                    <div><label className="text-[10px] font-bold text-amber-700 dark:text-amber-300"><Clock className="mr-0.5 inline h-3 w-3" />次回架電予定日</label><Input type="datetime-local" step={900} value={nextAt} onChange={(e) => setNextAt(e.target.value)} className="h-8" /></div>
+                    <div><label className="text-[10px] font-bold text-amber-700 dark:text-amber-300"><Clock className="mr-0.5 inline h-3 w-3" />次回架電予定日</label><DateTime15Input value={nextAt} onChange={setNextAt} className="h-8" /></div>
                     <Button size="sm" variant="outline" onClick={saveNext} disabled={nextBusy || !canWrite}><Save className="h-3.5 w-3.5" />{nextBusy ? '設定中…' : '次回予定を設定'}</Button>
                   </div>
                 )}

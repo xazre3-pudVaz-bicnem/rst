@@ -283,12 +283,12 @@ export default function CaseDetail({
         {row('GoogleマップURL', urlCell('地図を開く', mapUrl(c.address, c.name)))}
         {row('公式サイト', (
           <div className="flex flex-wrap gap-3">
-            {urlCell('HP1', c.hp1)}
-            {urlCell('HP2', c.hp2)}
+            {urlCell(c.hp1, c.hp1)}
+            {urlCell(c.hp2, c.hp2)}
             {!c.hp1 && !c.hp2 && <span className="text-muted-foreground">—</span>}
           </div>
         ))}
-        {row('Instagram', urlCell('Instagram', c.instagram))}
+        {row('Instagram', urlCell(c.instagram, c.instagram))}
         {row('代表者名', c.representative)}
         {row('最終架電日', lastCallAt ? moment(lastCallAt).format('YYYY/MM/DD HH:mm') : null)}
         {row('次回再コール', nextRecallAt ? (

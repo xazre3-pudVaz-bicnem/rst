@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -306,11 +307,9 @@ export default function Appointments() {
             </div>
             <div className="space-y-1">
               <Label>日時</Label>
-              <Input
-                type="datetime-local"
-                step={900}
+              <DateTime15Input
                 value={form.appo_at}
-                onChange={(e) => setForm((f) => ({ ...f, appo_at: e.target.value }))}
+                onChange={(v) => setForm((f) => ({ ...f, appo_at: v }))}
               />
             </div>
             <div className="space-y-1">

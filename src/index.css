@@ -118,6 +118,7 @@
 }
 
 input[type='datetime-local'],
-input[type='date'] {
+input[type='date'],
+input[type='time'] {
   font-family: inherit;
 }

@@ -8,6 +8,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
@@ -278,11 +279,9 @@ export default function CallLogFormModal({
 
           <div className="space-y-1">
             <Label>コール日時</Label>
-            <Input
-              type="datetime-local"
-              step={900}
+            <DateTime15Input
               value={callAt}
-              onChange={(e) => setCallAt(e.target.value)}
+              onChange={setCallAt}
             />
           </div>
 
@@ -375,11 +374,9 @@ export default function CallLogFormModal({
             <div className="grid grid-cols-2 gap-2 rounded-md bg-green-50 p-2 dark:bg-green-500/10">
               <div className="space-y-1">
                 <Label>アポ日時</Label>
-                <Input
-                  type="datetime-local"
-                  step={900}
+                <DateTime15Input
                   value={appoAt}
-                  onChange={(e) => setAppoAt(e.target.value)}
+                  onChange={setAppoAt}
                 />
               </div>
               <div className="space-y-1">
@@ -434,11 +431,9 @@ export default function CallLogFormModal({
 
           <div className="space-y-1">
             <Label>再コール予定（任意）</Label>
-            <Input
-              type="datetime-local"
-              step={900}
+            <DateTime15Input
               value={recallAt}
-              onChange={(e) => setRecallAt(e.target.value)}
+              onChange={setRecallAt}
             />
           </div>
 

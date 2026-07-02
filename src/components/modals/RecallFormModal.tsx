@@ -7,7 +7,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
@@ -108,11 +108,9 @@ export default function RecallFormModal({
           </div>
           <div className="space-y-1">
             <Label>予定日時</Label>
-            <Input
-              type="datetime-local"
-              step={900}
+            <DateTime15Input
               value={targetAt}
-              onChange={(e) => setTargetAt(e.target.value)}
+              onChange={setTargetAt}
             />
           </div>
           <div className="space-y-1">

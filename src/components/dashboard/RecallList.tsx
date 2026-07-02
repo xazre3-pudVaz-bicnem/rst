@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import moment from 'moment'
 import { Plus, Pencil, Check, X, CheckCircle2, Phone, ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { RecallApi, CallLogApi, AuditApi } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
@@ -161,12 +161,10 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
                   >
                     {editing ? (
                       <div className="flex items-center gap-1">
-                        <Input
-                          type="datetime-local"
-                          step={900}
+                        <DateTime15Input
                           value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          className="h-7 flex-1"
+                          onChange={setEditValue}
+                          className="h-7"
                         />
                         <button className="rounded p-1 text-green-600 hover:bg-green-100" onClick={() => saveEdit(r.id)}>
                           <Check className="h-4 w-4" />

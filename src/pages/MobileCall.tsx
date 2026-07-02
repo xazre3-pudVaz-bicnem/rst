@@ -4,6 +4,7 @@ import moment from 'moment'
 import { Phone, Wifi, WifiOff, RefreshCw, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -250,7 +251,7 @@ export default function MobileCall() {
             </div>
             <div className="space-y-1">
               <Label>再コール予定（任意）</Label>
-              <Input type="datetime-local" step={900} value={recallAt} onChange={(e) => setRecallAt(e.target.value)} />
+              <DateTime15Input value={recallAt} onChange={setRecallAt} />
             </div>
             <Button className="w-full" onClick={handleSave} disabled={busy}>
               <Save className="h-4 w-4" />{busy ? '記録中...' : '記録する'}
