@@ -72,7 +72,12 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
     const s = await AiCallScriptApi.list().catch(() => [])
     setScripts(s)
     setScriptId((prev) => prev || s.find((x) => x.is_default)?.id || s[0]?.id || '')
-    if (selectedCase) setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
+    if (selectedCase) {
+      const rows = await AiCallJobApi.listByCase(selectedCase.id).catch(() => [])
+      setPast(rows)
+      // 未分類の直近Twilioジョブ（発信中/通話完了）があれば結果記録の対象として復元（開き直しても結果ボタンが出る）
+      setCaseJob((prev) => prev ?? (rows.find((p) => p.provider === 'twilio' && (p.status === '発信中' || p.status === '通話完了')) || null))
+    }
   }, [selectedCase])
 
   useEffect(() => {
