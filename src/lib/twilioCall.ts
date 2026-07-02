@@ -36,16 +36,16 @@ export function realtimeServerUrlMasked(): string {
 }
 /**
  * realtimeモードのTwiML: <Connect><Stream> で音声を中継サーバーへ双方向ストリーム。
- * jobId/caseId/secret を URLクエリと <Parameter> の両方に載せる（中継サーバーはどちらでも受けられる）。
+ * ※Twilioの<Stream>はURLクエリ付きだと接続に失敗することがあるため、URLはクエリなしのクリーンな
+ *   wssにし、jobId/caseId/secret は <Parameter> で渡す（中継サーバーは start イベントの customParameters から受け取る）。
  */
 export function buildStreamTwiml(jobId: string, caseId: string): string {
   const base = realtimeServerUrl().replace(/^https?:\/\//, (m) => (m === 'http://' ? 'ws://' : 'wss://'))
   const wss = /^wss?:\/\//.test(base) ? base : 'wss://' + base
+  const url = `${wss.replace(/\/+$/, '')}/twilio-stream`
   const secret = trim(process.env.AI_CALL_SERVER_SECRET)
-  const qs = new URLSearchParams({ jobId: jobId || '', caseId: caseId || '', secret })
-  const url = `${wss.replace(/\/+$/, '')}/twilio-stream?${qs.toString()}`
   const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${esc(url)}"><Parameter name="jobId" value="${esc(jobId)}"/><Parameter name="caseId" value="${esc(caseId)}"/></Stream></Connect></Response>`
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${esc(url)}"><Parameter name="jobId" value="${esc(jobId)}"/><Parameter name="caseId" value="${esc(caseId)}"/><Parameter name="secret" value="${esc(secret)}"/></Stream></Connect></Response>`
 }
 
 const trim = (v?: string | null) => String(v || '').trim()
