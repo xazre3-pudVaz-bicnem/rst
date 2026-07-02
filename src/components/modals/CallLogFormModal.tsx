@@ -150,6 +150,7 @@ export default function CallLogFormModal({
           sales_rep: logRep || selectedCase.sales_rep || null,
           prev_status: statusChanged ? selectedCase.status : null, next_status: statusChanged ? effectiveStatus : null,
           next_recall_at: recallAt ? moment(roundTo15(recallAt)).toISOString() : null,
+          appo_at: showAppo && appoAt ? moment(roundTo15(appoAt)).toISOString() : null,
           created_by_id: user?.id ?? null,
         }
         if (editingLog) await CallLogApi.update(editingLog.id, logPayload)
@@ -191,6 +192,7 @@ export default function CallLogFormModal({
         prev_status: statusChanged ? selectedCase.status : null,
         next_status: statusChanged ? effectiveStatus : null,
         next_recall_at: recallAt ? moment(roundTo15(recallAt)).toISOString() : null,
+        appo_at: showAppo && appoAt ? moment(roundTo15(appoAt)).toISOString() : null,
         created_by_id: user?.id ?? null,
       }
       if (editingLog) {

@@ -1,5 +1,5 @@
 import moment from 'moment'
-import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi } from '@/lib/api'
@@ -109,6 +109,13 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
 
             {l.memo && (
               <div className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{l.memo}</div>
+            )}
+
+            {l.appo_at && (
+              <div className="mt-1 inline-flex items-center gap-1 rounded bg-green-100 px-1.5 py-0.5 text-2xs font-bold text-green-800 dark:bg-green-500/15 dark:text-green-300">
+                <CalendarCheck className="h-3 w-3" />
+                アポ日時: {moment(l.appo_at).format('MM/DD HH:mm')}
+              </div>
             )}
 
             {l.next_recall_at && (

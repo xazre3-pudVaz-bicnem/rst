@@ -125,6 +125,8 @@ export interface CallLog {
   next_status?: string | null
   /** このコールで設定した次回再コール日時 */
   next_recall_at?: string | null
+  /** このコールで獲得したアポの日時（結果がアポの場合） */
+  appo_at?: string | null
   /** 担当者（記録者） */
   sales_rep?: string | null
   organization_id?: string | null
