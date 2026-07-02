@@ -601,9 +601,14 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         if (orgLike) qReason('法人/団体/研究会')
         if (tooManyReviewsLight) qReason('口コミ多数(既存店)')
 
+        // 営業時間（Places API v1: weekdayDescriptions は「月曜日: 11時00分～22時00分」等の整形済み文字列）
+        const weekdayDesc: string[] = p.regularOpeningHours?.weekdayDescriptions || p.currentOpeningHours?.weekdayDescriptions || []
+        const businessHours: string | null = Array.isArray(weekdayDesc) && weekdayDesc.length ? weekdayDesc.join('\n').slice(0, 300) : null
+
         const payload: any = {
           ...classified,
           source_type: 'AI自動投入',
+          business_hours: businessHours,
           detected_signals: classified.is_new_gbp ? ['GBP'] : (classified.detected_signals || []),
           google_place_id: placeId || null,
           google_maps_uri: p.googleMapsUri || null,
@@ -696,7 +701,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           const { data: created, error: caseErr } = await admin.from('cases').insert({
             name: classified.name, address: classified.address || '', phone1: classified.phone_number || '',
             industry: classified.industry || null, status: DEFAULT_STATUS, priority: classified.hot_tier === 'A' ? '高' : '中', hp1: payload.website_url,
-            instagram: classified.instagram_url || null, source_urls: 'AI自動投入', memo, created_by_id: userId,
+            instagram: classified.instagram_url || null, business_hours: businessHours, source_urls: 'AI自動投入', memo, created_by_id: userId,
           }).select('id').single()
           if (caseErr) recordSaveError('case insert: ' + caseErr.message)
           if (created?.id) {

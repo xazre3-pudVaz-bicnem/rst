@@ -12,6 +12,8 @@ export interface Case {
   hp1?: string | null
   hp2?: string | null
   instagram?: string | null
+  /** 営業時間（AI投入時に判明したもの。不明は null） */
+  business_hours?: string | null
   source_urls?: string | null
   memo?: string | null
   /** タグ（複数） */

@@ -531,6 +531,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             extracted_open_date: open.iso || open.text || null, extracted_open_date_text: open.text || null,
             extracted_open_month: open.month, extracted_open_day: open.day, extracted_open_date_confidence: open.confidence,
             instagram_url: instagram, official_url: official, map_url: info.map_url || null,
+            business_hours: info.hours || null,
             hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
             hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
             hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
@@ -567,7 +568,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
           const importStatus = await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, caseData: {
             name, address: address || '', phone1: phone, industry: info.industry || null,
-            status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: item.url,
+            status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, business_hours: info.hours || null, source_urls: item.url,
             memo: [`【AI自動投入 / 店舗ディレクトリ / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : dc.tier}】`, `店舗: ${name}`, `記事タイトル: ${item.title || ''}`, `URL: ${item.url}`, `電話: ${phone || '—'}`, `住所: ${address || '—'}`, `理由: ${dc.reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
           } })
           void importStatus
@@ -788,6 +789,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             extracted_open_date: open.iso || open.text || null, extracted_open_date_text: open.text || null,
             extracted_open_month: open.month, extracted_open_day: open.day, extracted_open_date_confidence: open.confidence,
             instagram_url: instagram, official_url: official, map_url: info.map_url || null,
+            business_hours: info.hours || null,
             hot_reject_reasons: hotReject.hot_reject_reasons, hot_reject_summary: hotReject.hot_reject_summary,
             hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
             hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
@@ -816,7 +818,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             candidateId = ins?.id || null
           }
           await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, caseData: {
-            name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, source_urls: detailUrl,
+            name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, business_hours: info.hours || null, source_urls: detailUrl,
             memo: [`【AI自動投入 / ${diag.parser_used} / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : dc.tier}】`, `店舗: ${name}`, `記事タイトル: ${cand.shopName || ''}`, `URL: ${detailUrl}`, `電話: ${phone || '—'}`, `住所: ${address || '—'}`, `理由: ${dc.reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
           } })
           if (!debug.sample || debug.sample.siteType !== stype) debug.sample = { siteType: stype, parser_used: diag.parser_used, site: site.name, detailUrl, shop_name: name, phone, address, open_date: open.text, industry: info.industry, matched: cand.matchedKeywords, temperature, reason: dc.reason }

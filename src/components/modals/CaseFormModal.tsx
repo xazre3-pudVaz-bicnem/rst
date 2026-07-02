@@ -46,6 +46,7 @@ const EMPTY = {
   hp1: '',
   hp2: '',
   instagram: '',
+  business_hours: '',
   source_urls: '',
   memo: '',
 }
@@ -81,6 +82,7 @@ export default function CaseFormModal({
         hp1: editingCase.hp1 ?? '',
         hp2: editingCase.hp2 ?? '',
         instagram: editingCase.instagram ?? '',
+        business_hours: editingCase.business_hours ?? '',
         source_urls: editingCase.source_urls ?? '',
         memo: editingCase.memo ?? '',
       })
@@ -145,6 +147,7 @@ export default function CaseFormModal({
         hp1: normalizeUrl(form.hp1) || null,
         hp2: normalizeUrl(form.hp2) || null,
         instagram: normalizeUrl(form.instagram) || null,
+        business_hours: form.business_hours.trim() || null,
         source_urls: form.source_urls.trim() || null,
         memo: form.memo.trim() || null,
         priority: priority || null,
@@ -340,6 +343,10 @@ export default function CaseFormModal({
           <div className="col-span-2 space-y-1">
             <Label>Instagram</Label>
             <Input value={form.instagram} onChange={(e) => set('instagram', e.target.value)} />
+          </div>
+          <div className="col-span-2 space-y-1">
+            <Label>営業時間</Label>
+            <Input value={form.business_hours} onChange={(e) => set('business_hours', e.target.value)} placeholder="例: 11:00〜22:00（不明なら空欄）" />
           </div>
           <div className="col-span-2 space-y-1">
             <Label>情報源URL（改行区切り）</Label>

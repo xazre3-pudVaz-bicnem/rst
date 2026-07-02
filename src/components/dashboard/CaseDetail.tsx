@@ -289,6 +289,7 @@ export default function CaseDetail({
           </div>
         ))}
         {row('Instagram', urlCell(c.instagram, c.instagram))}
+        {row('営業時間', c.business_hours && <span className="whitespace-pre-wrap">{c.business_hours}</span>)}
         {row('代表者名', c.representative)}
         {row('最終架電日', lastCallAt ? moment(lastCallAt).format('YYYY/MM/DD HH:mm') : null)}
         {row('次回再コール', nextRecallAt ? (
