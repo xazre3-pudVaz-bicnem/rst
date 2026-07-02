@@ -17,6 +17,33 @@ function verifyServerSecret(req: any): boolean {
   return !!s && String(req.headers.authorization || '') === `Bearer ${s}`
 }
 
+// realtime音声AIに渡すトークスクリプトを解決する。job.script_id を優先、無ければ既定(is_default)。
+// 構造化した全項目を返す（realtimeサーバーが固定ガードレールと合成してinstructionsを組む）。
+const SCRIPT_FIELDS = 'id,name,target_product,opening_talk,contact_talk,reception_talk,interest_talk,pricing_answer,rejection_handling,absent_handling,appointment_confirm_talk,ng_words,forbidden_actions,conversation_goal,temperature_rule,appointment_rule'
+async function resolveScript(admin: any, jobId: string | null): Promise<any | null> {
+  try {
+    let scriptId: string | null = null
+    if (jobId) { const { data: j } = await admin.from('ai_call_jobs').select('script_id').eq('id', jobId).maybeSingle(); scriptId = j?.script_id || null }
+    if (scriptId) {
+      const { data: s } = await admin.from('ai_call_scripts').select(SCRIPT_FIELDS).eq('id', scriptId).eq('is_active', true).maybeSingle()
+      if (s) return s
+    }
+    const { data: def } = await admin.from('ai_call_scripts').select(SCRIPT_FIELDS).eq('is_active', true).order('is_default', { ascending: false }).order('updated_date', { ascending: false }).limit(1)
+    return def?.[0] || null
+  } catch { return null }
+}
+
+// AIが渡す日時はTZ未指定(例 "2026-07-03T10:00")のことが多い。VercelはUTCで動くため
+// TZ未指定を素で new Date() すると10時→UTC10時→JST表示19時にズレる。未指定はJST(+09:00)として解釈する。
+function toJstIso(input: string): string {
+  const raw = String(input || '').trim().replace(' ', 'T')
+  if (!raw) return new Date().toISOString()
+  const hasTz = /(Z|[+-]\d{2}:?\d{2})$/.test(raw)
+  const d = new Date(hasTz ? raw : `${raw}+09:00`)
+  if (isNaN(d.getTime())) { const f = new Date(raw); return isNaN(f.getTime()) ? new Date().toISOString() : f.toISOString() }
+  return d.toISOString()
+}
+
 export const config = { maxDuration: 30 }
 
 const FIXED_ADMIN_EMAIL = 'odaharuki129@gmail.com'
@@ -92,9 +119,12 @@ export default async function handler(req: any, res: any) {
     const nowIso = new Date().toISOString()
 
     if (action === 'tool-context') {
-      if (!caseId) return res.status(200).json({ ok: true, context: null })
+      // 相手先情報（caseIdがあれば）＋ 使用するトークスクリプトを返す。
+      // スクリプトは job.script_id を優先、無ければ既定（is_default）を採用。realtimeサーバーがinstructionsに反映する。
+      const script = await resolveScript(admin, jobId)
+      if (!caseId) return res.status(200).json({ ok: true, context: null, script })
       const { data: c } = await admin.from('cases').select('name,industry,address,phone1,hp1,memo').eq('id', caseId).maybeSingle()
-      return res.status(200).json({ ok: true, context: c ? { name: c.name, industry: c.industry, address: c.address, phone: c.phone1, website: c.hp1, memo: c.memo } : null })
+      return res.status(200).json({ ok: true, context: c ? { name: c.name, industry: c.industry, address: c.address, phone: c.phone1, website: c.hp1, memo: c.memo } : null, script })
     }
     if (action === 'tool-slots') {
       const slots = isCalendarConfigured() ? await getAvailableSlots(3, 6) : []
@@ -104,7 +134,7 @@ export default async function handler(req: any, res: any) {
       if (!caseId || !b.datetime) return res.status(400).json({ ok: false, error: 'caseId/datetime がありません' })
       const { data: c } = await admin.from('cases').select('id,name,address,sales_rep,do_not_call').eq('id', caseId).maybeSingle()
       if (!c) return res.status(404).json({ ok: false, error: '案件が見つかりません' })
-      const appoIso = new Date(b.datetime).toISOString()
+      const appoIso = toJstIso(b.datetime)
       const memo = ['【AIテレアポ アポ確定】', b.contactName ? `担当: ${b.contactName}` : '', b.memo || ''].filter(Boolean).join('\n')
       const { data: appt } = await admin.from('appointments').insert({ case_id: c.id, case_name: c.name, address: c.address || null, sales_rep: c.sales_rep || null, appo_at: appoIso, memo }).select('id').single()
       let calResult = 'カレンダー未設定'
@@ -119,7 +149,7 @@ export default async function handler(req: any, res: any) {
     }
     if (action === 'tool-callback') {
       if (!caseId || !b.datetime) return res.status(400).json({ ok: false, error: 'caseId/datetime がありません' })
-      const nextIso = new Date(b.datetime).toISOString()
+      const nextIso = toJstIso(b.datetime)
       await admin.from('cases').update({ status: '再コール', ai_call_status: '再架電', next_ai_call_at: nextIso, ai_call_next_action: `${new Date(nextIso).toLocaleString('ja-JP')} に再架電`, last_ai_call_at: nowIso }).eq('id', caseId)
       if (jobId) await admin.from('ai_call_jobs').update({ status: '再架電', next_action: `${new Date(nextIso).toLocaleString('ja-JP')} に再架電` }).eq('id', jobId)
       return res.status(200).json({ ok: true })
@@ -276,6 +306,7 @@ export default async function handler(req: any, res: any) {
     const testMode = b.testMode !== false               // 既定ON（安全側）。ONなら実際は testNumber へ差し替え
     const testNumber = String(b.testNumber || '').trim()
     const message = String(b.message || 'こちらはアールエスティーのテスト発信です。').slice(0, 300)
+    const scriptId = b.scriptId ? String(b.scriptId) : null   // 使用するトークスクリプト（realtime時にjobへ保存→tool-contextで解決）
 
     // 案件フロー(caseId)ではテストモードON時に発信先を管理者テスト番号へ差し替える。
     // 接続テスト(caseIdなし)は phone をそのまま発信。
@@ -312,7 +343,7 @@ export default async function handler(req: any, res: any) {
     const redirectNote = (caseId && testMode) ? `※テストモード: 実際の発信先は ${dial}（案件番号 ${intended} には発信していません）` : ''
     const { data: job, error: je } = await admin.from('ai_call_jobs').insert({
       case_id: caseId, case_name: caseName, phone: intended, status: '発信中', provider: 'twilio', call_mode: useRealtime ? 'realtime' : 'fixed', called_at: nowIso, created_by_id: auth.user.id,
-      transcript: redirectNote || null,
+      script_id: scriptId, transcript: redirectNote || null,
     }).select('id').single()
     if (je || !job) return res.status(500).json({ ok: false, error: je?.message || 'ジョブ作成に失敗' })
 

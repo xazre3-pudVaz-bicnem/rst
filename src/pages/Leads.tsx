@@ -491,7 +491,15 @@ export default function Leads() {
           },
         }),
       })
-      const json = await res.json().catch(() => ({}))
+      // 504タイムアウト等ではJSONではなくHTML/空が返る。res.json()の失敗を
+      // {}（＝全ゼロ表示）にせず、HTTPステータス付きの明確なエラーとして表示する。
+      const raw = await res.text()
+      let json: any
+      try { json = JSON.parse(raw) } catch {
+        json = { ok: false, error: res.status === 504 || res.status === 408
+          ? `処理がタイムアウトしました（HTTP ${res.status}）。設定でクエリ数/補完を減らすか、少し待って再実行してください。`
+          : `サーバーエラー（HTTP ${res.status}）。${raw.slice(0, 200) || '応答なし'}`, failed_step: 'http', error_message: raw.slice(0, 300) }
+      }
       setIwResult(json)
       if (!res.ok || json.ok === false) { toast.error(typeof json.error === 'string' ? json.error : 'Instagram Web検索に失敗しました'); return }
       toast.success(`完了: 取得${json.results ?? 0} / HOT${json.hot ?? 0} / HOLD${json.hold ?? 0}`)

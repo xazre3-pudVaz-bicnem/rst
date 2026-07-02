@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut } from 'lucide-react'
+import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut, Bot } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/context/AuthContext'
 import { roleLabel } from '@/lib/constants'
@@ -58,6 +58,7 @@ export default function TopBar() {
             </svg>,
           )}
           {navItem('/users', 'ユーザー', <Users className="h-3.5 w-3.5" />)}
+          {isAdmin && navItem('/ai-scripts', 'AIトーク', <Bot className="h-3.5 w-3.5" />)}
           {isAdmin && navItem('/audit', '監査', <ScrollText className="h-3.5 w-3.5" />)}
         </nav>
       </div>

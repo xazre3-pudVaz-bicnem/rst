@@ -538,7 +538,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const debug: any = { mode: 'nationwide', provider: searchProvider(), useAnthropic, queries: [] as string[], queryResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
   const startMs = Date.now()
-  const TIME_BUDGET = 50_000
+  // Vercel関数の実処理は60秒上限（vercel.json functions.maxDuration）。末尾の補完1件が
+  // 数十秒かかっても上限を超えないよう、本体ループは40秒で打ち切って余裕を残す。
+  const TIME_BUDGET = 40_000
   const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
 
   if (!searchProvider()) {

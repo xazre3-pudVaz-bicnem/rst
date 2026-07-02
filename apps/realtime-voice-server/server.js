@@ -20,10 +20,27 @@ const AI_CALL_SERVER_SECRET = process.env.AI_CALL_SERVER_SECRET || ''      // RS
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 
-// 最初の発話（必ず日本語・この一文から開始）
-const OPENING_LINE = 'お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。Googleマップやホームページからの集客改善の無料診断についてお電話しました。ご担当の方はいらっしゃいますでしょうか。'
+// 最初の発話（必ず日本語・この一文から開始）。管理画面の「冒頭トーク」が無いときのフォールバック。
+const DEFAULT_OPENING_LINE = 'お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。Googleマップやホームページからの集客改善の無料診断についてお電話しました。ご担当の方はいらっしゃいますでしょうか。'
+
+// 管理画面で編集された「冒頭トーク」を最優先。無ければ既定。
+function openingLine(script) { return (script && String(script.opening_talk || '').trim()) || DEFAULT_OPENING_LINE }
 // response.create に渡す初回発話の明示指示（英語挨拶を防ぐ）
-const GREETING_INSTRUCTION = `必ず日本語のみで、次の言葉をそのまま最初に話してください（英語は絶対に使わない）:\n「${OPENING_LINE}」`
+function greetingInstruction(script) {
+  return `必ず日本語のみで、次の言葉をそのまま最初に話してください（英語は絶対に使わない）:\n「${openingLine(script)}」`
+}
+
+// 【固定・システム側】管理画面の内容に関わらず常に強制する禁止行動（要件5）。編集不可。
+const FIXED_GUARDRAILS = `【絶対厳守のルール（システム固定・編集不可・最優先）】
+- 必ず日本語だけで話す。英語では絶対に話さない。相手が英語で話しても日本語で返す。
+- 嘘をつかない。事実でないことを言わない。
+- 自分は「AIの営業担当」であり、人間の営業担当だと偽らない。
+- Google公式・行政機関・公的機関を装わない。それらの代理だと名乗らない。
+- 契約が取れる・必ず成果が出る等と断言しない。保証しない。
+- 断られたら深追いしない。丁重に感謝を述べて終える。
+- 相手が「電話しないで」「不要」と言ったら、それ以上勧めず mark_no_interest で興味なし候補として終える（NG候補）。
+- 確認なしで勝手にアポを登録しない。必ず日時を復唱し相手の同意を得てから create_appointment を呼ぶ。
+- 聞き取れていない日時・曖昧な日時は推測で登録しない。必ず聞き直す。`
 
 // ---- RST APIツール呼び出し（サーバー間・Bearerシークレット） ----
 async function rstTool(action, body) {
@@ -40,40 +57,36 @@ async function rstTool(action, body) {
 }
 
 // ---- 営業トークのシステムプロンプト ----
-function buildInstructions(ctx) {
+// 固定ガードレール（編集不可）＋ 管理画面で編集したトークスクリプト（script）＋ 相手先情報 を合成する。
+// script が無い場合も既定文で動作する（後方互換）。
+function buildInstructions(ctx, script) {
   const c = ctx || {}
-  return `あなたは「株式会社サイプレス」の電話営業担当です。Googleマップ(MEO)・ホームページ・SEO・AI活用による集客改善の「無料診断」の案内をします。
+  const s = script || {}
+  const line = (label, v) => (v && String(v).trim()) ? `【${label}】\n${String(v).trim()}\n` : ''
+  const product = (s.target_product && String(s.target_product).trim()) || 'Googleマップ(MEO)・ホームページ・SEO・AI活用による集客改善の「無料診断」'
 
-【言語（最重要・絶対厳守）】
-- 必ず日本語だけで話す。英語では絶対に話さない。
-- 相手が英語で話しかけてきても、必ず日本語で返す。
-- 数字・固有名詞も日本語の読みで自然に発話する。
-- 日本の営業電話として自然で丁寧な敬語を使う。
+  return `あなたは「株式会社サイプレス」の電話営業担当（AI）です。${product}のご案内をします。
 
-【最初の発話（必ずこの言葉から始める・英語で始めない）】
-「${OPENING_LINE}」
+${FIXED_GUARDRAILS}
 
 【話し方】
-- 自然で丁寧な日本語。機械っぽくしない。短く、ゆっくり、丁寧に。相手の話を遮らない。
-- 目的は「無料診断の10分説明アポ」を取ること。売り込みすぎない。断られたら深追いしない。
-- 最初に会社名と用件を短く伝える。受付/担当者/代表で話し方を変える。
-- 無理に売り込まない。目的はアポ獲得。断られたら深追いしない。相手が忙しそうなら再架電にする。
-- 相手が「不要」「かけないでください」と言ったら丁重に謝辞を述べ、興味なし/NG候補として終える（深追い禁止）。
+- 自然で丁寧な日本語の敬語。機械っぽくしない。短く、ゆっくり、丁寧に。相手の話を遮らない。
+- 受付／担当者／不在で対応を切り替える。無理に売り込まない。相手が忙しそうなら再架電にする。
 
-【最初のトーク】
-「お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。Googleマップやホームページからの集客状況を無料で診断している件でお電話しました。ご担当の方はいらっしゃいますでしょうか。」
-
-【担当者につながったら】
-「ありがとうございます。今のホームページやGoogleマップの表示状況を確認したうえで、改善できそうな点を無料でお伝えしているのですが、10分ほどオンラインかお電話でご説明できるお時間をいただけますか。」
+【最初の発話（必ずこの言葉から始める・英語で始めない）】
+「${openingLine(s)}」
+${line('担当者につながった時のトーク', s.contact_talk)}${line('受付対応トーク', s.reception_talk)}${line('興味あり時のトーク', s.interest_talk)}${line('料金を聞かれた時の回答', s.pricing_answer)}${line('断られた時の対応', s.rejection_handling)}${line('担当者不在時の対応', s.absent_handling)}${line('会話のゴール', s.conversation_goal)}${line('温度感の判定ルール', s.temperature_rule)}${line('アポ登録ルール', s.appointment_rule)}${line('禁止ワード（これらの言葉は使わない）', s.ng_words)}${line('この案件で絶対にしない行動', s.forbidden_actions)}
+【アポ取得の確認（登録前に必ずこの形で復唱し、同意を得てから create_appointment を呼ぶ）】
+「${(s.appointment_confirm_talk && String(s.appointment_confirm_talk).trim()) || 'ありがとうございます。では、〇月〇日〇曜日の〇時から10分ほど、無料診断のご説明ということでよろしいでしょうか。'}」
 
 【アポ取得の流れ】
 - 相手が前向きなら自然に日程を聞く（例：明日か明後日、午前か午後）。
-- 相手が希望日時を言ったら get_available_slots で空きを確認し、空いていれば create_appointment でアポを登録する。
+- 希望日時を言われたら get_available_slots で空きを確認し、上の確認トークで復唱→同意を得てから create_appointment で登録する。
 - 登録できたら日時を復唱して感謝を述べ、通話を締める。
 
 【ツールの使い方】
 - 会話開始時に必要なら get_case_context で相手先情報を把握する。
-- アポ確定: create_appointment(datetime, contactName, memo)
+- アポ確定: create_appointment(datetime, contactName, memo)  ※datetimeは日本時間(JST)で伝える。
 - 再度かけ直し: schedule_callback(datetime, reason)
 - 興味なし: mark_no_interest(reason)  ※完全NGは登録しない（人が確認する）
 - 通話の最後に save_call_summary(result, summary, nextAction) で必ず結果を残す。
@@ -101,6 +114,7 @@ async function runTool(name, args, session) {
     case 'get_case_context': {
       const r = await rstTool('tool-context', { jobId, caseId })
       session.context = r.context || session.context
+      if (r.script) session.script = r.script
       return r
     }
     case 'get_available_slots': return await rstTool('tool-slots', { jobId, caseId })
@@ -137,7 +151,7 @@ const FALLBACK_BETA_VOICE = process.env.OPENAI_REALTIME_FALLBACK_VOICE || 'alloy
 
 /** session.update ペイロード（G.711 μ-law・server VAD・日本語プロンプト）。beta=フラット / GA=audio構造。 */
 function buildSessionUpdate(session, beta, voice) {
-  const instructions = buildInstructions(session.context)
+  const instructions = buildInstructions(session.context, session.script)
   if (beta) {
     return {
       type: 'session.update',
@@ -194,7 +208,7 @@ function connectOpenAI(session) {
         log('[openai] session.updated received  jobId=', session.jobId)
         if (!session.greeted) {
           session.greeted = true
-          oa.send(JSON.stringify({ type: 'response.create', response: { instructions: GREETING_INSTRUCTION } }))
+          oa.send(JSON.stringify({ type: 'response.create', response: { instructions: greetingInstruction(session.script) } }))
           log('[openai] Japanese initial response.create sent  jobId=', session.jobId)
         }
         break
@@ -321,7 +335,7 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 wss.on('connection', (twilioWs, req) => {
-  const session = { twilio: twilioWs, openai: null, streamSid: null, jobId: twilioWs._query?.jobId || '', caseId: twilioWs._query?.caseId || '', context: null, result: null, summary: null, nextAction: null, appoAt: null, finalized: false, mediaCount: 0 }
+  const session = { twilio: twilioWs, openai: null, streamSid: null, jobId: twilioWs._query?.jobId || '', caseId: twilioWs._query?.caseId || '', context: null, script: null, result: null, summary: null, nextAction: null, appoAt: null, finalized: false, mediaCount: 0 }
   log('[twilio] Twilio stream connected  jobId=', session.jobId, ' caseId=', session.caseId)
 
   twilioWs.on('message', async (raw) => {
@@ -339,6 +353,7 @@ wss.on('connection', (twilioWs, req) => {
         // 案件コンテキストを取得してからOpenAIへ接続（プロンプトに反映）
         const ctx = await rstTool('tool-context', { jobId: session.jobId, caseId: session.caseId })
         session.context = ctx.context || null
+        session.script = ctx.script || null
         log('[openai] realtime connecting  jobId=', session.jobId, ' model=', OPENAI_REALTIME_MODEL)
         connectOpenAI(session)
         break

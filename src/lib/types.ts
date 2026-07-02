@@ -68,6 +68,21 @@ export interface AiCallScript {
   id: string
   name: string
   body: string
+  // ↓ 管理画面から編集する構造化トーク項目（realtime音声AIのinstructionsに反映）
+  target_product?: string | null            // 対象商材
+  opening_talk?: string | null              // 冒頭トーク（AIの最初の発話）
+  contact_talk?: string | null              // 担当者につながった時のトーク
+  reception_talk?: string | null            // 受付対応トーク
+  interest_talk?: string | null             // 興味あり時のトーク
+  pricing_answer?: string | null            // 料金を聞かれた時の回答
+  rejection_handling?: string | null        // 断られた時の対応
+  absent_handling?: string | null           // 担当者不在時の対応
+  appointment_confirm_talk?: string | null  // アポ取得時の確認トーク
+  ng_words?: string | null                  // 禁止ワード
+  forbidden_actions?: string | null         // AIに絶対させない行動
+  conversation_goal?: string | null         // 会話のゴール
+  temperature_rule?: string | null          // 温度感判定ルール
+  appointment_rule?: string | null          // アポ登録ルール
   is_default?: boolean | null
   is_active?: boolean | null
   created_by_id?: string | null

@@ -38,6 +38,12 @@ export const AiCallScriptApi = {
     const { error } = await supabase.from('ai_call_scripts').update({ is_active: false, updated_date: new Date().toISOString() }).eq('id', id)
     if (error) throw new Error(error.message)
   },
+  /** 指定スクリプトを既定にする（他の既定を解除して1つだけ既定にする）。 */
+  async setDefault(id: string): Promise<void> {
+    await supabase.from('ai_call_scripts').update({ is_default: false }).eq('is_default', true)
+    const { error } = await supabase.from('ai_call_scripts').update({ is_default: true, updated_date: new Date().toISOString() }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
 }
 
 // Twilio実発信（サーバー /api/ai-call/twilio 経由。キーはサーバーのみ）。まずはテスト番号への1件発信用。
@@ -45,24 +51,24 @@ export const TwilioApi = {
   async status(): Promise<{ ok: boolean; provider?: string; configured?: boolean; missingEnv?: string[]; realCallEnabled?: boolean }> {
     try { const r = await fetch('/api/ai-call/twilio', { cache: 'no-store' }); return await r.json() } catch { return { ok: false, configured: false } }
   },
-  async testCall(phone: string, message: string, caseId?: string | null): Promise<any> {
+  async testCall(phone: string, message: string, caseId?: string | null, opts?: { scriptId?: string | null; mode?: 'fixed' | 'realtime' }): Promise<any> {
     const { data } = await supabase.auth.getSession()
     const token = data.session?.access_token
     if (!token) return { ok: false, error: 'ログインが必要です' }
     const r = await fetch('/api/ai-call/twilio?action=start', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ phone, message, caseId: caseId ?? null }),
+      body: JSON.stringify({ phone, message, caseId: caseId ?? null, scriptId: opts?.scriptId ?? null, mode: opts?.mode }),
     })
     return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
   },
   /** 案件から実発信。testMode=true(既定)なら案件番号ではなくtestNumberへ差し替え。ジョブはcaseIdに紐付く。 */
-  async caseCall(opts: { caseId: string; phone: string; testMode: boolean; testNumber?: string; message?: string }): Promise<any> {
+  async caseCall(opts: { caseId: string; phone: string; testMode: boolean; testNumber?: string; message?: string; scriptId?: string | null }): Promise<any> {
     const { data } = await supabase.auth.getSession()
     const token = data.session?.access_token
     if (!token) return { ok: false, error: 'ログインが必要です' }
     const r = await fetch('/api/ai-call/twilio?action=start', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ caseId: opts.caseId, phone: opts.phone, testMode: opts.testMode, testNumber: opts.testNumber ?? '', message: opts.message ?? '' }),
+      body: JSON.stringify({ caseId: opts.caseId, phone: opts.phone, testMode: opts.testMode, testNumber: opts.testNumber ?? '', message: opts.message ?? '', scriptId: opts.scriptId ?? null }),
     })
     return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
   },

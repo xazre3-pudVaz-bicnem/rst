@@ -160,7 +160,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
     if (!window.confirm(`【実発信】${dialLabel} に実際に電話をかけます。よろしいですか？`)) return
     setCaseBusy(true); setCaseResult(null); setCaseJob(null); setCaseOutcome(null); setCaseSync(null)
     try {
-      const r = await TwilioApi.caseCall({ caseId: selectedCase.id, phone, testMode: caseTestMode, testNumber: twNumber.trim(), message: twMsg })
+      const r = await TwilioApi.caseCall({ caseId: selectedCase.id, phone, testMode: caseTestMode, testNumber: twNumber.trim(), message: twMsg, scriptId: scriptId || null })
       setCaseResult(r)
       if (r?.ok) {
         setCaseJob({ id: r.jobId, status: '発信中', phone, case_id: selectedCase.id } as AiCallJob)
@@ -254,6 +254,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
               {isAdmin && <Button variant="outline" size="sm" onClick={() => setShowScripts((v) => !v)}><FileText className="h-3.5 w-3.5" />スクリプト編集</Button>}
               {isAdmin && <Button variant="outline" size="sm" onClick={openTwilio}><PhoneOutgoing className="h-3.5 w-3.5" />Twilio接続テスト</Button>}
             </div>
+            {isAdmin && <div className="text-[10px] text-muted-foreground">冒頭トークや切り返し・アポ取得ルールの詳細編集は <a href="/ai-scripts" className="font-medium text-primary underline">AIトークスクリプト</a> 画面で行えます（realtime発信時に反映）。</div>}
             {!selectedCase?.phone1 && <div className="text-[11px] text-red-600">電話番号が未登録のため発信できません。</div>}
 
             {/* 発信: 結果を選びやすいボタン（モック） */}
