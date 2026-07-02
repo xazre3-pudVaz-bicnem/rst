@@ -156,7 +156,7 @@ export default function CaseDetail({
       </span>
     ) : null
 
-  const urlCell = (label: string, url?: string | null) => {
+  const urlCell = (label: string | null | undefined, url?: string | null) => {
     if (!url) return null
     const href = normalizeUrl(url)
     return (
