@@ -129,29 +129,52 @@ async function runTool(name, args, session) {
   }
 }
 
+// モデル系統: beta(=gpt-4o-realtime-preview系) と GA(=gpt-realtime系) でsession схемаが異なる。
+const IS_BETA_MODEL = /realtime-preview/i.test(OPENAI_REALTIME_MODEL)
+
+/** モデル系統に応じた session.update ペイロードを組み立てる（G.711 μ-law・server VAD・日本語プロンプト）。 */
+function buildSessionUpdate(session) {
+  const instructions = buildInstructions(session.context)
+  if (IS_BETA_MODEL) {
+    // beta: gpt-4o-realtime-preview 系（フラット構造 / g711_ulaw / voiceはalloy等）
+    return {
+      type: 'session.update',
+      session: {
+        modalities: ['audio', 'text'], instructions, voice: OPENAI_REALTIME_VOICE,
+        input_audio_format: 'g711_ulaw', output_audio_format: 'g711_ulaw',
+        turn_detection: { type: 'server_vad', silence_duration_ms: 600 },
+        tools: TOOLS, tool_choice: 'auto',
+      },
+    }
+  }
+  // GA: gpt-realtime 系（audio.input/output 構造 / format=audio/pcmu / voice=marin等）
+  return {
+    type: 'session.update',
+    session: {
+      type: 'realtime', instructions, output_modalities: ['audio'],
+      audio: {
+        input: { format: { type: 'audio/pcmu' }, turn_detection: { type: 'server_vad', silence_duration_ms: 600 } },
+        output: { format: { type: 'audio/pcmu' }, voice: OPENAI_REALTIME_VOICE },
+      },
+      tools: TOOLS, tool_choice: 'auto',
+    },
+  }
+}
+
 // ---- OpenAI Realtime へ接続 ----
 function connectOpenAI(session, onReady) {
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`
-  const oa = new WebSocket(url, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } })
+  // beta モデルのみ OpenAI-Beta ヘッダが必要。GA(gpt-realtime)では付けない。
+  const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` }
+  if (IS_BETA_MODEL) headers['OpenAI-Beta'] = 'realtime=v1'
+  const oa = new WebSocket(url, { headers })
   session.openai = oa
 
   oa.on('open', () => {
-    log('[openai] realtime connected  jobId=', session.jobId)
+    log('[openai] realtime connected  jobId=', session.jobId, ' model=', OPENAI_REALTIME_MODEL, ' schema=', IS_BETA_MODEL ? 'beta' : 'ga')
     // セッション設定: G.711 μ-law（Twilioと同形式）・server VAD・日本語プロンプト・音声・ツール
     // ※ここでは response.create しない。session.updated を受けてから日本語で初回発話を作る（英語挨拶を防ぐ）。
-    oa.send(JSON.stringify({
-      type: 'session.update',
-      session: {
-        modalities: ['audio', 'text'],
-        instructions: buildInstructions(session.context),
-        voice: OPENAI_REALTIME_VOICE,
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        turn_detection: { type: 'server_vad', silence_duration_ms: 600 },
-        tools: TOOLS,
-        tool_choice: 'auto',
-      },
-    }))
+    oa.send(JSON.stringify(buildSessionUpdate(session)))
     log('[openai] session.update sent  jobId=', session.jobId)
     if (onReady) onReady()
   })
