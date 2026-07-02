@@ -1,4 +1,4 @@
-import { INDUSTRIES } from './constants'
+import { INDUSTRIES } from './constants.js'
 
 type Industry = (typeof INDUSTRIES)[number]
 
