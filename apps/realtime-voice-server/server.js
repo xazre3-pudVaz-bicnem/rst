@@ -168,37 +168,20 @@ const PREFER_GA = /^(1|true|yes|on)$/i.test(process.env.OPENAI_REALTIME_USE_GA |
 const GA_ONLY_VOICES = new Set(['marin', 'cedar'])
 function betaSafeVoice(v) { return GA_ONLY_VOICES.has(String(v || '').toLowerCase()) ? FALLBACK_BETA_VOICE : (v || FALLBACK_BETA_VOICE) }
 
-// ---- OpenAI Realtime へ接続（既定=beta。GAはOPENAI_REALTIME_USE_GA=1のときのみ試行し、失敗時betaへフォールバック） ----
-function connectOpenAI(session, opts = {}) {
-  // 明示betaフォールバック / preview直指定 / GAを使わない設定 → beta
-  const beta = opts.beta === true || IS_BETA_MODEL || !PREFER_GA
-  const model = beta ? (IS_BETA_MODEL ? OPENAI_REALTIME_MODEL : FALLBACK_BETA_MODEL) : OPENAI_REALTIME_MODEL
-  const voice = beta ? betaSafeVoice(OPENAI_REALTIME_VOICE) : OPENAI_REALTIME_VOICE
-  session.usedBeta = beta
-
+// ---- OpenAI Realtime へ接続（GA専用。Beta Realtime APIは廃止済み） ----
+function connectOpenAI(session) {
+  // GA(gpt-realtime)固定。beta(gpt-4o-realtime-preview)はOpenAIが廃止(beta_api_shape_disabled)。
+  const model = OPENAI_REALTIME_MODEL
+  const voice = OPENAI_REALTIME_VOICE
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
-  const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` }
-  if (beta) headers['OpenAI-Beta'] = 'realtime=v1' // beta モデルのみ必要。GAでは付けない。
-  const oa = new WebSocket(url, { headers })
+  const oa = new WebSocket(url, { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }) // GA: OpenAI-Betaヘッダは付けない
   session.openai = oa
 
-  // GAが session.update を弾く/無反応のとき、betaプレビューへ1回だけ切り替える
-  function fallbackToBeta(why) {
-    if (session.usedBeta || session.reconnecting || session.greeted) return
-    session.reconnecting = true
-    log('[openai] GA失敗→betaフォールバック', FALLBACK_BETA_MODEL, ' 理由=', why)
-    try { oa.removeAllListeners(); oa.close() } catch {}
-    session.reconnecting = false
-    connectOpenAI(session, { beta: true })
-  }
-
   oa.on('open', () => {
-    log('[openai] realtime connected  jobId=', session.jobId, ' model=', model, ' schema=', beta ? 'beta' : 'ga')
+    log('[openai] realtime connected  jobId=', session.jobId, ' model=', model, ' schema=ga')
     // ※ここでは response.create しない。session.updated を受けてから日本語で初回発話を作る（英語挨拶を防ぐ）。
-    oa.send(JSON.stringify(buildSessionUpdate(session, beta, voice)))
+    oa.send(JSON.stringify(buildSessionUpdate(session, false, voice)))
     log('[openai] session.update sent  jobId=', session.jobId)
-    // session.updated が来なければ（=schema不一致等）betaへフォールバック
-    session.updateTimer = setTimeout(() => fallbackToBeta('session.updated 未受信'), 2500)
   })
 
   oa.on('message', (raw) => {
@@ -245,10 +228,8 @@ function connectOpenAI(session, opts = {}) {
         })()
         break
       }
-      // session.update等が弾かれたら betaへフォールバック（挨拶前のみ）
       case 'error': {
         log('[openai][error]', JSON.stringify(msg.error || msg))
-        if (!session.greeted) fallbackToBeta('session error')
         break
       }
       default: break
@@ -256,7 +237,7 @@ function connectOpenAI(session, opts = {}) {
   })
 
   oa.on('close', () => log('[openai] closed', session.jobId))
-  oa.on('error', (e) => { log('[openai] ws error', String(e?.message || e)); if (!session.greeted) fallbackToBeta('ws error') })
+  oa.on('error', (e) => log('[openai] ws error', String(e?.message || e)))
 }
 
 // OpenAI Realtime へ実際に接続できるか（キー/モデルアクセス権の検証）
@@ -394,8 +375,7 @@ async function finalize(session) {
 }
 
 server.listen(PORT, () => {
-  const path = PREFER_GA && !IS_BETA_MODEL ? `GA(${OPENAI_REALTIME_MODEL}/${OPENAI_REALTIME_VOICE})→失敗時beta` : `beta(${IS_BETA_MODEL ? OPENAI_REALTIME_MODEL : FALLBACK_BETA_MODEL}/${betaSafeVoice(OPENAI_REALTIME_VOICE)})`
-  log(`RST realtime voice server on :${PORT}  使用経路=${path}`)
+  log(`RST realtime voice server on :${PORT}  使用経路=GA(${OPENAI_REALTIME_MODEL}/${OPENAI_REALTIME_VOICE})`)
   if (!OPENAI_API_KEY) log('WARN: OPENAI_API_KEY 未設定')
   if (!RST_API_BASE || !AI_CALL_SERVER_SECRET) log('WARN: RST_API_BASE / AI_CALL_SERVER_SECRET 未設定（ツール連携が動きません）')
 })
