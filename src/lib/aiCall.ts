@@ -66,6 +66,17 @@ export const TwilioApi = {
     })
     return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
   },
+  /** 録音をサーバープロキシ経由で取得しBlob URLを返す（Twilio認証はサーバーのみ・ブラウザにトークンを出さない）。 */
+  async recordingBlobUrl(jobId: string): Promise<{ ok: boolean; url?: string; error?: string; status?: number }> {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (!token) return { ok: false, error: 'ログインが必要です' }
+    const r = await fetch(`/api/ai-call/twilio?action=recording-audio&jobId=${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${token}` } })
+    const ct = r.headers.get('content-type') || ''
+    if (r.ok && ct.includes('audio')) { const b = await r.blob(); return { ok: true, url: URL.createObjectURL(b) } }
+    const j = await r.json().catch(() => ({}))
+    return { ok: false, status: r.status, error: (j as any)?.error || `録音取得に失敗しました (HTTP ${r.status})` }
+  },
   /** 録音の文字起こし＆AI要約を実行（管理者・手動）。 */
   async process(jobId: string): Promise<any> {
     const { data } = await supabase.auth.getSession()

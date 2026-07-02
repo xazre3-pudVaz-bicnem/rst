@@ -69,6 +69,9 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [outcomeBusy, setOutcomeBusy] = useState(false)
   const [procBusy, setProcBusy] = useState<string>('')   // 文字起こし＆要約 実行中のjobId
   const [applyBusy, setApplyBusy] = useState<string>('')  // AI判定反映 実行中のjobId
+  const [audioUrls, setAudioUrls] = useState<Record<string, string>>({})  // jobId -> blob URL
+  const [audioBusy, setAudioBusy] = useState<string>('')
+  const [audioErr, setAudioErr] = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
     const s = await AiCallScriptApi.list().catch(() => [])
@@ -86,6 +89,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
     if (open) {
       setJob(null); setSync(null); setNgReleased(false)
       setCaseJob(null); setCaseResult(null); setCaseOutcome(null); setCaseSync(null); setCaseSel('phone1')
+      setAudioUrls({}); setAudioErr({})
       setAppoAt(moment().add(1, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
       setNextAt(moment().add(3, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
       setCaseNextAt(moment().add(3, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
@@ -177,6 +181,15 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
       toast.success(`結果を記録しました: ${outcome}`)
       onChanged?.(); setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
     } catch (e) { toast.error(jpError(e)) } finally { setOutcomeBusy(false) }
+  }
+  async function playRecording(jobId: string) {
+    if (audioUrls[jobId]) return
+    setAudioBusy(jobId); setAudioErr((p) => ({ ...p, [jobId]: '' }))
+    try {
+      const r = await TwilioApi.recordingBlobUrl(jobId)
+      if (r.ok && r.url) setAudioUrls((p) => ({ ...p, [jobId]: r.url as string }))
+      else setAudioErr((p) => ({ ...p, [jobId]: r.error || '録音取得に失敗しました' }))
+    } catch (e) { setAudioErr((p) => ({ ...p, [jobId]: jpError(e) })) } finally { setAudioBusy('') }
   }
   async function processJob(jobId: string) {
     setProcBusy(jobId)
@@ -488,7 +501,15 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                     </summary>
                     <div className="mt-1 space-y-1 border-t pt-1">
                       <div className="text-muted-foreground">通話日時: {p.called_at ? moment(p.called_at).format('YYYY/MM/DD HH:mm') : '—'} ／ 通話時間: {p.duration_sec ?? '—'}秒 ／ ステータス: {p.status}</div>
-                      {p.recording_url && <div>録音: <a href={String(p.recording_url).endsWith('.mp3') ? p.recording_url : p.recording_url + '.mp3'} target="_blank" rel="noreferrer" className="text-primary underline">録音を開く</a>{p.recording_duration_sec != null && ` (${p.recording_duration_sec}秒)`}</div>}
+                      {p.recording_url && (
+                        <div className="space-y-0.5">
+                          {audioUrls[p.id]
+                            ? <audio controls src={audioUrls[p.id]} className="h-8 w-full max-w-[320px]" />
+                            : <Button size="sm" variant="outline" className="h-6 text-2xs" disabled={audioBusy === p.id} onClick={() => playRecording(p.id)}>{audioBusy === p.id ? '取得中…' : '▶ 録音を再生'}</Button>}
+                          {p.recording_duration_sec != null && <span className="ml-1 text-[10px] text-muted-foreground">録音{p.recording_duration_sec}秒</span>}
+                          {audioErr[p.id] && <div className="text-red-600">{audioErr[p.id]}</div>}
+                        </div>
+                      )}
                       {p.recording_error && <div className="text-red-600">録音エラー: {p.recording_error}</div>}
                       {p.ai_summary && <div><b>AI要約:</b> {p.ai_summary}</div>}
                       {p.ai_reaction && <div><b>相手の反応:</b> {p.ai_reaction}</div>}

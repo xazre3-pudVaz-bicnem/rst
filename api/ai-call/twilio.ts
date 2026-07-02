@@ -104,6 +104,31 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true })
   }
 
+  // ---- 録音プロキシ（要ログイン）。Twilio Basic認証はサーバーのみ。ブラウザにトークンを出さない。 ----
+  if (action === 'recording-audio') {
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    if (!token) return res.status(401).json({ ok: false, error: 'ログインが必要です' })
+    const { data: ud } = await admin.auth.getUser(token)
+    if (!ud?.user) return res.status(401).json({ ok: false, error: 'セッションが無効です' })
+    const jobId = String(req.query?.jobId || (req.body && req.body.jobId) || '')
+    if (!jobId) return res.status(400).json({ ok: false, error: 'jobId がありません' })
+    const { data: job } = await admin.from('ai_call_jobs').select('recording_url').eq('id', jobId).maybeSingle()
+    const recUrl = job?.recording_url
+    if (!recUrl) return res.status(404).json({ ok: false, error: 'この通話に録音がありません（通話完了後に録音コールバックが必要）' })
+    if (!isTwilioConfigured()) return res.status(400).json({ ok: false, error: `Twilio環境変数が未設定です: ${missingTwilioEnv().join(', ')}` })
+    try {
+      const sid = String(process.env.TWILIO_ACCOUNT_SID).trim(), tok = String(process.env.TWILIO_AUTH_TOKEN).trim()
+      const mp3 = String(recUrl).endsWith('.mp3') || String(recUrl).endsWith('.wav') ? String(recUrl) : String(recUrl) + '.mp3'
+      const aRes = await fetch(mp3, { headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${tok}`).toString('base64') } })
+      if (!aRes.ok) return res.status(502).json({ ok: false, error: `録音取得に失敗しました（Twilio HTTP ${aRes.status}）。${aRes.status === 401 || aRes.status === 403 ? '認証情報(SID/Token)を確認してください。' : aRes.status === 404 ? '録音がまだ生成されていない/削除された可能性があります。' : ''}`, status: aRes.status })
+      const buf = Buffer.from(await aRes.arrayBuffer())
+      res.setHeader('Content-Type', aRes.headers.get('content-type') || 'audio/mpeg')
+      res.setHeader('Content-Disposition', 'inline; filename="recording.mp3"')
+      res.setHeader('Cache-Control', 'private, max-age=300')
+      return res.status(200).send(buf)
+    } catch (e: any) { return res.status(502).json({ ok: false, error: '録音取得中にエラー: ' + String(e?.message || e) }) }
+  }
+
   // ---- 文字起こし＆AI要約の実行（要管理者・手動トリガー） ----
   if (action === 'process') {
     const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
