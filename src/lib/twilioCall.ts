@@ -3,8 +3,9 @@
 //   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / (TWILIO_PHONE_NUMBER または TWILIO_NUMBER) / AI_CALL_PROVIDER
 // AI_CALL_PROVIDER=twilio のときのみ実発信。既定(mock)は実発信しない。
 // 発信前に厳密な検証を行い、失敗時はマスク済みデバッグ情報とTwilioエラー詳細を返す。
+// ※ Twilio SDK は「発信時のみ」動的importで読み込む（先頭importにすると状態確認GET等でも
+//   SDKロードが走り、環境によっては関数全体がクラッシュ(FUNCTION_INVOCATION_FAILED)するため）。
 // ============================================================
-import twilio from 'twilio'
 
 export function getProviderMode(): 'mock' | 'twilio' {
   return process.env.AI_CALL_PROVIDER === 'twilio' ? 'twilio' : 'mock'
@@ -113,8 +114,11 @@ export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; s
   const pf = preflight(opts.toRaw)
   if (!pf.ok) return { ok: false, error: '発信前チェックに失敗: ' + pf.errors.join(' / '), debug: pf.debug }
   try {
-    // クライアントは any 型で受ける（Twilio SDKのメジャーバージョン差でビルドが壊れないように）
-    const client: any = twilio(pf.sid, pf.token)
+    // Twilio SDK は発信時のみ動的import（ロード失敗をこの関数内に閉じ込める）
+    const mod: any = await import('twilio')
+    const twilioFn: any = mod?.default || mod
+    if (typeof twilioFn !== 'function') return { ok: false, error: 'Twilio SDKの読み込みに失敗しました（twilioパッケージ未インストール/バンドル不可の可能性）', debug: pf.debug }
+    const client: any = twilioFn(pf.sid, pf.token)
     const call = await client.calls.create({
       to: pf.to, from: pf.from, twiml: opts.twiml,
       statusCallback: opts.statusCallbackUrl, statusCallbackMethod: 'POST',
