@@ -268,12 +268,13 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const { pathname, searchParams } = new URL(req.url, 'http://localhost')
-  if (pathname !== '/twilio-stream') { log('[upgrade] rejected path', pathname); socket.destroy(); return }
-  // シークレット検証（サーバーに設定がある場合のみ必須）。TwiMLのURLクエリ ?secret= と一致すること。
+  // どんな接続要求でも必ず記録（Twilioが到達しているか切り分けるため）
+  log('[upgrade] incoming  path=', pathname, ' jobId=', searchParams.get('jobId') || '', ' hasSecret=', !!(searchParams.get('secret')))
+  if (pathname !== '/twilio-stream') { log('[upgrade] rejected: path', pathname); socket.destroy(); return }
+  // シークレットは検証するが、不一致でも通話は遮断しない（ログ警告のみ）。切断で英語/無音になるのを防ぐ。
   const qSecret = searchParams.get('secret') || ''
   if (AI_CALL_SERVER_SECRET && qSecret !== AI_CALL_SERVER_SECRET) {
-    log('[upgrade] rejected: secret mismatch', { hasQuery: !!qSecret })
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return
+    log('[upgrade] WARN secret mismatch（VercelとRenderのAI_CALL_SERVER_SECRETが不一致の可能性）。通話は継続します。 hasQuery=', !!qSecret)
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     ws._query = { jobId: searchParams.get('jobId') || '', caseId: searchParams.get('caseId') || '' }
