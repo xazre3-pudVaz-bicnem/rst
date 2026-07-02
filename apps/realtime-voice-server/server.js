@@ -20,6 +20,11 @@ const AI_CALL_SERVER_SECRET = process.env.AI_CALL_SERVER_SECRET || ''      // RS
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 
+// 最初の発話（必ず日本語・この一文から開始）
+const OPENING_LINE = 'お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。Googleマップやホームページからの集客改善の無料診断についてお電話しました。ご担当の方はいらっしゃいますでしょうか。'
+// response.create に渡す初回発話の明示指示（英語挨拶を防ぐ）
+const GREETING_INSTRUCTION = `必ず日本語のみで、次の言葉をそのまま最初に話してください（英語は絶対に使わない）:\n「${OPENING_LINE}」`
+
 // ---- RST APIツール呼び出し（サーバー間・Bearerシークレット） ----
 async function rstTool(action, body) {
   if (!RST_API_BASE || !AI_CALL_SERVER_SECRET) return { ok: false, error: 'RST_API_BASE / AI_CALL_SERVER_SECRET 未設定' }
@@ -45,12 +50,12 @@ function buildInstructions(ctx) {
 - 数字・固有名詞も日本語の読みで自然に発話する。
 - 日本の営業電話として自然で丁寧な敬語を使う。
 
-【最初の発話（必ずこの言葉から始める）】
-「お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。」
-そのうえで用件（Googleマップやホームページからの集客状況の無料診断）を続ける。
+【最初の発話（必ずこの言葉から始める・英語で始めない）】
+「${OPENING_LINE}」
 
 【話し方】
-- 自然で丁寧な日本語。機械っぽくしない。長く話しすぎない。相手の話を遮らない。
+- 自然で丁寧な日本語。機械っぽくしない。短く、ゆっくり、丁寧に。相手の話を遮らない。
+- 目的は「無料診断の10分説明アポ」を取ること。売り込みすぎない。断られたら深追いしない。
 - 最初に会社名と用件を短く伝える。受付/担当者/代表で話し方を変える。
 - 無理に売り込まない。目的はアポ獲得。断られたら深追いしない。相手が忙しそうなら再架電にする。
 - 相手が「不要」「かけないでください」と言ったら丁重に謝辞を述べ、興味なし/NG候補として終える（深追い禁止）。
@@ -132,7 +137,8 @@ function connectOpenAI(session, onReady) {
 
   oa.on('open', () => {
     log('[openai] realtime connected  jobId=', session.jobId)
-    // セッション設定: G.711 μ-law（Twilioと同形式）・server VAD・音声・ツール・プロンプト
+    // セッション設定: G.711 μ-law（Twilioと同形式）・server VAD・日本語プロンプト・音声・ツール
+    // ※ここでは response.create しない。session.updated を受けてから日本語で初回発話を作る（英語挨拶を防ぐ）。
     oa.send(JSON.stringify({
       type: 'session.update',
       session: {
@@ -146,8 +152,7 @@ function connectOpenAI(session, onReady) {
         tool_choice: 'auto',
       },
     }))
-    // 最初にAIから話し始める
-    oa.send(JSON.stringify({ type: 'response.create' }))
+    log('[openai] session.update sent  jobId=', session.jobId)
     if (onReady) onReady()
   })
 
@@ -155,11 +160,23 @@ function connectOpenAI(session, onReady) {
     let msg
     try { msg = JSON.parse(raw.toString()) } catch { return }
     switch (msg.type) {
+      // セッション設定が反映されたら、日本語の初回発話を明示的に生成（英語挨拶を防ぐ）。1回だけ。
+      case 'session.updated': {
+        log('[openai] session.updated received  jobId=', session.jobId)
+        if (!session.greeted) {
+          session.greeted = true
+          oa.send(JSON.stringify({ type: 'response.create', response: { instructions: GREETING_INSTRUCTION } }))
+          log('[openai] Japanese initial response.create sent  jobId=', session.jobId)
+        }
+        break
+      }
       // AI音声（Twilioへ返す）。beta=response.audio.delta / GA=response.output_audio.delta を両対応
       case 'response.audio.delta':
       case 'response.output_audio.delta': {
+        if (!session.audioLogged) { session.audioLogged = true; log('[openai] OpenAI audio delta received  jobId=', session.jobId) }
         if (session.streamSid && msg.delta && session.twilio?.readyState === WebSocket.OPEN) {
           session.twilio.send(JSON.stringify({ event: 'media', streamSid: session.streamSid, media: { payload: msg.delta } }))
+          if (!session.twilioSentLogged) { session.twilioSentLogged = true; log('[twilio] Twilio media sent  jobId=', session.jobId) }
         }
         break
       }

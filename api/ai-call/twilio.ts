@@ -61,6 +61,7 @@ export default async function handler(req: any, res: any) {
       // リアルタイム音声AI会話モード
       callMode: getCallMode(), realtimeEnabled: isRealtimeConfigured(),
       realtimeAvailable: isRealtimeAvailable(), realtimeServerUrlMasked: realtimeServerUrlMasked(),
+      japanesePromptEnabled: true, initialGreeting: 'Japanese',
       realtimeMissingEnv: [
         getCallMode() === 'realtime' ? null : 'AI_CALL_MODE=realtime',
         process.env.REALTIME_VOICE_SERVER_URL ? null : 'REALTIME_VOICE_SERVER_URL',
