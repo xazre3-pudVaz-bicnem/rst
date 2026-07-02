@@ -8,7 +8,7 @@
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, buildStreamTwiml } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml } from '../../src/lib/twilioCall.js'
 import { createCalendarEvent, getAvailableSlots, isCalendarConfigured } from '../../src/lib/googleCalendar.js'
 
 // サーバー間シークレット認証（realtime音声サーバーからのツール呼び出し用）
@@ -60,6 +60,12 @@ export default async function handler(req: any, res: any) {
       voiceAi: { transcription: isTranscriptionConfigured(), summary: isSummaryConfigured(), transcriptionProvider: transcriptionProvider(), summaryProvider: summaryProvider(), missingEnv: missingVoiceAiEnv() },
       // リアルタイム音声AI会話モード
       callMode: getCallMode(), realtimeEnabled: isRealtimeConfigured(),
+      realtimeAvailable: isRealtimeAvailable(), realtimeServerUrlMasked: realtimeServerUrlMasked(),
+      realtimeMissingEnv: [
+        getCallMode() === 'realtime' ? null : 'AI_CALL_MODE=realtime',
+        process.env.REALTIME_VOICE_SERVER_URL ? null : 'REALTIME_VOICE_SERVER_URL',
+        process.env.AI_CALL_SERVER_SECRET ? null : 'AI_CALL_SERVER_SECRET',
+      ].filter(Boolean),
     })
   }
 
@@ -293,8 +299,12 @@ export default async function handler(req: any, res: any) {
     const { data: dup } = await admin.from('ai_call_jobs').select('id').eq('phone', intended).eq('status', '発信中').gte('created_date', since).limit(1)
     if (dup?.[0]) return res.status(409).json({ ok: false, error: '同じ番号への発信が進行中です。完了までお待ちください。' })
 
-    // 通話モード: realtime(リアルタイム音声AI) が設定済みなら realtime。body.mode==='fixed' で固定に強制可。
-    const useRealtime = isRealtimeConfigured() && req.body?.mode !== 'fixed'
+    // 通話モード:
+    //   - body.mode==='fixed'    → 必ず固定音声
+    //   - body.mode==='realtime' → URL/シークレットが揃っていれば realtime（AI_CALL_MODEに依存せずUIから強制可）
+    //   - 指定なし               → AI_CALL_MODE=realtime かつ設定済みなら realtime
+    const reqMode = req.body?.mode
+    const useRealtime = reqMode !== 'fixed' && isRealtimeAvailable() && (reqMode === 'realtime' || getCallMode() === 'realtime')
 
     // 発信中ジョブ作成（案件に紐付け・phoneは本来の発信先を記録）
     const nowIso = new Date().toISOString()
@@ -317,7 +327,7 @@ export default async function handler(req: any, res: any) {
       return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), mode: useRealtime ? 'realtime' : 'fixed', debug: r.debug })
+    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), mode: useRealtime ? 'realtime' : 'fixed', realtimeAvailable: isRealtimeAvailable(), callModeEnv: getCallMode(), debug: r.debug })
   }
 
   return res.status(400).json({ ok: false, error: '不明なaction' })

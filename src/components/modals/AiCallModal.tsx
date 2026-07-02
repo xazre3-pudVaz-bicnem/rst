@@ -333,6 +333,15 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                       SID={twStatus.accountSidMasked} ({twStatus.checks?.sidPrefixOk ? 'AC✓' : 'AC✗'} {twStatus.checks?.sidLen}文字{twStatus.checks?.sidLenOk ? '✓' : '✗'}) ／ token={twStatus.checks?.tokenPresent ? `${twStatus.checks?.tokenLen}文字` : '空'} ／ 発信元env=<b>{twStatus.fromEnvUsed}</b>={twStatus.from || '(空)'}{twStatus.checks?.fromE164 ? '✓' : '✗E.164'}
                     </div>
                   )}
+                  {twStatus && (
+                    <div className="space-y-0.5 rounded bg-white/60 px-1.5 py-1 dark:bg-white/5">
+                      <div>会話モード: <b className={twStatus.realtimeEnabled ? 'text-indigo-600' : 'text-zinc-600'}>{twStatus.callMode === 'realtime' ? 'realtime（AI会話）' : 'fixed（固定音声）'}</b> ／ provider=<b>{twStatus.provider}</b> ／ realtime有効={twStatus.realtimeEnabled ? '✅' : '❌'}</div>
+                      <div className="font-mono text-[9px]">realtimeサーバー: {twStatus.realtimeServerUrlMasked || '(未設定)'} ／ URL・シークレット設定={twStatus.realtimeAvailable ? '✅' : '❌'}</div>
+                      {!twStatus.realtimeEnabled && Array.isArray(twStatus.realtimeMissingEnv) && twStatus.realtimeMissingEnv.length > 0 && (
+                        <div className="text-amber-700 dark:text-amber-400">realtime化に必要な未設定: {twStatus.realtimeMissingEnv.join(', ')}（Vercelに設定＆再デプロイ）</div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {twStatus && !twStatus.realCallEnabled && (
                   <div className="rounded bg-amber-100 px-2 py-1 text-[10px] text-amber-800 dark:bg-amber-500/15">

@@ -18,14 +18,32 @@ export function getCallMode(): 'fixed' | 'realtime' {
 export function realtimeServerUrl(): string {
   return trim(process.env.REALTIME_VOICE_SERVER_URL) // 例: wss://rst-voice.onrender.com
 }
-export function isRealtimeConfigured(): boolean {
-  return getCallMode() === 'realtime' && !!realtimeServerUrl() && !!trim(process.env.AI_CALL_SERVER_SECRET)
+/** realtime中継サーバーのURL+シークレットが揃っているか（AI_CALL_MODEに依存しない）。 */
+export function isRealtimeAvailable(): boolean {
+  return !!realtimeServerUrl() && !!trim(process.env.AI_CALL_SERVER_SECRET)
 }
-/** realtimeモードのTwiML: <Connect><Stream> で音声を中継サーバーへ双方向ストリーム。 */
+/** realtimeモードが有効か（AI_CALL_MODE=realtime かつ URL/シークレット設定済み）。 */
+export function isRealtimeConfigured(): boolean {
+  return getCallMode() === 'realtime' && isRealtimeAvailable()
+}
+/** 表示用: realtimeサーバーURLを伏せ字化（ホスト先頭数文字のみ）。 */
+export function realtimeServerUrlMasked(): string {
+  const u = realtimeServerUrl()
+  if (!u) return ''
+  const host = u.replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '')
+  if (host.length <= 8) return host.slice(0, 2) + '***'
+  return host.slice(0, 6) + '***' + host.slice(-6)
+}
+/**
+ * realtimeモードのTwiML: <Connect><Stream> で音声を中継サーバーへ双方向ストリーム。
+ * jobId/caseId/secret を URLクエリと <Parameter> の両方に載せる（中継サーバーはどちらでも受けられる）。
+ */
 export function buildStreamTwiml(jobId: string, caseId: string): string {
   const base = realtimeServerUrl().replace(/^https?:\/\//, (m) => (m === 'http://' ? 'ws://' : 'wss://'))
   const wss = /^wss?:\/\//.test(base) ? base : 'wss://' + base
-  const url = `${wss.replace(/\/+$/, '')}/twilio-stream`
+  const secret = trim(process.env.AI_CALL_SERVER_SECRET)
+  const qs = new URLSearchParams({ jobId: jobId || '', caseId: caseId || '', secret })
+  const url = `${wss.replace(/\/+$/, '')}/twilio-stream?${qs.toString()}`
   const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${esc(url)}"><Parameter name="jobId" value="${esc(jobId)}"/><Parameter name="caseId" value="${esc(caseId)}"/></Stream></Connect></Response>`
 }

@@ -39,6 +39,16 @@ function buildInstructions(ctx) {
   const c = ctx || {}
   return `あなたは「株式会社サイプレス」の電話営業担当です。Googleマップ(MEO)・ホームページ・SEO・AI活用による集客改善の「無料診断」の案内をします。
 
+【言語（最重要・絶対厳守）】
+- 必ず日本語だけで話す。英語では絶対に話さない。
+- 相手が英語で話しかけてきても、必ず日本語で返す。
+- 数字・固有名詞も日本語の読みで自然に発話する。
+- 日本の営業電話として自然で丁寧な敬語を使う。
+
+【最初の発話（必ずこの言葉から始める）】
+「お忙しいところ失礼いたします。株式会社サイプレスのAI営業担当です。」
+そのうえで用件（Googleマップやホームページからの集客状況の無料診断）を続ける。
+
 【話し方】
 - 自然で丁寧な日本語。機械っぽくしない。長く話しすぎない。相手の話を遮らない。
 - 最初に会社名と用件を短く伝える。受付/担当者/代表で話し方を変える。
@@ -121,7 +131,7 @@ function connectOpenAI(session, onReady) {
   session.openai = oa
 
   oa.on('open', () => {
-    log('[openai] connected', session.jobId)
+    log('[openai] realtime connected  jobId=', session.jobId)
     // セッション設定: G.711 μ-law（Twilioと同形式）・server VAD・音声・ツール・プロンプト
     oa.send(JSON.stringify({
       type: 'session.update',
@@ -190,7 +200,13 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const { pathname, searchParams } = new URL(req.url, 'http://localhost')
-  if (pathname !== '/twilio-stream') { socket.destroy(); return }
+  if (pathname !== '/twilio-stream') { log('[upgrade] rejected path', pathname); socket.destroy(); return }
+  // シークレット検証（サーバーに設定がある場合のみ必須）。TwiMLのURLクエリ ?secret= と一致すること。
+  const qSecret = searchParams.get('secret') || ''
+  if (AI_CALL_SERVER_SECRET && qSecret !== AI_CALL_SERVER_SECRET) {
+    log('[upgrade] rejected: secret mismatch', { hasQuery: !!qSecret })
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
     ws._query = { jobId: searchParams.get('jobId') || '', caseId: searchParams.get('caseId') || '' }
     wss.emit('connection', ws, req)
@@ -198,34 +214,38 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 wss.on('connection', (twilioWs, req) => {
-  const session = { twilio: twilioWs, openai: null, streamSid: null, jobId: twilioWs._query?.jobId || '', caseId: twilioWs._query?.caseId || '', context: null, result: null, summary: null, nextAction: null, appoAt: null, finalized: false }
-  log('[twilio] connection', session.jobId, session.caseId)
+  const session = { twilio: twilioWs, openai: null, streamSid: null, jobId: twilioWs._query?.jobId || '', caseId: twilioWs._query?.caseId || '', context: null, result: null, summary: null, nextAction: null, appoAt: null, finalized: false, mediaCount: 0 }
+  log('[twilio] Twilio stream connected  jobId=', session.jobId, ' caseId=', session.caseId)
 
   twilioWs.on('message', async (raw) => {
     let data
     try { data = JSON.parse(raw.toString()) } catch { return }
     switch (data.event) {
-      case 'connected': break
+      case 'connected': log('[twilio] event=connected (protocol)'); break
       case 'start': {
         session.streamSid = data.start?.streamSid
         // customParameters からも jobId/caseId を補完（<Stream><Parameter>）
         const cp = data.start?.customParameters || {}
         session.jobId = session.jobId || cp.jobId || ''
         session.caseId = session.caseId || cp.caseId || ''
+        log('[twilio] event=start  streamSid=', session.streamSid, ' jobId=', session.jobId, ' caseId=', session.caseId)
         // 案件コンテキストを取得してからOpenAIへ接続（プロンプトに反映）
         const ctx = await rstTool('tool-context', { jobId: session.jobId, caseId: session.caseId })
         session.context = ctx.context || null
+        log('[openai] realtime connecting  jobId=', session.jobId, ' model=', OPENAI_REALTIME_MODEL)
         connectOpenAI(session)
         break
       }
       case 'media': {
         // 相手の音声（μ-law base64）をOpenAIへ
+        session.mediaCount++
+        if (session.mediaCount === 1) log('[twilio] audio media received  jobId=', session.jobId)
         if (session.openai?.readyState === WebSocket.OPEN && data.media?.payload) {
           session.openai.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: data.media.payload }))
         }
         break
       }
-      case 'stop': await finalize(session); break
+      case 'stop': log('[twilio] event=stop  jobId=', session.jobId, ' mediaReceived=', session.mediaCount); await finalize(session); break
       default: break
     }
   })
