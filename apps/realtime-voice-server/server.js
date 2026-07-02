@@ -131,52 +131,67 @@ async function runTool(name, args, session) {
 
 // モデル系統: beta(=gpt-4o-realtime-preview系) と GA(=gpt-realtime系) でsession схемаが異なる。
 const IS_BETA_MODEL = /realtime-preview/i.test(OPENAI_REALTIME_MODEL)
+// GAが失敗したときの確実なフォールバック（フラットschemaで動くbetaプレビュー）
+const FALLBACK_BETA_MODEL = process.env.OPENAI_REALTIME_FALLBACK_MODEL || 'gpt-4o-realtime-preview-2024-12-17'
+const FALLBACK_BETA_VOICE = process.env.OPENAI_REALTIME_FALLBACK_VOICE || 'alloy'
 
-/** モデル系統に応じた session.update ペイロードを組み立てる（G.711 μ-law・server VAD・日本語プロンプト）。 */
-function buildSessionUpdate(session) {
+/** session.update ペイロード（G.711 μ-law・server VAD・日本語プロンプト）。beta=フラット / GA=audio構造。 */
+function buildSessionUpdate(session, beta, voice) {
   const instructions = buildInstructions(session.context)
-  if (IS_BETA_MODEL) {
-    // beta: gpt-4o-realtime-preview 系（フラット構造 / g711_ulaw / voiceはalloy等）
+  if (beta) {
     return {
       type: 'session.update',
       session: {
-        modalities: ['audio', 'text'], instructions, voice: OPENAI_REALTIME_VOICE,
+        modalities: ['audio', 'text'], instructions, voice,
         input_audio_format: 'g711_ulaw', output_audio_format: 'g711_ulaw',
         turn_detection: { type: 'server_vad', silence_duration_ms: 600 },
         tools: TOOLS, tool_choice: 'auto',
       },
     }
   }
-  // GA: gpt-realtime 系（audio.input/output 構造 / format=audio/pcmu / voice=marin等）
   return {
     type: 'session.update',
     session: {
       type: 'realtime', instructions, output_modalities: ['audio'],
       audio: {
         input: { format: { type: 'audio/pcmu' }, turn_detection: { type: 'server_vad', silence_duration_ms: 600 } },
-        output: { format: { type: 'audio/pcmu' }, voice: OPENAI_REALTIME_VOICE },
+        output: { format: { type: 'audio/pcmu' }, voice },
       },
       tools: TOOLS, tool_choice: 'auto',
     },
   }
 }
 
-// ---- OpenAI Realtime へ接続 ----
-function connectOpenAI(session, onReady) {
-  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`
-  // beta モデルのみ OpenAI-Beta ヘッダが必要。GA(gpt-realtime)では付けない。
+// ---- OpenAI Realtime へ接続（GA→失敗時はbetaへ自動フォールバック） ----
+function connectOpenAI(session, opts = {}) {
+  const beta = opts.beta === true || IS_BETA_MODEL
+  const model = beta && !IS_BETA_MODEL ? FALLBACK_BETA_MODEL : OPENAI_REALTIME_MODEL
+  const voice = beta && !IS_BETA_MODEL ? FALLBACK_BETA_VOICE : OPENAI_REALTIME_VOICE
+  session.usedBeta = beta
+
+  const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
   const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` }
-  if (IS_BETA_MODEL) headers['OpenAI-Beta'] = 'realtime=v1'
+  if (beta) headers['OpenAI-Beta'] = 'realtime=v1' // beta モデルのみ必要。GAでは付けない。
   const oa = new WebSocket(url, { headers })
   session.openai = oa
 
+  // GAが session.update を弾く/無反応のとき、betaプレビューへ1回だけ切り替える
+  function fallbackToBeta(why) {
+    if (session.usedBeta || session.reconnecting || session.greeted) return
+    session.reconnecting = true
+    log('[openai] GA失敗→betaフォールバック', FALLBACK_BETA_MODEL, ' 理由=', why)
+    try { oa.removeAllListeners(); oa.close() } catch {}
+    session.reconnecting = false
+    connectOpenAI(session, { beta: true })
+  }
+
   oa.on('open', () => {
-    log('[openai] realtime connected  jobId=', session.jobId, ' model=', OPENAI_REALTIME_MODEL, ' schema=', IS_BETA_MODEL ? 'beta' : 'ga')
-    // セッション設定: G.711 μ-law（Twilioと同形式）・server VAD・日本語プロンプト・音声・ツール
+    log('[openai] realtime connected  jobId=', session.jobId, ' model=', model, ' schema=', beta ? 'beta' : 'ga')
     // ※ここでは response.create しない。session.updated を受けてから日本語で初回発話を作る（英語挨拶を防ぐ）。
-    oa.send(JSON.stringify(buildSessionUpdate(session)))
+    oa.send(JSON.stringify(buildSessionUpdate(session, beta, voice)))
     log('[openai] session.update sent  jobId=', session.jobId)
-    if (onReady) onReady()
+    // session.updated が来なければ（=schema不一致等）betaへフォールバック
+    session.updateTimer = setTimeout(() => fallbackToBeta('session.updated 未受信'), 2500)
   })
 
   oa.on('message', (raw) => {
@@ -185,6 +200,7 @@ function connectOpenAI(session, onReady) {
     switch (msg.type) {
       // セッション設定が反映されたら、日本語の初回発話を明示的に生成（英語挨拶を防ぐ）。1回だけ。
       case 'session.updated': {
+        if (session.updateTimer) { clearTimeout(session.updateTimer); session.updateTimer = null }
         log('[openai] session.updated received  jobId=', session.jobId)
         if (!session.greeted) {
           session.greeted = true
@@ -222,13 +238,18 @@ function connectOpenAI(session, onReady) {
         })()
         break
       }
-      case 'error': log('[openai][error]', JSON.stringify(msg.error || msg)); break
+      // session.update等が弾かれたら betaへフォールバック（挨拶前のみ）
+      case 'error': {
+        log('[openai][error]', JSON.stringify(msg.error || msg))
+        if (!session.greeted) fallbackToBeta('session error')
+        break
+      }
       default: break
     }
   })
 
   oa.on('close', () => log('[openai] closed', session.jobId))
-  oa.on('error', (e) => log('[openai] error', String(e?.message || e)))
+  oa.on('error', (e) => { log('[openai] ws error', String(e?.message || e)); if (!session.greeted) fallbackToBeta('ws error') })
 }
 
 // ---- HTTPサーバー（health）＋ WebSocket（/twilio-stream） ----
