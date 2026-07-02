@@ -3,6 +3,7 @@
 // 記事本文は保存しない。短い抜粋＋抽出結果のみを扱う。
 // ============================================================
 import { PREFECTURES } from './areaPresets.js'
+import { classifyIndustry } from './industry.js'
 
 const AREA_TOKENS: string[] = (() => {
   const t = new Set<string>()
@@ -25,18 +26,6 @@ const CLOSE_WORDS = ['閉店', '休業', '閉業', '営業終了', '閉院']
 const EVENT_WORDS = ['イベント', 'マルシェ', '催事', 'ポップアップ', 'popup', '期間限定', '周年', 'キャンペーン', 'フェア', '求人', '採用', 'スタッフ募集', '新メニュー', '新作', 'セール']
 const CHAIN_HINT = /(マクドナルド|スターバックス|スタバ|ケンタッキー|モスバーガー|ガスト|サイゼリヤ|吉野家|すき家|松屋|ドトール|タリーズ|コメダ|丸亀製麺|ユニクロ|GU|セブンイレブン|ファミリーマート|ローソン|QBハウス|ライザップ|チョコザップ|chocoZAP|カーブス|ほっともっと|大戸屋|やよい軒|ニトリ|業務スーパー|ドンキ|ドン・キホーテ|マツモトキヨシ|ウエルシア|スギ薬局)/i
 const MALL_HINT = /(イオンモール|ららぽーと|アリオ|ルミネ|アトレ|パルコ|PARCO|高島屋|三越|伊勢丹|そごう|大丸|松坂屋|百貨店|駅ビル|エキュート|アウトレット|ショッピングモール|ショッピングセンター)/
-
-const INDUSTRY_MAP: { name: string; re: RegExp }[] = [
-  { name: '整体', re: /整体|カイロ/ }, { name: '整骨院', re: /整骨院|接骨院/ }, { name: '鍼灸院', re: /鍼灸|はり灸/ },
-  { name: '美容室', re: /美容室|ヘアサロン|hair|美容院/i }, { name: '理容室', re: /理容室|バーバー|barber/i },
-  { name: 'ネイルサロン', re: /ネイル|nail/i }, { name: 'まつ毛サロン', re: /まつ毛|まつげ|マツエク|eyelash/i },
-  { name: 'エステ', re: /エステ|脱毛|フェイシャル/ }, { name: 'リラクゼーション', re: /リラクゼーション|もみほぐし|リフレ/ },
-  { name: 'パーソナルジム', re: /パーソナルジム|パーソナルトレーニング|フィットネス|ジム/ }, { name: 'ピラティス', re: /ピラティス|ヨガ/ },
-  { name: 'カフェ', re: /カフェ|cafe|coffee|珈琲/i }, { name: 'ラーメン', re: /ラーメン|らーめん/ }, { name: 'パン屋', re: /パン屋|ベーカリー|bakery/i },
-  { name: '居酒屋', re: /居酒屋|酒場|バル/ }, { name: '飲食店', re: /レストラン|食堂|ダイニング|焼肉|寿司|そば|うどん|定食|弁当|テイクアウト|スイーツ|ケーキ/ },
-  { name: '歯科', re: /歯科|デンタル/ }, { name: '動物病院', re: /動物病院/ }, { name: 'クリニック', re: /クリニック|医院|診療所/ },
-  { name: 'リフォーム', re: /リフォーム|リノベ/ }, { name: '美容クリニック', re: /美容クリニック|美容外科|美容皮膚科/ },
-]
 
 export interface RegionalExtract {
   shop_name: string
@@ -94,7 +83,7 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
   const dateMatch = text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/) || text.match(/(\d{1,2}月\d{1,2}日)(?:[^\n]{0,6}(?:オープン|開店|開業|オープン予定))/)
   const open_date = dateMatch ? dateMatch[1] || dateMatch[0] : ''
 
-  const industry = INDUSTRY_MAP.find((m) => m.re.test(text))?.name || ''
+  const industry = classifyIndustry(text)
 
   const phoneMatch = bodyText.match(/0\d{1,3}[-(]?\d{2,4}[-)]?\d{3,4}/)
   const phone = phoneMatch ? phoneMatch[0] : ''

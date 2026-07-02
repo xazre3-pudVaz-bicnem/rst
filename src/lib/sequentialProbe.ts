@@ -10,6 +10,7 @@ import { extractAddressLoose } from './enrichProfile.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
@@ -555,7 +556,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const finalName = nameValid ? name : '店名未確定'
     const holdNote = nameUnconfirmedHot ? '店名未確定だが電話・住所・新規掲載ありのため営業可能候補(HOT-B)。営業前に店名確認推奨。' : (hotBlock ? `${parserUsed}で${hotBlock}のため自動投入不可（要手動確認）。` : '')
     const payload: any = {
-      name: finalName, address: address || null, industry: category || null, phone_number: phone || null, website_url: official || null,
+      name: finalName, address: address || null, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, phone_number: phone || null, website_url: official || null,
       source: 'sequential_id_probe', lead_source: 'sequential_id_probe', source_type: 'AI自動投入(連番探索)',
       source_site_type: 'sequential_id_probe', parser_used: parserUsed, source_media_family: site.media_family || null, source_site_name: site.name,
       source_detail_url: url, source_list_url: template, probed_id: probedId, probed_url: url, probe_valid: true, probe_status: `HTTP ${r.status}`,
@@ -588,7 +589,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     // 自動投入は HOT（電話＋住所が揃えば店名未確定でも可。電話なし/住所なしは temperature が HOLD に降格済み）
     const effectiveTier = nameUnconfirmedHot ? 'HOT_B' : sc.tier
     if (temperature === 'HOT' && autoImportAllowed(effectiveTier as any, opts.mode) && address && phoneOk && candidateId && !alreadyImported && importedCount < opts.autoImportPerDay && importedThisRun < opts.autoImportPerRun) {
-      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: category || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
+      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
     }

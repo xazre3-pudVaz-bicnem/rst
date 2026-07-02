@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { INDUSTRIES } from './constants'
 import type { ExtractedShop } from './types'
 
 /**
@@ -85,7 +86,8 @@ const COMMON_RULES = `
 - 個人経営・独立系のみ対象
 - 対象エリアは関東（${KANTO}）のみ
 - 店名・住所・電話番号が確認できるもののみ
-- 推測や捏造は禁止。確認できた情報のみ返す`
+- 推測や捏造は禁止。確認できた情報のみ返す
+- 業種(industry)は必ず次のいずれかから最も近いものを1つ選ぶ（一覧に無い細分類名は使わない）: ${INDUSTRIES.join(' / ')}`
 
 /** 自動検索: ポータルサイト（抜粋。必要に応じ追加可能） */
 export const TARGET_SITES = [
@@ -237,5 +239,6 @@ export function buildTownpagePrompt(query: string, cutoff: string): string {
 
 export function buildImportPrompt(url: string): string {
   return `次のURLのWebページからRST CRMの案件情報を1件抽出してください: ${url}
-店名(name)・住所(address)・電話番号(phone1, phone2)・業種(industry)・代表者名(representative)・HP(hp1)・メモ(memo)を可能な範囲で埋めてください。確認できない項目は空で構いません。`
+店名(name)・住所(address)・電話番号(phone1, phone2)・業種(industry)・代表者名(representative)・HP(hp1)・メモ(memo)を可能な範囲で埋めてください。確認できない項目は空で構いません。
+業種(industry)は必ず次のいずれかから最も近いものを1つ選ぶ（一覧に無い細分類名は使わない）: ${INDUSTRIES.join(' / ')}`
 }

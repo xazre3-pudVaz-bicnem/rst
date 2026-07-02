@@ -8,6 +8,7 @@ import { isForeignAddress, isJapanPhone, isOrgNonStore } from './japanFilter.js'
 import { scoreCandidate, tierToTemperature, type HotTier, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic } from './targetFilter.js'
+import { classifyIndustry } from './industry.js'
 
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
@@ -110,32 +111,9 @@ export interface DirectoryShopInfo {
   open: OpenDate; excerpt: string
 }
 
-// 具体的・特徴的な業種を上に（find は先頭一致優先）。「パン」等の広すぎる語は使わず語を厳密化。
-const INDUSTRY_MAP: { name: string; re: RegExp }[] = [
-  { name: 'アトリエ・レンタルスペース', re: /シェアアトリエ|レンタルアトリエ|レンタルスペース|シェアスペース|貸し?スペース|コワーキング|アトリエ|工房|ものづくり/ },
-  { name: 'ギャラリー', re: /ギャラリー|画廊/ },
-  { name: '写真スタジオ', re: /写真館|フォトスタジオ|撮影スタジオ|写真スタジオ/ },
-  { name: '教室・スクール', re: /教室|スクール|習い事|レッスン|アカデミー|音楽教室|英会話|学習塾|(?<![事])塾/ },
-  { name: '歯科', re: /歯科|デンタル|矯正歯科/ }, { name: '美容クリニック', re: /美容外科|美容皮膚科|美容クリニック/ },
-  { name: '動物病院・ペット', re: /動物病院|獣医|ペットサロン|トリミング|ペットホテル/ },
-  { name: 'クリニック', re: /クリニック|医院|診療所|内科|外科|皮膚科|眼科|耳鼻|小児科|整形外科|心療内科/ },
-  { name: '整骨院', re: /整骨院|接骨院/ }, { name: '鍼灸院', re: /鍼灸|はり灸|はり・きゅう/ }, { name: '整体', re: /整体|カイロ/ },
-  { name: 'ネイルサロン', re: /ネイル|nail/i }, { name: 'まつ毛サロン', re: /まつ毛|まつげ|マツエク|eyelash|アイラッシュ/i },
-  { name: 'エステ', re: /エステ|脱毛|フェイシャル|痩身/ }, { name: 'リラクゼーション', re: /リラクゼーション|もみほぐし|リフレ|マッサージ/ },
-  { name: '美容室', re: /美容室|ヘアサロン|美容院|理容|床屋|バーバー|hair|barber/i },
-  { name: 'ジム・フィットネス', re: /ジム|フィットネス|パーソナルトレ|ピラティス|ヨガ|加圧/ },
-  { name: '中華料理', re: /中華(料理)?|ラーメン|餃子|町中華/ }, { name: '居酒屋', re: /居酒屋|酒場|バル|ダイニングバー|焼き?鳥|焼肉|ホルモン/ },
-  { name: 'パン屋', re: /パン屋|ベーカリー|bakery|食パン専門|ブーランジェ/i }, { name: 'カフェ', re: /カフェ|cafe|coffee|珈琲|喫茶/i },
-  { name: 'スイーツ', re: /ケーキ|パティスリー|スイーツ|洋菓子|和菓子|ジェラート|クレープ/ },
-  { name: '花屋', re: /花屋|フラワー|生花|フローリスト/ }, { name: '雑貨・物販', re: /雑貨|セレクトショップ|アパレル|古着|洋服店|インテリアショップ/ }, { name: '書店', re: /書店|本屋/ },
-  { name: 'クリーニング', re: /クリーニング|コインランドリー/ }, { name: '不動産', re: /不動産|賃貸仲介/ },
-  { name: '士業', re: /行政書士|税理士|社会保険労務士|社労士|司法書士|弁護士|会計事務所/ },
-  { name: '宿泊', re: /ホテル|旅館|民宿|ゲストハウス|ペンション|グランピング/ },
-  { name: '飲食店', re: /レストラン|食堂|ダイニング|寿司|鮨|そば|うどん|定食|弁当|惣菜|テイクアウト|カレー|ビストロ|イタリアン|フレンチ|韓国料理|タイ料理|ステーキ/ },
-]
-/** テキストから業種を推定（アトリエ/工房/教室等も対応）。店名＋記事タイトル等の店舗固有テキストに使うこと。 */
+/** テキストから正規の業種を推定（フォーム選択肢と一致する値のみ返す）。店名＋記事タイトル等の店舗固有テキストに使うこと。 */
 export function detectIndustryFromText(text: string): string {
-  return INDUSTRY_MAP.find((m) => m.re.test(String(text || '')))?.name || ''
+  return classifyIndustry(text)
 }
 
 const CHAIN_HINT = /(マクドナルド|スターバックス|スタバ|ケンタッキー|モスバーガー|ガスト|サイゼリヤ|吉野家|すき家|松屋|ドトール|タリーズ|コメダ|丸亀製麺|ユニクロ|GU|セブンイレブン|ファミリーマート|ローソン|QBハウス|ライザップ|チョコザップ|カーブス|ほっともっと|大戸屋|やよい軒|ニトリ|業務スーパー|ドン・?キホーテ|マツモトキヨシ|ウエルシア|スギ薬局)/i

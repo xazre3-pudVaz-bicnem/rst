@@ -5,6 +5,7 @@
 // 取れ、新規オープン文言＋一都三県エリアがあれば「Instagram単体HOT候補」。
 // ============================================================
 import { PREFECTURES } from './areaPresets.js'
+import { classifyIndustry } from './industry.js'
 
 // 一都三県のエリアトークン（caption内に bare 表記で出る想定）
 const AREA_TOKENS: string[] = (() => {
@@ -40,19 +41,6 @@ const EXCLUDE_WORDS = [
 // チェーン/大型施設の簡易ヒント
 const CHAIN_HINT = /(マクドナルド|スターバックス|スタバ|ケンタッキー|モスバーガー|ガスト|サイゼリヤ|吉野家|すき家|松屋|ドトール|タリーズ|コメダ|丸亀製麺|ユニクロ|GU|セブンイレブン|ファミリーマート|ローソン|QBハウス|TBC|ミュゼ|ライザップ|チョコザップ|chocoZAP|カーブス|ゴールドジム|ほっともっと|大戸屋|やよい軒)/i
 const MALL_HINT = /(イオンモール|ららぽーと|アリオ|ルミネ|アトレ|パルコ|PARCO|高島屋|三越|伊勢丹|そごう|大丸|松坂屋|百貨店|駅ビル|エキュート|アウトレット|ショッピングモール|ショッピングセンター)/
-
-// 業種キーワード
-const INDUSTRY_MAP: { name: string; re: RegExp }[] = [
-  { name: '整体', re: /整体|カイロ/ }, { name: '整骨院', re: /整骨院|接骨院/ }, { name: '鍼灸院', re: /鍼灸|はり灸/ },
-  { name: '美容室', re: /美容室|ヘアサロン|hair|ヘアー/i }, { name: '理容室', re: /理容室|バーバー|barber/i },
-  { name: 'ネイルサロン', re: /ネイル|nail/i }, { name: 'まつ毛サロン', re: /まつ毛|まつげ|マツエク|eyelash|アイラッシュ/i },
-  { name: 'エステ', re: /エステ|美容皮膚|脱毛|フェイシャル/ }, { name: 'リラクゼーション', re: /リラクゼーション|もみほぐし|リフレ/ },
-  { name: 'パーソナルジム', re: /パーソナルジム|パーソナルトレーニング|ジム|fitness/i }, { name: 'ピラティス', re: /ピラティス|ヨガ|yoga|pilates/i },
-  { name: 'カフェ', re: /カフェ|cafe|coffee|珈琲/i }, { name: '居酒屋', re: /居酒屋|酒場|バル|bar/i },
-  { name: 'ラーメン', re: /ラーメン|らーめん|麺/ }, { name: '飲食店', re: /レストラン|食堂|ダイニング|焼肉|寿司|そば|うどん|定食/ },
-  { name: '歯科', re: /歯科|デンタル|dental/i }, { name: '動物病院', re: /動物病院/ }, { name: 'ペットサロン', re: /トリミング|ペットサロン/ },
-  { name: 'リフォーム', re: /リフォーム|リノベ/ }, { name: '外壁塗装', re: /外壁塗装|塗装/ }, { name: 'ハウスクリーニング', re: /ハウスクリーニング|清掃/ },
-]
 
 function normalizePhone(s: string): string {
   return s.replace(/[^\d]/g, '')
@@ -103,7 +91,7 @@ export function extractFromCaption(caption: string, opts?: { username?: string }
   const address = addrMatch ? addrMatch[0].trim().slice(0, 60) : ''
 
   // 業種
-  const industry = INDUSTRY_MAP.find((m) => m.re.test(text))?.name || ''
+  const industry = classifyIndustry(text)
 
   // 新規オープン文言
   const open_word = OPEN_WORDS.find((w) => lower.includes(w.toLowerCase())) || ''

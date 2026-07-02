@@ -10,6 +10,7 @@ import { isJapanPhone } from './japanFilter.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic } from './targetFilter.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { computeQuality } from './leadQuality.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -91,7 +92,7 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
         else counts.hold++
         const reason = `エキテン公開日 ${sp.published || '不明'}（${pubDays != null ? pubDays + '日前' : '取得不可'}${pubDays != null && pubDays <= 7 ? '・直近7日以内の新規掲載候補' : pubDays != null ? '・8日以上前で対象外' : ''}）。※公開日は開業日ではなくエキテン上の掲載公開日。`
         const payload: any = {
-          name, address: address || null, industry: sp.category || null, phone_number: phone || null, website_url: sp.official || null,
+          name, address: address || null, industry: classifyIndustry(name) || normalizeIndustry(sp.category) || null, phone_number: phone || null, website_url: sp.official || null,
           source: 'ekiten_discovery', lead_source: 'ekiten_discovery', source_type: 'AI自動投入(エキテン)', source_site_type: 'ekiten', parser_used: 'ekiten_shop_detail', source_site_name: 'エキテン',
           source_detail_url: url, source_list_url: 'https://www.ekiten.jp/', search_title: name.slice(0, 300), search_snippet: (rr.snippet || '').slice(0, 300),
           source_published_date: sp.published || null, source_updated_date: sp.updated || null, source_date_type: 'ekiten_published_date',
@@ -112,7 +113,7 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
         if (candidateId) { await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {}) }
         else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single(); candidateId = ins?.id || null; counts.saved++ }
         if (temperature === 'HOT' && phoneOk && address && candidateId && !alreadyImported && importedThisRun < autoImportPerRun && autoImportAllowed('HOT_B' as any, mode)) {
-          const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: sp.category || null, status: DEFAULT_STATUS, priority: '中', hp1: sp.official || null, source_urls: url, memo: `【AI自動投入 / エキテン新規掲載候補 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}\n※公開日は掲載公開日（開業日ではない）。営業前に確認推奨。`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+          const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(sp.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: sp.official || null, source_urls: url, memo: `【AI自動投入 / エキテン新規掲載候補 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}\n※公開日は掲載公開日（開業日ではない）。営業前に確認推奨。`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
           if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
         }
         if (debug.samples.length < 15) debug.samples.push({ url, name, phone, address, published: sp.published, pubDays, temperature })

@@ -12,6 +12,7 @@ import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode }
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
 import { isTollFreeJp } from './regionalParsers.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 export function getDefaultIwSettings() {
@@ -174,15 +175,7 @@ function extractRegion(text: string): { prefecture: string; city: string; area: 
   return { prefecture, city, area, foreign }
 }
 
-const INDUSTRY_RE: { name: string; re: RegExp }[] = [
-  { name: '美容室', re: /美容室|ヘアサロン|美容院|hair/i }, { name: 'ネイルサロン', re: /ネイル|nail/i }, { name: 'まつ毛サロン', re: /まつ毛|まつげ|マツエク|eyelash/i },
-  { name: 'エステ', re: /エステ|脱毛|フェイシャル/ }, { name: '整体', re: /整体|カイロ/ }, { name: '整骨院・接骨院', re: /整骨院|接骨院/ }, { name: '鍼灸院', re: /鍼灸|はり灸/ },
-  { name: 'リラクゼーション', re: /リラクゼーション|もみほぐし/ }, { name: 'クリニック', re: /クリニック|医院|診療所/ }, { name: '歯科', re: /歯科|デンタル/ },
-  { name: 'カフェ', re: /カフェ|cafe|coffee|珈琲/i }, { name: 'ラーメン', re: /ラーメン|らーめん/ }, { name: '居酒屋', re: /居酒屋|酒場|バル/ },
-  { name: '飲食店', re: /レストラン|食堂|ダイニング|焼肉|寿司|そば|うどん|定食|パン|ベーカリー|スイーツ/ }, { name: 'ジム・フィットネス', re: /ジム|フィットネス|パーソナル|ピラティス|ヨガ/ },
-  { name: '士業', re: /行政書士|税理士|社労士|司法書士|弁護士|事務所/ }, { name: '不動産', re: /不動産/ }, { name: 'リフォーム', re: /リフォーム|リノベ/ },
-]
-function extractIndustry(text: string): string { return INDUSTRY_RE.find((m) => m.re.test(text))?.name || '' }
+function extractIndustry(text: string): string { return classifyIndustry(text) }
 
 // ---- 電話/住所/連絡先URL 抽出（外部サイトのスニペットから） ----
 const ADDR_RE = new RegExp(`(${PREFECTURES.join('|')})[^\\n。、）)｜|]{2,40}`)
@@ -712,7 +705,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const prefecture = j.prefecture || enrich?.prefecture || baseRegion.prefecture || null
         const city = j.city || enrich?.city || baseRegion.city || null
         const area = [prefecture, city].filter(Boolean).join('') || null
-        const industry = j.industry || industry0 || null
+        const industry = normalizeIndustry(j.industry || industry0) || classifyIndustry(`${r.title} ${r.snippet}`) || null
         const finalPhone = j.phone_candidate || enrich?.phone || base.phone_candidate || ''
         const addressVal = j.address_candidate || enrich?.address || null
         const officialVal = j.official_url_candidate || enrich?.official || null

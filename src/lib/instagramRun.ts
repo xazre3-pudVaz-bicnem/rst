@@ -7,6 +7,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromCaption, classifyInstagram, IG_HASHTAGS, type IgClassifyOpts } from './instagramExtract.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 
 const GRAPH = 'https://graph.facebook.com/v19.0'
 
@@ -216,7 +217,7 @@ export async function runInstagram(admin: any, igToken: string, igUserId: string
         if (importable && candidateId && !alreadyImported && importedCount < dailyCap) {
           const memo = [`【AI自動投入 / Instagram】`, `分類: ${verdict.classification}`, `理由: ${verdict.reason}`, `投稿: ${m.permalink || ''}`, `#${tag}`].join('\n')
           const { data: created } = await admin.from('cases').insert({
-            name, address: ex.address || '', phone1: phone || '', industry: ex.industry || null,
+            name, address: ex.address || '', phone1: phone || '', industry: normalizeIndustry(ex.industry) || classifyIndustry(name) || null,
             status: DEFAULT_STATUS, hp1: ex.website_url || null, instagram: ex.account_url || null,
             source_urls: 'AI自動投入(Instagram)', memo, created_by_id: userId,
           }).select('id').single()

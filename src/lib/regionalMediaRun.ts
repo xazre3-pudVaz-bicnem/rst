@@ -17,6 +17,7 @@ import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore } from './
 import { looksLikeArticle as looksLikeArticleText, isRealStoreAddress } from './leadQuality.js'
 // Instagram Web検索と共通の外部情報補完ロジックを再利用
 import { enrichCandidate } from './instagramWebRun.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 
 // サイトのタイプを正規化（記事型 / 店舗ディレクトリ型 / ハイブリッド）
 export function siteTypeOf(site: any): 'local_directory_new_listing' | 'openclose_article' | 'hybrid' {
@@ -1049,7 +1050,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
         // HOT自動投入（電話必須）。店名未確定HOT-Bも投入可（営業前に店名確認）
         await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : sc.tier) as any, temperature, phone, alreadyImported, caseData: {
-          name, address: payload.address || '', phone1: phone, industry: ex.industry || null,
+          name, address: payload.address || '', phone1: phone, industry: normalizeIndustry(ex.industry) || classifyIndustry(name) || null,
           status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: payload.website_url, source_urls: link.url,
           memo: [`【AI自動投入 / 地域メディア / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】`, `店舗: ${name}`, `記事タイトル: ${bestTitle}`, `URL: ${link.url}`, `電話: ${phone || '—'}`, `住所: ${payload.address || '—'}`, `理由: ${reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
         } })

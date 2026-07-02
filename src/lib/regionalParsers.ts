@@ -8,6 +8,7 @@
 import { extractOpenDateFromTitle, type OpenDate } from './directoryParser.js'
 import { extractAddressLoose, prefectureFromCity } from './enrichProfile.js'
 import { isJapanPhone } from './japanFilter.js'
+import { classifyIndustry } from './industry.js'
 
 export type ParserType = 'openclose_article' | 'local_directory_new_listing' | 'marketplace_listing' | 'generic_page_text_scan' | 'horby_new_salon'
 
@@ -147,14 +148,6 @@ export function extractMainContent(html: string): string {
 }
 
 const NAV_WORD = /^(ホーム|トップ|home|top|ログイン|login|会員|新規登録|もっと見る|一覧|検索|menu|メニュー|予約|マイページ|お問い合わせ|利用規約|プライバシー|地図|電話する|詳細|店舗表示|詳しく)$/i
-const INDUSTRY_RE: { name: string; re: RegExp }[] = [
-  { name: '中華料理', re: /中華|ラーメン|餃子/ }, { name: '居酒屋', re: /居酒屋|酒場|バル|ダイニングバー/ }, { name: 'カフェ', re: /カフェ|cafe|coffee|珈琲/i },
-  { name: '飲食店', re: /レストラン|食堂|焼肉|寿司|そば|うどん|定食|弁当|惣菜|スイーツ|ケーキ|焼鳥|カレー|パン|ベーカリー/ },
-  { name: '美容室', re: /美容室|ヘアサロン|美容院|hair/i }, { name: 'ネイルサロン', re: /ネイル|nail/i }, { name: 'エステ', re: /エステ|脱毛/ },
-  { name: '整体', re: /整体|カイロ/ }, { name: '整骨院', re: /整骨院|接骨院/ }, { name: 'リラクゼーション', re: /リラク|もみほぐし/ },
-  { name: 'クリニック', re: /クリニック|医院|診療所/ }, { name: '歯科', re: /歯科|デンタル/ }, { name: 'ジム・フィットネス', re: /ジム|フィットネス|ピラティス|ヨガ/ },
-]
-
 /** 1ブロックHTMLから店舗候補を抽出 */
 export function extractCandidateFromBlock(blockHtml: string, base: URL): BlockCandidate | null {
   const text = stripTags(blockHtml)
@@ -187,7 +180,7 @@ export function extractCandidateFromBlock(blockHtml: string, base: URL): BlockCa
   let city = ad.city
   if (!prefecture) { const r = prefectureFromCity(text); prefecture = r.prefecture; city = city || r.city }
   const open = extractOpenDateFromTitle(text)
-  const industry = INDUSTRY_RE.find((m) => m.re.test(text))?.name || ''
+  const industry = classifyIndustry(`${shopName} ${text}`)
   const category = (text.match(/(?:ジャンル|カテゴリ)[:：]?\s*([^\s|｜/]{2,12})/)?.[1] || '')
   const reviewish = (text.match(/(?:★[\d.]+|評価[\d.]+|口コミ\d+件?|レビュー\d+)/)?.[0] || '')
   return {
@@ -225,7 +218,7 @@ export function parseHorbyCards(html: string, base: URL): BlockExtractResult {
     const detailUrl = detail ? new URL(detail, base).href : `${base.origin}/horby#salon-${encodeURIComponent(name.slice(0, 40))}`
     candidates.push({
       shopName: name.slice(0, 60), address: pref ? `${pref}` : area, prefecture: pref ? (pref.length <= 3 && !/[都道府県]$/.test(pref) ? pref + (pref === '北海道' ? '' : pref === '東京' ? '都' : /大阪|京都/.test(pref) ? '府' : '県') : pref) : '',
-      city: '', phone: '', industry: tag || '', open: { text: '', date: '', confidence: 'none' } as any,
+      city: '', phone: '', industry: classifyIndustry(`${name} ${tag} ${menu}`), open: { text: '', date: '', confidence: 'none' } as any,
       detailUrl, matchedKeywords: ['新規加盟店舗'], blockText: `${name} ${area} ${tag} ${menu}`.trim().slice(0, 200), isNew: true,
       category: tag || '', reviewish: '',
     })

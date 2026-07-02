@@ -9,6 +9,7 @@ import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
 import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -281,20 +282,11 @@ function regionFromAddress(addr: string): { prefecture: string; city: string; ar
   const city = cm ? cm[1] : ''
   return { prefecture, city, area: [prefecture, city].filter(Boolean).join('') }
 }
-// primaryType / types / 店名 から業種推定
-const PTYPE_MAP: { re: RegExp; name: string }[] = [
-  { re: /hair|beauty_salon|hairdresser/i, name: '美容室' }, { re: /nail/i, name: 'ネイルサロン' }, { re: /barber/i, name: '理容室' },
-  { re: /spa|massage|wellness/i, name: 'リラクゼーション' }, { re: /chiropractor|physiotherap|osteopath/i, name: '整体' },
-  { re: /dentist|dental/i, name: '歯科' }, { re: /doctor|clinic|hospital|health/i, name: 'クリニック' }, { re: /veterinary/i, name: '動物病院' },
-  { re: /gym|fitness|yoga|pilates/i, name: 'ジム・フィットネス' }, { re: /cafe|coffee/i, name: 'カフェ' }, { re: /bakery/i, name: 'パン屋' },
-  { re: /bar|izakaya|pub/i, name: '居酒屋' }, { re: /ramen|noodle/i, name: 'ラーメン' }, { re: /restaurant|food|meal|dining/i, name: '飲食店' },
-  { re: /real_estate/i, name: '不動産' }, { re: /lawyer|accounting|legal/i, name: '士業' }, { re: /pet/i, name: 'ペットサロン' },
-  { re: /store|shop|retail/i, name: '小売' },
-]
+// primaryType / types / 店名 から正規の業種を推定（フォーム選択肢と一致する値のみ）。
+// 英語のtypesで拾えないケースは日本語の店名でも判定する。
 function industryFromPlace(primaryType: string, types: string[], name: string): string {
   const hay = `${primaryType} ${(types || []).join(' ')}`
-  const m = PTYPE_MAP.find((x) => x.re.test(hay)) || PTYPE_MAP.find((x) => x.re.test(name))
-  return m ? m.name : ''
+  return classifyIndustry(hay) || classifyIndustry(name)
 }
 
 export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: any, userId: string | null) {
@@ -544,7 +536,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         const { latest: latestPub, oldest: oldestPub } = reviewDates(p)
         const firstSeenDays = existing?.first_seen_at ? Math.max(0, Math.floor((Date.now() - Date.parse(existing.first_seen_at)) / 86400000)) : 0
         const region = regionFromAddress(p.formattedAddress || address)
-        const industryGuess = industryFromPlace(p.primaryType || '', Array.isArray(p.types) ? p.types : [], name) || gq.industry || null
+        const industryGuess = industryFromPlace(p.primaryType || '', Array.isArray(p.types) ? p.types : [], name) || normalizeIndustry(gq.industry) || null
 
         const classified: any = classifyLead({
           name, address,

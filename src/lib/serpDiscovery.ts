@@ -10,6 +10,7 @@ import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from '
 import { hardExcludeReason } from './excludeGate.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { detectChain } from './chainFilter.js'
 import { computeQuality, detectNegative, isRealStoreAddress } from './leadQuality.js'
 import { addSignals, applySalesScore } from './leadSignals.js'
@@ -185,7 +186,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
           // HOT-B自動投入（電話必須・重複なし）
           if (temperature === 'HOT' && phoneOk && address && !already && importedThisRun < autoImportPerRun && autoImportAllowed('HOT_B' as any, mode)) {
             const memo = (full as any)?.call_memo ? `\n\n${(full as any).call_memo}` : ''
-            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: qr.category, status: DEFAULT_STATUS, priority: '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+            const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
             if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
           }
         }

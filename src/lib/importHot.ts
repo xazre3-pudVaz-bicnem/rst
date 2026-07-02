@@ -10,6 +10,7 @@ import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.
 import { detectBigOrPublicStrong, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
+import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { fetchInstagramProfile } from './enrichProfile.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -178,7 +179,7 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       ...(c.source_detail_url ? [`掲載元: ${c.source_detail_url}`] : []),
       ...(c.call_memo ? ['', c.call_memo] : []),
     ].join('\n')
-    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: c.industry || c.industry_category || null, status: DEFAULT_STATUS, priority: c.hot_tier === 'A' ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
+    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: normalizeIndustry(c.industry) || classifyIndustry(name) || normalizeIndustry(c.industry_category) || null, status: DEFAULT_STATUS, priority: c.hot_tier === 'A' ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
     if (ce || !created?.id) { skipped++; await admin.from('lead_candidates').update({ auto_insert_attempted: true, auto_insert_success: false, auto_insert_error: ce?.message || 'case作成失敗' }).eq('id', c.id); continue }
     await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)
     imported++

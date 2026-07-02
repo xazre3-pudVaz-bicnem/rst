@@ -113,8 +113,8 @@ export default function CaseFormModal({
   }
 
   async function handleSave() {
-    if (!form.name.trim() || !form.address.trim() || !form.phone1.trim()) {
-      toast.error('店舗名・住所・電話番号1は必須です')
+    if (!form.name.trim() || !form.address.trim() || !form.phone1.trim() || !form.industry) {
+      toast.error('店舗名・住所・電話番号1・業種は必須です')
       return
     }
 
@@ -229,7 +229,7 @@ export default function CaseFormModal({
             />
           </div>
           <div className="space-y-1">
-            <Label>業種</Label>
+            <Label>業種 *</Label>
             <Select value={form.industry || undefined} onValueChange={(v) => set('industry', v)}>
               <SelectTrigger>
                 <SelectValue placeholder="選択" />
