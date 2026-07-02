@@ -162,11 +162,18 @@ function buildSessionUpdate(session, beta, voice) {
   }
 }
 
-// ---- OpenAI Realtime へ接続（GA→失敗時はbetaへ自動フォールバック） ----
+// GA(gpt-realtime)を明示的に使うときだけ true。既定は実績のあるbetaプレビューを使う。
+const PREFER_GA = /^(1|true|yes|on)$/i.test(process.env.OPENAI_REALTIME_USE_GA || '')
+// GA専用ボイス（beta не使えない）はbeta時にalloyへ置換
+const GA_ONLY_VOICES = new Set(['marin', 'cedar'])
+function betaSafeVoice(v) { return GA_ONLY_VOICES.has(String(v || '').toLowerCase()) ? FALLBACK_BETA_VOICE : (v || FALLBACK_BETA_VOICE) }
+
+// ---- OpenAI Realtime へ接続（既定=beta。GAはOPENAI_REALTIME_USE_GA=1のときのみ試行し、失敗時betaへフォールバック） ----
 function connectOpenAI(session, opts = {}) {
-  const beta = opts.beta === true || IS_BETA_MODEL
-  const model = beta && !IS_BETA_MODEL ? FALLBACK_BETA_MODEL : OPENAI_REALTIME_MODEL
-  const voice = beta && !IS_BETA_MODEL ? FALLBACK_BETA_VOICE : OPENAI_REALTIME_VOICE
+  // 明示betaフォールバック / preview直指定 / GAを使わない設定 → beta
+  const beta = opts.beta === true || IS_BETA_MODEL || !PREFER_GA
+  const model = beta ? (IS_BETA_MODEL ? OPENAI_REALTIME_MODEL : FALLBACK_BETA_MODEL) : OPENAI_REALTIME_MODEL
+  const voice = beta ? betaSafeVoice(OPENAI_REALTIME_VOICE) : OPENAI_REALTIME_VOICE
   session.usedBeta = beta
 
   const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
@@ -329,7 +336,8 @@ async function finalize(session) {
 }
 
 server.listen(PORT, () => {
-  log(`RST realtime voice server on :${PORT}  model=${OPENAI_REALTIME_MODEL} voice=${OPENAI_REALTIME_VOICE}`)
+  const path = PREFER_GA && !IS_BETA_MODEL ? `GA(${OPENAI_REALTIME_MODEL}/${OPENAI_REALTIME_VOICE})→失敗時beta` : `beta(${IS_BETA_MODEL ? OPENAI_REALTIME_MODEL : FALLBACK_BETA_MODEL}/${betaSafeVoice(OPENAI_REALTIME_VOICE)})`
+  log(`RST realtime voice server on :${PORT}  使用経路=${path}`)
   if (!OPENAI_API_KEY) log('WARN: OPENAI_API_KEY 未設定')
   if (!RST_API_BASE || !AI_CALL_SERVER_SECRET) log('WARN: RST_API_BASE / AI_CALL_SERVER_SECRET 未設定（ツール連携が動きません）')
 })
