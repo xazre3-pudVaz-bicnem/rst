@@ -78,8 +78,8 @@ export default async function handler(req: any, res: any) {
     if (durationSec != null && !Number.isNaN(durationSec)) patch.duration_sec = durationSec
     if (b.CallStatus) patch.provider_call_sid = sid
     if (['failed', 'busy', 'no-answer', 'canceled'].includes(String(b.CallStatus).toLowerCase())) patch.error = `Twilio: ${b.CallStatus}${b.ErrorMessage ? ' / ' + b.ErrorMessage : ''}`
-    // ai_summary/next_action はモックのようなAI要約が無いため、実結果の素の情報を要約に入れる
-    if (String(b.CallStatus).toLowerCase() === 'completed') patch.ai_summary = `Twilio実通話 完了（${durationSec ?? '?'}秒）。文字起こし/要約は音声AI接続後に反映。`
+    // 実通話の素の結果を要約欄に記録（文字起こし/AI要約は未使用）
+    if (String(b.CallStatus).toLowerCase() === 'completed') patch.ai_summary = `Twilio実通話 完了（${durationSec ?? '?'}秒）`
     const q = admin.from('ai_call_jobs').update(patch)
     const { error } = jobId ? await q.eq('id', jobId) : await q.eq('provider_call_sid', sid)
     if (error) return res.status(200).json({ ok: false, error: error.message })

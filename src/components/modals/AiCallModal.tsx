@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { cn, jpError } from '@/lib/utils'
-import { AiCallScriptApi, AiCallJobApi, TwilioApi, runTestCall, createInterestAppointment, setNextCall, releaseNg, recordCallOutcome, applyAiJudgment } from '@/lib/aiCall'
+import { AiCallScriptApi, AiCallJobApi, TwilioApi, runTestCall, createInterestAppointment, setNextCall, releaseNg, recordCallOutcome } from '@/lib/aiCall'
 import type { Case, AiCallScript, AiCallJob, AiCallStatus } from '@/lib/types'
 import type { SyncResult } from '@/lib/calendarSync'
 
@@ -67,8 +67,6 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [caseNextAt, setCaseNextAt] = useState('')
   const [caseSync, setCaseSync] = useState<SyncResult | null>(null)
   const [outcomeBusy, setOutcomeBusy] = useState(false)
-  const [procBusy, setProcBusy] = useState<string>('')   // 文字起こし＆要約 実行中のjobId
-  const [applyBusy, setApplyBusy] = useState<string>('')  // AI判定反映 実行中のjobId
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({})  // jobId -> blob URL
   const [audioBusy, setAudioBusy] = useState<string>('')
   const [audioErr, setAudioErr] = useState<Record<string, string>>({})
@@ -190,25 +188,6 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
       if (r.ok && r.url) setAudioUrls((p) => ({ ...p, [jobId]: r.url as string }))
       else setAudioErr((p) => ({ ...p, [jobId]: r.error || '録音取得に失敗しました' }))
     } catch (e) { setAudioErr((p) => ({ ...p, [jobId]: jpError(e) })) } finally { setAudioBusy('') }
-  }
-  async function processJob(jobId: string) {
-    setProcBusy(jobId)
-    try {
-      const r = await TwilioApi.process(jobId)
-      if (r?.ok || r?.job) toast.success('文字起こし＆AI要約を実行しました')
-      else toast.error(r?.error || '実行に失敗しました')
-      if (selectedCase) setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
-    } catch (e) { toast.error(jpError(e)) } finally { setProcBusy('') }
-  }
-  async function applyJudgment(j: AiCallJob) {
-    if (!selectedCase) return
-    if (!window.confirm(`AI推奨ステータス「${j.recommended_status || '再架電'}」を案件に反映します。よろしいですか？${j.recommended_status === 'NG' ? '\n※NGは以後この案件へ架電不可になります。' : ''}`)) return
-    setApplyBusy(j.id)
-    try {
-      const applied = await applyAiJudgment(j, selectedCase, { salesRep: displayName || null, userId: user?.id ?? null })
-      toast.success(`AI判定を反映しました: ${applied}`)
-      onChanged?.(); setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
-    } catch (e) { toast.error(jpError(e)) } finally { setApplyBusy('') }
   }
   async function caseRegisterAppo() {
     if (!caseJob || !selectedCase || !appoAt) return
@@ -349,12 +328,6 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                   {twStatus && (
                     <div className="font-mono text-[9px]">
                       SID={twStatus.accountSidMasked} ({twStatus.checks?.sidPrefixOk ? 'AC✓' : 'AC✗'} {twStatus.checks?.sidLen}文字{twStatus.checks?.sidLenOk ? '✓' : '✗'}) ／ token={twStatus.checks?.tokenPresent ? `${twStatus.checks?.tokenLen}文字` : '空'} ／ 発信元env=<b>{twStatus.fromEnvUsed}</b>={twStatus.from || '(空)'}{twStatus.checks?.fromE164 ? '✓' : '✗E.164'}
-                    </div>
-                  )}
-                  {twStatus?.voiceAi && (
-                    <div className="font-mono text-[9px]">
-                      音声AI: 文字起こし={twStatus.voiceAi.transcription ? `✅(${twStatus.voiceAi.transcriptionProvider})` : '未設定'} ／ AI要約={twStatus.voiceAi.summary ? `✅(${twStatus.voiceAi.summaryProvider})` : '未設定'}
-                      {twStatus.voiceAi.missingEnv?.length ? ` ／ 未設定: ${twStatus.voiceAi.missingEnv.join(', ')}` : ''}
                     </div>
                   )}
                 </div>
@@ -517,15 +490,6 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                       {p.recommended_status && <div><b>AI推奨ステータス:</b> {p.recommended_status}{p.ai_needs_recall ? '（要再架電）' : ''}{p.ai_should_ng ? '（NG推奨）' : ''}</div>}
                       {p.next_action && <div><b>次回アクション:</b> {p.next_action}</div>}
                       {p.transcript && <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-1.5 font-sans">{p.transcript}</pre>}
-                      {p.processing_status && <div className="text-[9px] text-muted-foreground">文字起こし/要約: {p.processing_status}{p.processing_error ? ` — ${p.processing_error}` : ''}</div>}
-                      {/* 音声AI 操作（管理者） */}
-                      {isAdmin && p.provider === 'twilio' && p.case_id && (
-                        <div className="flex flex-wrap gap-1.5 pt-0.5">
-                          <Button size="sm" variant="outline" className="h-6 text-2xs" disabled={procBusy === p.id} onClick={() => processJob(p.id)}>{procBusy === p.id ? '実行中…' : '文字起こし＆AI要約を実行'}</Button>
-                          {p.recommended_status && !p.ai_applied && <Button size="sm" className="h-6 text-2xs" disabled={applyBusy === p.id} onClick={() => applyJudgment(p)}>{applyBusy === p.id ? '反映中…' : `AI判定を案件に反映（${p.recommended_status}）`}</Button>}
-                          {p.ai_applied && <span className="text-[10px] text-green-600">反映済み</span>}
-                        </div>
-                      )}
                     </div>
                   </details>
                 ))}
