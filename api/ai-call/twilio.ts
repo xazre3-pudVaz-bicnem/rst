@@ -8,7 +8,7 @@
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider } from '../../src/lib/twilioCall.js'
 
 export const config = { maxDuration: 30 }
 
@@ -49,6 +49,8 @@ export default async function handler(req: any, res: any) {
       missingEnv: missingTwilioEnv(), realCallEnabled: getProviderMode() === 'twilio' && isTwilioConfigured(),
       fromEnvUsed: pf.debug.fromEnvUsed, accountSidMasked: pf.debug.accountSidMasked, from: pf.debug.from,
       checks: { sidPrefixOk: pf.debug.sidPrefixOk, sidLenOk: pf.debug.sidLenOk, sidLen: pf.debug.sidLen, tokenPresent: pf.debug.tokenPresent, tokenLen: pf.debug.tokenLen, fromE164: pf.debug.fromE164 },
+      // 音声AI（録音→文字起こし→AI要約）の設定状況
+      voiceAi: { transcription: isTranscriptionConfigured(), summary: isSummaryConfigured(), transcriptionProvider: transcriptionProvider(), summaryProvider: summaryProvider(), missingEnv: missingVoiceAiEnv() },
     })
   }
 
@@ -82,6 +84,76 @@ export default async function handler(req: any, res: any) {
     const { error } = jobId ? await q.eq('id', jobId) : await q.eq('provider_call_sid', sid)
     if (error) return res.status(200).json({ ok: false, error: error.message })
     return res.status(200).json({ ok: true })
+  }
+
+  // ---- Twilio録音完了通知（認証なし・jobIdで紐付け。録音URL/SID/秒数を保存） ----
+  if (action === 'recording') {
+    const b = formBody(req)
+    const jobId = String(req.query?.jobId || '')
+    if (!jobId) return res.status(200).json({ ok: true })
+    const patch: any = { updated_date: new Date().toISOString() }
+    if (String(b.RecordingStatus || '').toLowerCase() === 'completed' && b.RecordingUrl) {
+      patch.recording_url = b.RecordingUrl
+      patch.recording_sid = b.RecordingSid || null
+      patch.recording_duration_sec = b.RecordingDuration ? Number(b.RecordingDuration) : null
+      patch.processing_status = '未処理'
+    } else if (b.RecordingStatus && String(b.RecordingStatus).toLowerCase() !== 'completed') {
+      patch.recording_error = `録音ステータス: ${b.RecordingStatus}`
+    }
+    await admin.from('ai_call_jobs').update(patch).eq('id', jobId).then(() => {}, () => {})
+    return res.status(200).json({ ok: true })
+  }
+
+  // ---- 文字起こし＆AI要約の実行（要管理者・手動トリガー） ----
+  if (action === 'process') {
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    const auth = await verifyAdmin(admin, token)
+    if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
+    const jobId = String((req.body && req.body.jobId) || '')
+    if (!jobId) return res.status(400).json({ ok: false, error: 'jobId がありません' })
+    const { data: job } = await admin.from('ai_call_jobs').select('id,recording_url,transcript,case_name,provider').eq('id', jobId).maybeSingle()
+    if (!job) return res.status(404).json({ ok: false, error: 'ジョブが見つかりません' })
+    if (!isTranscriptionConfigured() && !isSummaryConfigured()) {
+      await admin.from('ai_call_jobs').update({ processing_status: '未設定', processing_error: `音声AI未設定: ${missingVoiceAiEnv().join(', ')}` }).eq('id', jobId)
+      return res.status(400).json({ ok: false, error: `音声AI未設定です: ${missingVoiceAiEnv().join(', ')}（Vercelに設定して再デプロイ）` })
+    }
+    await admin.from('ai_call_jobs').update({ processing_status: '処理中', processing_error: null }).eq('id', jobId).then(() => {}, () => {})
+
+    // 1) 文字起こし（録音があれば）。既存transcriptがモック注記のみの場合も上書き。
+    let transcript = String(job.transcript || '')
+    let transError: string | null = null
+    if (job.recording_url && isTranscriptionConfigured()) {
+      const tr = await transcribeRecording(String(job.recording_url))
+      if (tr.ok && tr.text) transcript = tr.text
+      else transError = tr.error || '文字起こし失敗'
+    } else if (!job.recording_url) {
+      transError = '録音がありません（通話完了後に録音コールバックが必要）'
+    }
+
+    // 2) AI要約・温度感・推奨ステータス
+    const patch: any = { transcript: transcript || null, updated_date: new Date().toISOString() }
+    if (transError) patch.processing_error = transError
+    if (transcript && transcript.trim().length >= 5 && isSummaryConfigured()) {
+      const sm = await summarizeTranscript(transcript, job.case_name || undefined)
+      if (sm.ok && sm.data) {
+        patch.ai_summary = sm.data.summary || null
+        patch.ai_reaction = sm.data.reaction || null
+        patch.temperature = sm.data.temperature || null
+        patch.next_action = sm.data.next_action || null
+        patch.ai_needs_recall = sm.data.needs_recall
+        patch.ai_should_ng = sm.data.should_ng
+        patch.recommended_status = sm.data.recommended_status || null
+        patch.processing_status = '完了'
+      } else {
+        patch.processing_status = '失敗'
+        patch.processing_error = [transError, sm.error].filter(Boolean).join(' / ')
+      }
+    } else {
+      patch.processing_status = transError ? '失敗' : '完了'
+    }
+    await admin.from('ai_call_jobs').update(patch).eq('id', jobId)
+    const { data: updated } = await admin.from('ai_call_jobs').select('*').eq('id', jobId).maybeSingle()
+    return res.status(200).json({ ok: !patch.processing_error || patch.processing_status === '完了', job: updated, error: patch.processing_error || null })
   }
 
   // ---- テスト発信（要管理者） ----
@@ -137,9 +209,11 @@ export default async function handler(req: any, res: any) {
     }).select('id').single()
     if (je || !job) return res.status(500).json({ ok: false, error: je?.message || 'ジョブ作成に失敗' })
 
-    // Twilio発信（公式SDK・TwiMLはインライン、状態通知は自ドメイン＋jobId）
-    const cbUrl = `${baseUrl(req)}/api/ai-call/twilio?action=callback&jobId=${job.id}`
-    const r = await initiateTwilioCall({ toRaw: dial, twiml: buildTwiml(message), statusCallbackUrl: cbUrl })
+    // Twilio発信（公式SDK・TwiMLはインライン、状態通知＋録音完了通知は自ドメイン＋jobId）
+    const base = baseUrl(req)
+    const cbUrl = `${base}/api/ai-call/twilio?action=callback&jobId=${job.id}`
+    const recUrl = `${base}/api/ai-call/twilio?action=recording&jobId=${job.id}`
+    const r = await initiateTwilioCall({ toRaw: dial, twiml: buildTwiml(message), statusCallbackUrl: cbUrl, recordingCallbackUrl: recUrl })
     if (!r.ok) {
       await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
       return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })

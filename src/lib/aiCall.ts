@@ -66,6 +66,25 @@ export const TwilioApi = {
     })
     return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
   },
+  /** 録音の文字起こし＆AI要約を実行（管理者・手動）。 */
+  async process(jobId: string): Promise<any> {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (!token) return { ok: false, error: 'ログインが必要です' }
+    const r = await fetch('/api/ai-call/twilio?action=process', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jobId }),
+    })
+    return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
+  },
+}
+
+/** AI推奨ステータスを案件へ反映（管理者確認後）。recordCallOutcome を通し、ジョブに反映済みフラグを立てる。 */
+export async function applyAiJudgment(job: AiCallJob, kase: Case, opts: { nextAtIso?: string | null; salesRep?: string | null; userId?: string | null } = {}): Promise<string> {
+  const outcome = (job.recommended_status || '再架電') as AiCallStatus
+  await recordCallOutcome(job, kase, outcome, opts)
+  await AiCallJobApi.update(job.id, { ai_applied: true }).catch(() => {})
+  return outcome
 }
 
 // 通話後の結果(6種)→ ジョブ/案件/コール履歴に反映。営業ステータスにもマップ。

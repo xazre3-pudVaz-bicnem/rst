@@ -92,6 +92,18 @@ export interface AiCallJob {
   next_action?: string | null
   appointment_id?: string | null
   error?: string | null
+  // 音声AI（録音→文字起こし→AI要約/判定）
+  recording_url?: string | null
+  recording_sid?: string | null
+  recording_duration_sec?: number | null
+  recording_error?: string | null
+  recommended_status?: string | null
+  ai_reaction?: string | null
+  ai_needs_recall?: boolean | null
+  ai_should_ng?: boolean | null
+  ai_applied?: boolean | null
+  processing_status?: string | null
+  processing_error?: string | null
   created_by_id?: string | null
   created_date?: string
   updated_date?: string

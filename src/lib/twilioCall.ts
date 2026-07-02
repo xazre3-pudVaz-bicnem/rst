@@ -109,8 +109,8 @@ export function twilioErrorGuidance(code?: number | string, status?: number): st
   return ''
 }
 
-/** Twilio公式SDKで発信。twiml(読み上げ)とstatusCallback(状態通知)を渡す。 */
-export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; statusCallbackUrl: string }): Promise<InitiateResult> {
+/** Twilio公式SDKで発信。twiml(読み上げ)・statusCallback(状態通知)・recordingCallback(録音完了通知)。録音は既定ON。 */
+export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; statusCallbackUrl: string; recordingCallbackUrl?: string }): Promise<InitiateResult> {
   const pf = preflight(opts.toRaw)
   if (!pf.ok) return { ok: false, error: '発信前チェックに失敗: ' + pf.errors.join(' / '), debug: pf.debug }
   try {
@@ -119,11 +119,18 @@ export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; s
     const twilioFn: any = mod?.default || mod
     if (typeof twilioFn !== 'function') return { ok: false, error: 'Twilio SDKの読み込みに失敗しました（twilioパッケージ未インストール/バンドル不可の可能性）', debug: pf.debug }
     const client: any = twilioFn(pf.sid, pf.token)
-    const call = await client.calls.create({
+    const params: any = {
       to: pf.to, from: pf.from, twiml: opts.twiml,
       statusCallback: opts.statusCallbackUrl, statusCallbackMethod: 'POST',
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-    })
+      record: true, // 通話録音を有効化（文字起こし・AI要約に使う）
+    }
+    if (opts.recordingCallbackUrl) {
+      params.recordingStatusCallback = opts.recordingCallbackUrl
+      params.recordingStatusCallbackMethod = 'POST'
+      params.recordingStatusCallbackEvent = ['completed']
+    }
+    const call = await client.calls.create(params)
     return { ok: true, sid: call.sid, debug: pf.debug }
   } catch (e: any) {
     const code = e?.code
@@ -151,4 +158,100 @@ export function mapTwilioStatus(callStatus: string): string {
     case 'ringing': case 'initiated': case 'queued': return '発信中'
     default: return '発信中'
   }
+}
+
+// ===== 音声AI（第一段階: 録音→文字起こし→AI要約/判定）=====
+export function transcriptionProvider(): string { return process.env.AI_CALL_TRANSCRIPTION_PROVIDER || 'openai' }
+export function summaryProvider(): string { return process.env.AI_CALL_SUMMARY_PROVIDER || 'anthropic' }
+function sttKey(): string { return trim(process.env.SPEECH_TO_TEXT_API_KEY) || trim(process.env.OPENAI_API_KEY) }
+function summaryKey(): string { return trim(process.env.AI_SUMMARY_API_KEY) || trim(process.env.ANTHROPIC_API_KEY) || trim(process.env.OPENAI_API_KEY) }
+export function isTranscriptionConfigured(): boolean { return !!sttKey() }
+export function isSummaryConfigured(): boolean { return !!summaryKey() }
+/** 音声AIで未設定の環境変数（画面表示用）。 */
+export function missingVoiceAiEnv(): string[] {
+  const out: string[] = []
+  if (!sttKey()) out.push('SPEECH_TO_TEXT_API_KEY（またはOPENAI_API_KEY）')
+  if (!summaryKey()) out.push('AI_SUMMARY_API_KEY（またはANTHROPIC_API_KEY）')
+  return out
+}
+
+/** Twilio録音を取得してSTTで文字起こし。未設定/失敗時は理由を返す（例外は投げない）。 */
+export async function transcribeRecording(recordingUrl: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+  if (!isTranscriptionConfigured()) return { ok: false, error: '文字起こし未設定（SPEECH_TO_TEXT_API_KEY）' }
+  if (!recordingUrl) return { ok: false, error: '録音URLがありません' }
+  try {
+    // Twilioの録音はBasic認証で取得（mp3）
+    const sid = trim(process.env.TWILIO_ACCOUNT_SID), token = trim(process.env.TWILIO_AUTH_TOKEN)
+    const mp3 = recordingUrl.endsWith('.mp3') || recordingUrl.endsWith('.wav') ? recordingUrl : recordingUrl + '.mp3'
+    const aRes = await fetch(mp3, { headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64') } })
+    if (!aRes.ok) return { ok: false, error: `録音取得失敗(HTTP ${aRes.status})` }
+    const buf = Buffer.from(await aRes.arrayBuffer())
+    if (buf.length < 1000) return { ok: false, error: '録音が短すぎる/空です' }
+    if (transcriptionProvider() === 'openai') {
+      const fd = new FormData()
+      fd.append('file', new Blob([buf], { type: 'audio/mpeg' }), 'call.mp3')
+      fd.append('model', 'whisper-1')
+      fd.append('language', 'ja')
+      const r = await fetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: `Bearer ${sttKey()}` }, body: fd as any })
+      const j: any = await r.json().catch(() => ({}))
+      if (!r.ok) return { ok: false, error: j?.error?.message || `文字起こしAPIエラー(HTTP ${r.status})` }
+      return { ok: true, text: String(j.text || '').trim() }
+    }
+    return { ok: false, error: `未対応の文字起こしプロバイダ: ${transcriptionProvider()}` }
+  } catch (e: any) { return { ok: false, error: String(e?.message || e) } }
+}
+
+export interface CallSummary {
+  summary: string; reaction: string; interested: boolean | null; temperature: '高' | '中' | '低' | null
+  next_action: string; needs_recall: boolean | null; should_ng: boolean | null; recommended_status: string
+}
+const VALID_STATUSES = ['興味あり', '再架電', '担当者不在', '不在', '興味なし', 'NG']
+
+/** 文字起こしからAI要約・温度感・推奨ステータスを生成。未設定/失敗時は理由を返す。 */
+export async function summarizeTranscript(transcript: string, caseName?: string): Promise<{ ok: boolean; data?: CallSummary; error?: string }> {
+  if (!isSummaryConfigured()) return { ok: false, error: 'AI要約未設定（AI_SUMMARY_API_KEY）' }
+  if (!transcript || transcript.trim().length < 5) return { ok: false, error: '文字起こしが短く要約できません' }
+  const prompt = `あなたは営業電話の分析アシスタントです。以下は${caseName ? `「${caseName}」への` : ''}営業電話の文字起こしです。内容を分析し、次のキーを持つJSONのみを日本語で出力してください（前後に説明文を付けない）。
+{"summary":"通話の要約(120字以内)","reaction":"相手の反応(60字以内)","interested":true or false,"temperature":"高" or "中" or "低","next_action":"次回アクション(60字以内)","needs_recall":true or false,"should_ng":true or false,"recommended_status":"興味あり|再架電|担当者不在|不在|興味なし|NG のいずれか"}
+文字起こし:
+${transcript.slice(0, 6000)}`
+  try {
+    if (summaryProvider() === 'anthropic') {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': summaryKey(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 700, messages: [{ role: 'user', content: prompt }] }),
+      })
+      const j: any = await r.json().catch(() => ({}))
+      if (!r.ok) return { ok: false, error: j?.error?.message || `要約APIエラー(HTTP ${r.status})` }
+      const text = (j?.content?.[0]?.text || '').trim()
+      return parseSummary(text)
+    }
+    if (summaryProvider() === 'openai') {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST', headers: { Authorization: `Bearer ${summaryKey()}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o-mini', max_tokens: 700, messages: [{ role: 'user', content: prompt }], response_format: { type: 'json_object' } }),
+      })
+      const j: any = await r.json().catch(() => ({}))
+      if (!r.ok) return { ok: false, error: j?.error?.message || `要約APIエラー(HTTP ${r.status})` }
+      return parseSummary(j?.choices?.[0]?.message?.content || '')
+    }
+    return { ok: false, error: `未対応の要約プロバイダ: ${summaryProvider()}` }
+  } catch (e: any) { return { ok: false, error: String(e?.message || e) } }
+}
+
+function parseSummary(text: string): { ok: boolean; data?: CallSummary; error?: string } {
+  try {
+    const m = text.match(/\{[\s\S]*\}/)
+    if (!m) return { ok: false, error: 'AI応答をJSONとして解釈できません' }
+    const o = JSON.parse(m[0])
+    const temp = ['高', '中', '低'].includes(o.temperature) ? o.temperature : null
+    const rec = VALID_STATUSES.includes(o.recommended_status) ? o.recommended_status : '再架電'
+    return { ok: true, data: {
+      summary: String(o.summary || '').slice(0, 300), reaction: String(o.reaction || '').slice(0, 200),
+      interested: typeof o.interested === 'boolean' ? o.interested : null, temperature: temp,
+      next_action: String(o.next_action || '').slice(0, 200),
+      needs_recall: typeof o.needs_recall === 'boolean' ? o.needs_recall : null,
+      should_ng: typeof o.should_ng === 'boolean' ? o.should_ng : null, recommended_status: rec,
+    } }
+  } catch (e: any) { return { ok: false, error: 'AI応答の解析に失敗: ' + String(e?.message || e) } }
 }
