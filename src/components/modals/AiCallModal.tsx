@@ -56,6 +56,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [twMsg, setTwMsg] = useState('こちらはアールエスティーのテスト発信です。')
   const [twBusy, setTwBusy] = useState(false)
   const [twResult, setTwResult] = useState<any>(null)
+  const [twLog, setTwLog] = useState<AiCallJob[]>([])
 
   const load = useCallback(async () => {
     const s = await AiCallScriptApi.list().catch(() => [])
@@ -121,8 +122,12 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
 
   async function openTwilio() {
     const next = !showTwilio; setShowTwilio(next)
-    if (next && !twStatus) setTwStatus(await TwilioApi.status())
+    if (next) {
+      if (!twStatus) setTwStatus(await TwilioApi.status())
+      setTwLog(await AiCallJobApi.recentTwilio().catch(() => []))
+    }
   }
+  async function refreshTwLog() { setTwLog(await AiCallJobApi.recentTwilio().catch(() => [])) }
   async function twilioTest() {
     if (!twNumber.trim()) { toast.error('テスト発信先の電話番号を入力してください'); return }
     // 実際に電話がかかるため必ず確認
@@ -133,6 +138,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
       setTwResult(r)
       if (r?.ok) toast.success(`発信しました（SID: ${r.sid ?? '—'}）。通話結果はTwilioのWebhookで反映されます。`)
       else toast.error(r?.error || '発信に失敗しました')
+      await refreshTwLog()
     } catch (e) { toast.error(jpError(e)) } finally { setTwBusy(false) }
   }
 
@@ -249,6 +255,28 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                     </div>
                   )
                 )}
+                {/* 最近のTwilio実発信ログ（接続テストは案件に紐付かないためここに表示） */}
+                <div className="border-t pt-1.5">
+                  <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold text-muted-foreground">
+                    最近のTwilio実発信ログ（{twLog.length}）
+                    <button type="button" onClick={refreshTwLog} className="rounded border px-1 py-0.5 text-[9px] hover:bg-accent">更新</button>
+                  </div>
+                  {twLog.length === 0 ? <div className="text-[10px] text-muted-foreground">まだ実発信はありません。</div> : (
+                    <div className="space-y-0.5">
+                      {twLog.map((t) => (
+                        <div key={t.id} className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-0.5 text-[10px]">
+                          {badge(t.status)}
+                          <span className="font-mono">{t.phone}</span>
+                          <span className="text-muted-foreground">{t.called_at ? moment(t.called_at).format('MM/DD HH:mm') : moment(t.created_date).format('MM/DD HH:mm')}</span>
+                          {t.duration_sec != null && <span className="text-muted-foreground">{t.duration_sec}秒</span>}
+                          {t.provider_call_sid && <span className="font-mono text-muted-foreground">{String(t.provider_call_sid).slice(0, 10)}…</span>}
+                          {t.error && <span className="text-red-600" title={t.error}>失敗</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-0.5 text-[9px] text-muted-foreground">※接続テストは案件に紐付かないため「この案件の架電ログ」には出ません。通話終了後、Twilioのwebhookでステータス・通話時間が反映されます（「更新」で最新化）。</div>
+                </div>
               </div>
             )}
 

@@ -65,6 +65,11 @@ export const AiCallJobApi = {
     const { data, error } = await supabase.from('ai_call_jobs').select('*').order('created_date', { ascending: false }).limit(limit)
     return unwrap(data, error)
   },
+  // Twilio実発信（接続テスト含む）の最近のログ。※接続テストは case_id=null のため案件別ログには出ない。
+  async recentTwilio(limit = 10): Promise<AiCallJob[]> {
+    const { data, error } = await supabase.from('ai_call_jobs').select('*').eq('provider', 'twilio').order('created_date', { ascending: false }).limit(limit)
+    return unwrap(data, error)
+  },
   async update(id: string, payload: Partial<AiCallJob>): Promise<void> {
     const { error } = await supabase.from('ai_call_jobs').update({ ...payload, updated_date: new Date().toISOString() }).eq('id', id)
     if (error) throw new Error(error.message)
