@@ -195,7 +195,10 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
               <div className="space-y-2 rounded-lg border-2 border-purple-300 bg-purple-50/50 p-2.5 dark:border-purple-500/30 dark:bg-purple-500/10">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-purple-700 dark:text-purple-300"><PhoneOutgoing className="h-3.5 w-3.5" />Twilio接続テスト（実発信・テスト番号のみ）</div>
                 <div className="space-y-0.5 text-[10px] text-muted-foreground">
-                  <div>接続状態: プロバイダ=<b>{twStatus?.provider ?? '確認中'}</b> ／ Twilio設定={twStatus?.configured ? '✅' : '未設定'} ／ 実発信可否={twStatus?.realCallEnabled ? '✅可能' : '不可'}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span>接続状態: プロバイダ=<b>{twStatus?.provider ?? '確認中'}</b> ／ Twilio設定={twStatus?.configured ? '✅' : '未設定'} ／ 実発信可否={twStatus?.realCallEnabled ? '✅可能' : '不可'}</span>
+                    <button type="button" onClick={async () => { setTwStatus(null); setTwStatus(await TwilioApi.status()) }} className="rounded border px-1 py-0.5 text-[9px] hover:bg-accent">再確認</button>
+                  </div>
                   {twStatus && (
                     <div className="font-mono text-[9px]">
                       SID={twStatus.accountSidMasked} ({twStatus.checks?.sidPrefixOk ? 'AC✓' : 'AC✗'} {twStatus.checks?.sidLen}文字{twStatus.checks?.sidLenOk ? '✓' : '✗'}) ／ token={twStatus.checks?.tokenPresent ? `${twStatus.checks?.tokenLen}文字` : '空'} ／ 発信元env=<b>{twStatus.fromEnvUsed}</b>={twStatus.from || '(空)'}{twStatus.checks?.fromE164 ? '✓' : '✗E.164'}
@@ -210,7 +213,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 <div className="flex flex-wrap items-end gap-2">
                   <div><label className="text-[10px] font-bold text-purple-700 dark:text-purple-300">テスト発信先（あなたの番号）</label><Input value={twNumber} onChange={(e) => setTwNumber(e.target.value)} placeholder="09012345678" className="h-8 w-[160px]" /></div>
                   <div className="min-w-[180px] flex-1"><label className="text-[10px] font-bold text-purple-700 dark:text-purple-300">読み上げメッセージ</label><Input value={twMsg} onChange={(e) => setTwMsg(e.target.value)} className="h-8" /></div>
-                  <Button size="sm" onClick={twilioTest} disabled={twBusy || !twStatus?.realCallEnabled} className="bg-purple-600 hover:bg-purple-700"><PhoneOutgoing className="h-3.5 w-3.5" />{twBusy ? '発信中…' : '実発信テスト'}</Button>
+                  <Button size="sm" onClick={twilioTest} disabled={twBusy || !twNumber.trim()} className="bg-purple-600 hover:bg-purple-700"><PhoneOutgoing className="h-3.5 w-3.5" />{twBusy ? '発信中…' : '実発信テスト'}</Button>
                 </div>
                 <div className="text-[10px] text-red-600">⚠️ 実際に電話がかかります。必ず自分/自社のテスト番号にかけてください（営業先は不可）。発信前に確認ダイアログが出ます。</div>
                 {twResult && (

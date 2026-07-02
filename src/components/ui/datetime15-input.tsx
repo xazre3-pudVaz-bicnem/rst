@@ -47,7 +47,7 @@ export function DateTime15Input({ value, onChange, disabled, className }: DateTi
     const popH = 320
     const below = window.innerHeight - r.bottom
     const top = below < popH && r.top > below ? Math.max(8, r.top - popH - 4) : r.bottom + 4
-    setPos({ top, left: Math.min(r.left, window.innerWidth - 300) })
+    setPos({ top, left: Math.max(8, Math.min(r.left, window.innerWidth - 328)) })
   }, [open])
 
   // 外側クリック / Escで閉じる
@@ -67,11 +67,11 @@ export function DateTime15Input({ value, onChange, disabled, className }: DateTi
     const newDate = d.format('YYYY-MM-DD')
     onChange(`${newDate}T${time || '00:00'}`)
   }
-  function pickTime(hh: number, mm: number) {
-    const t = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+  const selHour = time ? Number(time.slice(0, 2)) : null
+  const selMin = time ? Number(time.slice(3, 5)) : null
+  function setTimeParts(hh: number, mm: number) {
     const base = date || moment().format('YYYY-MM-DD')
-    onChange(`${base}T${t}`)
-    setOpen(false) // 時刻選択で確定して閉じる
+    onChange(`${base}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`)
   }
   function clear() { onChange(''); setOpen(false) }
 
@@ -111,7 +111,7 @@ export function DateTime15Input({ value, onChange, disabled, className }: DateTi
       {open && pos && createPortal(
         <div
           ref={popRef}
-          style={{ position: 'fixed', top: pos.top, left: pos.left, width: 288 }}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: 320 }}
           className="z-[100] rounded-md border bg-popover p-2 text-popover-foreground shadow-lg"
         >
           <div className="flex gap-2">
@@ -155,29 +155,51 @@ export function DateTime15Input({ value, onChange, disabled, className }: DateTi
               </div>
             </div>
 
-            {/* 時刻（15分刻み・スクロール） */}
-            <div className="w-[68px] shrink-0 border-l pl-2">
-              <div className="mb-1 text-center text-[10px] font-medium text-muted-foreground">時刻</div>
-              <div className="max-h-[232px] space-y-0.5 overflow-y-auto pr-0.5">
-                {Array.from({ length: 24 }, (_, hh) => hh).map((hh) =>
-                  MINUTES.map((mm) => {
-                    const t = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
-                    const selected = t === time
+            {/* 時刻（時・分を別々にスクロール選択） */}
+            <div className="flex shrink-0 gap-1 border-l pl-2">
+              {/* 時 */}
+              <div className="w-[40px]">
+                <div className="mb-1 text-center text-[10px] font-medium text-muted-foreground">時</div>
+                <div className="max-h-[224px] space-y-0.5 overflow-y-auto pr-0.5">
+                  {Array.from({ length: 24 }, (_, hh) => hh).map((hh) => {
+                    const selected = selHour === hh
                     return (
                       <button
-                        key={t}
+                        key={hh}
                         type="button"
-                        onClick={() => pickTime(hh, mm)}
+                        onClick={() => setTimeParts(hh, selMin ?? 0)}
                         className={cn(
                           'block w-full rounded px-1 py-0.5 text-center text-[11px] hover:bg-accent',
                           selected && 'bg-primary text-primary-foreground hover:bg-primary',
                         )}
                       >
-                        {t}
+                        {String(hh).padStart(2, '0')}
                       </button>
                     )
-                  }),
-                )}
+                  })}
+                </div>
+              </div>
+              {/* 分（15分刻み） */}
+              <div className="w-[40px]">
+                <div className="mb-1 text-center text-[10px] font-medium text-muted-foreground">分</div>
+                <div className="space-y-0.5">
+                  {MINUTES.map((mm) => {
+                    const selected = selMin === mm
+                    return (
+                      <button
+                        key={mm}
+                        type="button"
+                        onClick={() => setTimeParts(selHour ?? 0, mm)}
+                        className={cn(
+                          'block w-full rounded px-1 py-0.5 text-center text-[11px] hover:bg-accent',
+                          selected && 'bg-primary text-primary-foreground hover:bg-primary',
+                        )}
+                      >
+                        {String(mm).padStart(2, '0')}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             </div>
           </div>
