@@ -9,6 +9,7 @@ import { supabase } from './supabaseClient'
 import type { AiCallScript, AiCallJob, AiCallStatus, Appointment, Case } from './types'
 import { getCallProvider } from './aiCallProvider'
 import { syncAppointmentResult, type SyncResult } from './calendarSync'
+import { CallLogApi, CaseApi } from './api'
 
 function unwrap<T>(data: T | null, error: { message: string } | null): T {
   if (error) throw new Error(error.message)
@@ -54,6 +55,43 @@ export const TwilioApi = {
     })
     return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
   },
+  /** 案件から実発信。testMode=true(既定)なら案件番号ではなくtestNumberへ差し替え。ジョブはcaseIdに紐付く。 */
+  async caseCall(opts: { caseId: string; phone: string; testMode: boolean; testNumber?: string; message?: string }): Promise<any> {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (!token) return { ok: false, error: 'ログインが必要です' }
+    const r = await fetch('/api/ai-call/twilio?action=start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ caseId: opts.caseId, phone: opts.phone, testMode: opts.testMode, testNumber: opts.testNumber ?? '', message: opts.message ?? '' }),
+    })
+    return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
+  },
+}
+
+// 通話後の結果(6種)→ ジョブ/案件/コール履歴に反映。営業ステータスにもマップ。
+const OUTCOME_STATUS: Record<string, string | undefined> = { 興味あり: '見込み', 再架電: '再コール', NG: '対象外案件' }
+const OUTCOME_TEMP: Record<string, '高' | '中' | '低'> = { 興味あり: '高', 再架電: '中', 担当者不在: '中', 不在: '低', 興味なし: '低', NG: '低' }
+
+export async function recordCallOutcome(job: AiCallJob, kase: Case, outcome: AiCallStatus, opts: { nextAtIso?: string | null; salesRep?: string | null; userId?: string | null } = {}): Promise<void> {
+  const now = new Date().toISOString()
+  const contactType: '接触' | '非接触' = (outcome === '不在' || outcome === '担当者不在') ? '非接触' : '接触'
+  const nextStatus = OUTCOME_STATUS[outcome]
+  const nextAction = outcome === '興味あり' ? '訪問/商談アポを設定' : opts.nextAtIso ? `${new Date(opts.nextAtIso).toLocaleString('ja-JP')} に再架電` : outcome === 'NG' ? '再架電しない（NG）' : ''
+  // 1) コール履歴(call_logs)へ記録（右側コール履歴パネルに反映）
+  await CallLogApi.create({
+    case_id: kase.id, case_name: kase.name, call_at: now, contact_type: contactType,
+    result: `AI架電: ${outcome}`, memo: [job.transcript || '', job.duration_sec != null ? `通話${job.duration_sec}秒` : ''].filter(Boolean).join(' / ') || null,
+    summary: `AI架電結果: ${outcome}`, prev_status: kase.status, next_status: nextStatus ?? null,
+    next_recall_at: opts.nextAtIso ?? null, sales_rep: opts.salesRep ?? kase.sales_rep ?? null, created_by_id: opts.userId ?? null,
+  }).catch(() => {})
+  // 2) 架電ジョブ更新
+  await AiCallJobApi.update(job.id, { status: outcome, next_action: nextAction || null }).catch(() => {})
+  // 3) 案件更新（AI架電ステータス/温度感/次回アクション＋必要ならステータス・NG・次回架電日）
+  const cu: any = { ai_call_status: outcome, ai_call_temperature: OUTCOME_TEMP[outcome] ?? null, ai_call_next_action: nextAction || null, last_ai_call_at: now }
+  if (outcome === 'NG') cu.do_not_call = true
+  if (opts.nextAtIso) cu.next_ai_call_at = opts.nextAtIso
+  if (nextStatus) cu.status = nextStatus
+  await CaseApi.update(kase.id, cu)
 }
 
 export const AiCallJobApi = {

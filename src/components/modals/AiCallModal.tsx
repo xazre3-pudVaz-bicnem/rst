@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { cn, jpError } from '@/lib/utils'
-import { AiCallScriptApi, AiCallJobApi, TwilioApi, runTestCall, createInterestAppointment, setNextCall, releaseNg } from '@/lib/aiCall'
+import { AiCallScriptApi, AiCallJobApi, TwilioApi, runTestCall, createInterestAppointment, setNextCall, releaseNg, recordCallOutcome } from '@/lib/aiCall'
 import type { Case, AiCallScript, AiCallJob, AiCallStatus } from '@/lib/types'
 import type { SyncResult } from '@/lib/calendarSync'
 
@@ -57,6 +57,16 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   const [twBusy, setTwBusy] = useState(false)
   const [twResult, setTwResult] = useState<any>(null)
   const [twLog, setTwLog] = useState<AiCallJob[]>([])
+  // この案件に実発信（Twilio）
+  const [caseSel, setCaseSel] = useState<'phone1' | 'phone2' | 'phone3'>('phone1')
+  const [caseTestMode, setCaseTestMode] = useState(true) // 既定ON（安全）: 案件番号でなくテスト番号へ差し替え
+  const [caseBusy, setCaseBusy] = useState(false)
+  const [caseJob, setCaseJob] = useState<AiCallJob | null>(null)
+  const [caseResult, setCaseResult] = useState<any>(null)
+  const [caseOutcome, setCaseOutcome] = useState<AiCallStatus | null>(null)
+  const [caseNextAt, setCaseNextAt] = useState('')
+  const [caseSync, setCaseSync] = useState<SyncResult | null>(null)
+  const [outcomeBusy, setOutcomeBusy] = useState(false)
 
   const load = useCallback(async () => {
     const s = await AiCallScriptApi.list().catch(() => [])
@@ -68,8 +78,10 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
   useEffect(() => {
     if (open) {
       setJob(null); setSync(null); setNgReleased(false)
+      setCaseJob(null); setCaseResult(null); setCaseOutcome(null); setCaseSync(null); setCaseSel('phone1')
       setAppoAt(moment().add(1, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
       setNextAt(moment().add(3, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
+      setCaseNextAt(moment().add(3, 'day').hour(11).minute(0).format('YYYY-MM-DDTHH:mm'))
       load()
     }
   }, [open, load])
@@ -128,6 +140,49 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
     }
   }
   async function refreshTwLog() { setTwLog(await AiCallJobApi.recentTwilio().catch(() => [])) }
+
+  // ===== この案件に実発信（Twilio） =====
+  async function caseCall() {
+    if (!selectedCase) return
+    const phone = (selectedCase as any)[caseSel] || ''
+    if (!phone) { toast.error('選択した電話番号が未登録です'); return }
+    if (caseTestMode && !twNumber.trim()) { toast.error('テストモードONです。差し替え先のテスト番号（あなたの番号）を「Twilio接続テスト」欄に入力してください'); return }
+    const dialLabel = caseTestMode ? `テスト番号 ${twNumber}（案件番号 ${phone} には発信しません）` : `案件番号 ${phone}`
+    if (!window.confirm(`【実発信】${dialLabel} に実際に電話をかけます。よろしいですか？`)) return
+    setCaseBusy(true); setCaseResult(null); setCaseJob(null); setCaseOutcome(null); setCaseSync(null)
+    try {
+      const r = await TwilioApi.caseCall({ caseId: selectedCase.id, phone, testMode: caseTestMode, testNumber: twNumber.trim(), message: twMsg })
+      setCaseResult(r)
+      if (r?.ok) {
+        setCaseJob({ id: r.jobId, status: '発信中', phone, case_id: selectedCase.id } as AiCallJob)
+        toast.success(`発信しました（SID ${r.sid ?? '—'}）。通話終了後に下で結果を記録してください。`)
+        setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
+      } else toast.error(r?.error || '発信に失敗しました')
+    } catch (e) { toast.error(jpError(e)) } finally { setCaseBusy(false) }
+  }
+  async function recordCaseOutcome(outcome: AiCallStatus) {
+    if (!caseJob || !selectedCase) return
+    const needNext = ['不在', '担当者不在', '再架電'].includes(outcome)
+    setOutcomeBusy(true)
+    try {
+      await recordCallOutcome(caseJob, selectedCase, outcome, { nextAtIso: needNext && caseNextAt ? moment(caseNextAt).toISOString() : null, salesRep: displayName || null, userId: user?.id ?? null })
+      setCaseOutcome(outcome)
+      toast.success(`結果を記録しました: ${outcome}`)
+      onChanged?.(); setPast(await AiCallJobApi.listByCase(selectedCase.id).catch(() => []))
+    } catch (e) { toast.error(jpError(e)) } finally { setOutcomeBusy(false) }
+  }
+  async function caseRegisterAppo() {
+    if (!caseJob || !selectedCase || !appoAt) return
+    setOutcomeBusy(true); setCaseSync(null)
+    try {
+      const { sync: sr } = await createInterestAppointment(caseJob, selectedCase, moment(appoAt).toISOString(), displayName || null, user?.id ?? null)
+      setCaseSync(sr)
+      if (sr.synced) toast.success('訪問予定を登録＋Googleカレンダー反映しました')
+      else if (sr.skipped) toast.success('訪問予定を登録しました（カレンダーはOFF/未設定）')
+      else toast.error('訪問予定は登録しましたがカレンダー反映に失敗')
+      onChanged?.()
+    } catch (e) { toast.error(jpError(e)) } finally { setOutcomeBusy(false) }
+  }
   async function twilioTest() {
     if (!twNumber.trim()) { toast.error('テスト発信先の電話番号を入力してください'); return }
     // 実際に電話がかかるため必ず確認
@@ -195,6 +250,53 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                 <Button size="sm" disabled={running || !selectedCase?.phone1} onClick={() => call(undefined)}><Phone className="h-3.5 w-3.5" />ランダム発信</Button>
               </div>
             </div>
+
+            {/* この案件に実発信（Twilio・管理者のみ）。既定はテストモードONで自分の番号へ差し替え。 */}
+            {isAdmin && selectedCase?.phone1 && (
+              <div className="space-y-2 rounded-lg border-2 border-orange-300 bg-orange-50/50 p-2.5 dark:border-orange-500/30 dark:bg-orange-500/10">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-orange-700 dark:text-orange-300"><PhoneOutgoing className="h-3.5 w-3.5" />この案件に実発信（Twilio・管理者）</div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-muted-foreground">発信先:</span>
+                  {(['phone1', 'phone2', 'phone3'] as const).map((f) => (selectedCase as any)[f] ? (
+                    <label key={f} className="flex items-center gap-0.5"><input type="radio" name="caseph" checked={caseSel === f} onChange={() => setCaseSel(f)} /><span className="font-mono">{(selectedCase as any)[f]}</span></label>
+                  ) : null)}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <button type="button" onClick={() => setCaseTestMode((v) => !v)} className={cn('rounded-full px-2 py-0.5 font-bold text-white', caseTestMode ? 'bg-green-500' : 'bg-red-500')}>テストモード {caseTestMode ? 'ON' : 'OFF'}</button>
+                  {caseTestMode ? <span className="text-muted-foreground">案件番号ではなく下のテスト番号へ差し替えて発信（安全）</span> : <span className="font-bold text-red-600">⚠️ 実際に案件番号へ発信します</span>}
+                </div>
+                {caseTestMode && <div><label className="text-[10px] font-bold text-orange-700 dark:text-orange-300">差し替え先テスト番号（あなたの番号）</label><Input value={twNumber} onChange={(e) => setTwNumber(e.target.value)} placeholder="+8170..." className="h-8 w-[180px]" /></div>}
+                <Button size="sm" onClick={caseCall} disabled={caseBusy} className="bg-orange-600 hover:bg-orange-700"><PhoneOutgoing className="h-3.5 w-3.5" />{caseBusy ? '発信中…' : 'この案件に実発信'}</Button>
+                <div className="text-[10px] text-red-600">⚠️ 実際に電話がかかります。発信前に確認ダイアログが出ます。テストモードONなら自分の番号に飛びます。</div>
+                {caseResult && !caseResult.ok && <div className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700 dark:bg-red-500/10">{caseResult.error}{caseResult.guidance && <div className="mt-0.5">💡 {caseResult.guidance}</div>}</div>}
+
+                {/* 通話後の結果を記録（手動） */}
+                {caseJob && (
+                  <div className="space-y-2 rounded border bg-background p-2">
+                    <div className="text-[11px] font-bold">通話後の結果を記録{caseOutcome && <span className="ml-1 text-green-600">→ 記録済み: {caseOutcome}</span>}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {OUTCOMES.map((o) => <Button key={o.s} size="sm" variant="outline" disabled={outcomeBusy} onClick={() => recordCaseOutcome(o.s)} className={cn('border', o.cls)}>{o.label}</Button>)}
+                    </div>
+                    {['不在', '担当者不在', '再架電'].includes(caseOutcome || '') && (
+                      <div className="flex flex-wrap items-end gap-2 rounded border border-amber-300 bg-amber-50/50 p-2 dark:bg-amber-500/10">
+                        <div><label className="text-[10px] font-bold text-amber-700 dark:text-amber-300"><Clock className="mr-0.5 inline h-3 w-3" />次回架電予定日</label><Input type="datetime-local" step={900} value={caseNextAt} onChange={(e) => setCaseNextAt(e.target.value)} className="h-8" /></div>
+                        <Button size="sm" variant="outline" disabled={outcomeBusy} onClick={() => recordCaseOutcome(caseOutcome as AiCallStatus)}><Save className="h-3.5 w-3.5" />次回予定を保存</Button>
+                      </div>
+                    )}
+                    {caseOutcome === '興味あり' && (
+                      <div className="flex flex-wrap items-end gap-2 rounded border border-green-300 bg-green-50/50 p-2 dark:bg-green-500/10">
+                        <div><label className="text-[10px] font-bold text-green-700 dark:text-green-300">訪問/商談 日時</label><Input type="datetime-local" step={900} value={appoAt} onChange={(e) => setAppoAt(e.target.value)} className="h-8" /></div>
+                        <Button size="sm" disabled={outcomeBusy} onClick={caseRegisterAppo}><CalendarPlus className="h-3.5 w-3.5" />訪問予定を登録</Button>
+                        {caseSync?.synced && <span className="text-[11px] text-green-700">📅 反映済</span>}
+                        {caseSync?.skipped && <span className="text-[11px] text-muted-foreground">カレンダーOFF/未設定</span>}
+                        {caseSync && !caseSync.synced && !caseSync.skipped && <span className="text-[11px] text-red-700">反映失敗: {caseSync.error}</span>}
+                      </div>
+                    )}
+                    <div className="text-[9px] text-muted-foreground">結果は案件ステータス・AI架電状態・次回アクション・右側コール履歴に反映されます。</div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Twilio接続テスト（管理者・テスト番号への"実発信"。営業先への発信とは分離） */}
             {isAdmin && showTwilio && (

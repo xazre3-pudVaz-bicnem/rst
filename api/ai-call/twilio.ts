@@ -99,39 +99,53 @@ export default async function handler(req: any, res: any) {
     }
 
     const b = req.body || {}
-    const phone = String(b.phone || '').trim()
+    const phone = String(b.phone || '').trim()          // 案件フロー: 案件の電話番号（記録用の意図した発信先）
     const caseId = b.caseId ? String(b.caseId) : null
+    const testMode = b.testMode !== false               // 既定ON（安全側）。ONなら実際は testNumber へ差し替え
+    const testNumber = String(b.testNumber || '').trim()
     const message = String(b.message || 'こちらはアールエスティーのテスト発信です。').slice(0, 300)
-    // 送信直前チェック（SID/token/from/to）。失敗はマスク済みデバッグ付きで返す。
-    const pf = preflight(phone)
+
+    // 案件フロー(caseId)ではテストモードON時に発信先を管理者テスト番号へ差し替える。
+    // 接続テスト(caseIdなし)は phone をそのまま発信。
+    const intended = phone                              // ログに残す「本来の発信先」
+    const dial = (caseId && testMode) ? testNumber : phone   // Twilioが実際にダイヤルする番号
+    if (caseId && testMode && !testNumber) return res.status(400).json({ ok: false, error: 'テストモードONです。差し替え先のテスト番号（あなたの番号）を入力してください。' })
+    if (!intended) return res.status(400).json({ ok: false, error: '発信先の電話番号がありません。' })
+
+    // 送信直前チェックは「実際にダイヤルする番号(dial)」で行う。失敗はマスク済みデバッグ付き。
+    const pf = preflight(dial)
     if (!pf.ok) return res.status(400).json({ ok: false, error: '発信前チェックに失敗しました', errors: pf.errors, debug: pf.debug })
 
-    // NG案件には発信しない
+    // NG案件には絶対に発信しない
+    let caseName: string | null = caseId ? null : 'Twilio接続テスト'
     if (caseId) {
       const { data: kase } = await admin.from('cases').select('do_not_call,name').eq('id', caseId).maybeSingle()
       if (kase?.do_not_call) return res.status(400).json({ ok: false, error: 'この案件はNG指定のため発信できません。' })
+      caseName = kase?.name ?? null
     }
-    // 二重発信防止: 同番号で発信中ジョブが直近90秒以内にあれば拒否
+    // 二重発信防止: 同じ「本来の発信先」で発信中ジョブが直近90秒以内にあれば拒否
     const since = new Date(Date.now() - 90_000).toISOString()
-    const { data: dup } = await admin.from('ai_call_jobs').select('id').eq('phone', phone).eq('status', '発信中').gte('created_date', since).limit(1)
+    const { data: dup } = await admin.from('ai_call_jobs').select('id').eq('phone', intended).eq('status', '発信中').gte('created_date', since).limit(1)
     if (dup?.[0]) return res.status(409).json({ ok: false, error: '同じ番号への発信が進行中です。完了までお待ちください。' })
 
-    // 発信中ジョブ作成
+    // 発信中ジョブ作成（案件に紐付け・phoneは本来の発信先を記録）
     const nowIso = new Date().toISOString()
+    const redirectNote = (caseId && testMode) ? `※テストモード: 実際の発信先は ${dial}（案件番号 ${intended} には発信していません）` : ''
     const { data: job, error: je } = await admin.from('ai_call_jobs').insert({
-      case_id: caseId, case_name: caseId ? null : 'Twilio接続テスト', phone, status: '発信中', provider: 'twilio', called_at: nowIso, created_by_id: auth.user.id,
+      case_id: caseId, case_name: caseName, phone: intended, status: '発信中', provider: 'twilio', called_at: nowIso, created_by_id: auth.user.id,
+      transcript: redirectNote || null,
     }).select('id').single()
     if (je || !job) return res.status(500).json({ ok: false, error: je?.message || 'ジョブ作成に失敗' })
 
     // Twilio発信（公式SDK・TwiMLはインライン、状態通知は自ドメイン＋jobId）
     const cbUrl = `${baseUrl(req)}/api/ai-call/twilio?action=callback&jobId=${job.id}`
-    const r = await initiateTwilioCall({ toRaw: phone, twiml: buildTwiml(message), statusCallbackUrl: cbUrl })
+    const r = await initiateTwilioCall({ toRaw: dial, twiml: buildTwiml(message), statusCallbackUrl: cbUrl })
     if (!r.ok) {
       await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
       return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, debug: r.debug })
+    return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), debug: r.debug })
   }
 
   return res.status(400).json({ ok: false, error: '不明なaction' })
