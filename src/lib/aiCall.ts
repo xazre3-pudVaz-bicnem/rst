@@ -71,7 +71,10 @@ export const TwilioApi = {
     const { data } = await supabase.auth.getSession()
     const token = data.session?.access_token
     if (!token) return { ok: false, error: 'ログインが必要です' }
-    const r = await fetch(`/api/ai-call/twilio?action=recording-audio&jobId=${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${token}` } })
+    // POSTで送る（GETだとサーバーのGET=接続状態ハンドラに横取りされJSONが返るため）
+    const r = await fetch('/api/ai-call/twilio?action=recording-audio', {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId }),
+    })
     const ct = r.headers.get('content-type') || ''
     if (r.ok && ct.includes('audio')) { const b = await r.blob(); return { ok: true, url: URL.createObjectURL(b) } }
     const j = await r.json().catch(() => ({}))
