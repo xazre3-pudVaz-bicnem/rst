@@ -322,7 +322,8 @@ export default async function handler(req: any, res: any) {
     const cbUrl = `${base}/api/ai-call/twilio?action=callback&jobId=${job.id}`
     const recUrl = `${base}/api/ai-call/twilio?action=recording&jobId=${job.id}`
     const twiml = useRealtime ? buildStreamTwiml(job.id, caseId || '') : buildTwiml(message)
-    const r = await initiateTwilioCall({ toRaw: dial, twiml, statusCallbackUrl: cbUrl, recordingCallbackUrl: recUrl })
+    // realtime(<Connect><Stream>)では通話録音を無効化（録音が双方向ストリームに干渉するのを避ける）。fixedは録音ON。
+    const r = await initiateTwilioCall({ toRaw: dial, twiml, statusCallbackUrl: cbUrl, recordingCallbackUrl: recUrl, record: !useRealtime })
     if (!r.ok) {
       await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
       return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })

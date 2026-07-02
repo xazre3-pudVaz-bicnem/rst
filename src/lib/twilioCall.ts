@@ -147,7 +147,7 @@ export function twilioErrorGuidance(code?: number | string, status?: number): st
 }
 
 /** Twilio公式SDKで発信。twiml(読み上げ)・statusCallback(状態通知)・recordingCallback(録音完了通知)。録音は既定ON。 */
-export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; statusCallbackUrl: string; recordingCallbackUrl?: string }): Promise<InitiateResult> {
+export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; statusCallbackUrl: string; recordingCallbackUrl?: string; record?: boolean }): Promise<InitiateResult> {
   const pf = preflight(opts.toRaw)
   if (!pf.ok) return { ok: false, error: '発信前チェックに失敗: ' + pf.errors.join(' / '), debug: pf.debug }
   try {
@@ -160,7 +160,7 @@ export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; s
       to: pf.to, from: pf.from, twiml: opts.twiml,
       statusCallback: opts.statusCallbackUrl, statusCallbackMethod: 'POST',
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-      record: true, // 通話録音を有効化（文字起こし・AI要約に使う）
+      record: opts.record !== false, // 既定ON（fixed用の録音）。realtime(<Connect><Stream>)では干渉回避のためOFFにできる
     }
     if (opts.recordingCallbackUrl) {
       params.recordingStatusCallback = opts.recordingCallbackUrl
