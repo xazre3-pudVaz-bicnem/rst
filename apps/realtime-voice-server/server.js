@@ -294,6 +294,31 @@ const server = http.createServer(async (req, res) => {
     }, null, 2))
     return
   }
+  // /diag-audio: 実際に session.update→response.create まで実行し、返るイベント/エラー/音声デルタ数を報告
+  if (req.url.startsWith('/diag-audio')) {
+    const u = new URL(req.url, 'http://x')
+    const beta = u.searchParams.get('ga') !== '1'
+    const model = beta ? FALLBACK_BETA_MODEL : OPENAI_REALTIME_MODEL
+    const voice = beta ? betaSafeVoice(OPENAI_REALTIME_VOICE) : OPENAI_REALTIME_VOICE
+    const events = []; let audioDeltas = 0; const errors = []
+    const headers = { Authorization: `Bearer ${OPENAI_API_KEY}` }
+    if (beta) headers['OpenAI-Beta'] = 'realtime=v1'
+    const oa = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, { headers })
+    let finished = false
+    const finish = () => { if (finished) return; finished = true; try { oa.close() } catch {} ; res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ model, beta, voice, sawSessionUpdated: events.includes('session.updated'), audioDeltas, errors, events: events.slice(0, 50) }, null, 2)) }
+    oa.on('open', () => oa.send(JSON.stringify(buildSessionUpdate({ context: null }, beta, voice))))
+    oa.on('message', (raw) => {
+      let m; try { m = JSON.parse(raw.toString()) } catch { return }
+      if (m.type === 'response.audio.delta' || m.type === 'response.output_audio.delta') { audioDeltas++; return }
+      events.push(m.type)
+      if (m.type === 'error') errors.push(m.error || m)
+      if (m.type === 'session.updated') oa.send(JSON.stringify({ type: 'response.create', response: { instructions: 'こんにちは、と一言だけ日本語で言ってください。' } }))
+    })
+    oa.on('unexpected-response', (_q, r) => { errors.push('http ' + r.statusCode); finish() })
+    oa.on('error', (e) => { errors.push(String(e?.message || e)); finish() })
+    setTimeout(finish, 8000)
+    return
+  }
   res.writeHead(404); res.end('not found')
 })
 
