@@ -91,8 +91,21 @@ export function preflight(toRaw: string): Preflight {
 
 export interface InitiateResult {
   ok: boolean; sid?: string; error?: string
-  code?: number | string; status?: number; moreInfo?: string; detail?: string
+  code?: number | string; status?: number; moreInfo?: string; detail?: string; guidance?: string
   debug: TwilioDebug
+}
+
+/** Twilioエラーコード → 具体的な対処案内（日本語）。 */
+export function twilioErrorGuidance(code?: number | string, status?: number): string {
+  const c = Number(code)
+  if ([21219, 21210, 13223, 13224].includes(c)) {
+    return 'Twilioトライアル（無料）アカウントは「認証済み番号」にしか発信できません。対処: ①Twilioコンソール → Phone Numbers → Manage → Verified Caller IDs で発信先番号を認証する（SMS/音声で本人確認）／②または有料アカウントにアップグレードする。まずはご自身の携帯を認証して発信テストしてください。'
+  }
+  if ([21606, 21601, 21212, 21611].includes(c)) return '発信元番号(From)がTwilioで購入済み・音声通話対応の番号か確認してください（TWILIO_PHONE_NUMBER）。'
+  if (c === 21211) return '発信先番号(To)の形式が不正です。E.164（+81…）で指定してください。'
+  if (c === 21610) return '発信先が受信を拒否（オプトアウト）しています。'
+  if (status === 401 || status === 404 || c === 20003 || c === 20404) return 'Twilioの認証情報(Account SID / Auth Token)の組み合わせ、またはtest/live資格情報の混在を確認してください。'
+  return ''
 }
 
 /** Twilio公式SDKで発信。twiml(読み上げ)とstatusCallback(状態通知)を渡す。 */
@@ -118,7 +131,7 @@ export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; s
     if (status === 404 || status === 401 || code === 20003 || code === 20404) {
       error = `Twilio認証情報が不一致の可能性（Account SIDとAuth Tokenの組み合わせ、またはtest/live資格情報の混在）。元エラー: ${error}`
     }
-    return { ok: false, error, code, status, moreInfo, detail, debug: pf.debug }
+    return { ok: false, error, code, status, moreInfo, detail, guidance: twilioErrorGuidance(code, status), debug: pf.debug }
   }
 }
 

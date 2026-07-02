@@ -128,7 +128,7 @@ export default async function handler(req: any, res: any) {
     const r = await initiateTwilioCall({ toRaw: phone, twiml: buildTwiml(message), statusCallbackUrl: cbUrl })
     if (!r.ok) {
       await admin.from('ai_call_jobs').update({ status: '通話完了', error: String(r.error).slice(0, 300), updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
-      return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, debug: r.debug, jobId: job.id })
+      return res.status(r.status || r.code ? 502 : 400).json({ ok: false, error: r.error, code: r.code, status: r.status, moreInfo: r.moreInfo, detail: r.detail, guidance: r.guidance, debug: r.debug, jobId: job.id })
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
     return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, debug: r.debug })

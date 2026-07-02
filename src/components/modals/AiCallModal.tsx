@@ -220,6 +220,7 @@ export default function AiCallModal({ open, onClose, selectedCase, canWrite, onC
                   ) : (
                     <div className="space-y-1 rounded bg-red-50 px-2 py-1.5 text-[11px] text-red-700 dark:bg-red-500/10">
                       <div><XCircle className="mr-1 inline h-3.5 w-3.5" />{twResult.error}</div>
+                      {twResult.guidance && <div className="rounded bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">💡 対処: {twResult.guidance}</div>}
                       {Array.isArray(twResult.errors) && twResult.errors.length > 0 && <ul className="ml-4 list-disc">{twResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}</ul>}
                       {(twResult.status || twResult.code || twResult.moreInfo || twResult.detail) && (
                         <div className="font-mono text-[9px] text-red-600">
