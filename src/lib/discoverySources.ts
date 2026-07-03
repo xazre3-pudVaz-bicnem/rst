@@ -14,6 +14,11 @@ export interface DiscoverySourceDef {
   signalType: string          // この取得元が付与する lead_signals.signal_type
   queries?: string[]          // serpモードの検索クエリ雛形（{date} は過去日付に展開）
   note?: string
+  // ---- 取得元別の追加ゲート（serpエンジンが解釈） ----
+  recencyDays?: number        // HOT要件: 根拠日（HP公開/開設日）がこの日数以内であること
+  requireOfficialUrl?: boolean // HOT要件: 公式サイトURLが取れていること
+  freshness?: 'week' | 'month' // 検索APIの期間フィルタ（serper tbs=qdr:w/m・bing freshness=Week/Month）
+  hpPublish?: boolean         // 新HP公開検出モード（公開日抽出＋簡易Web品質＋営業角度メモ生成）
 }
 
 // 過去N日の日付文字列（YYYY/MM/DD と YYYY年M月D日）
@@ -28,6 +33,29 @@ export function pastDates(n: number): { slash: string; jp: string }[] {
 }
 
 export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
+  // 直近7日以内に新しくHPを公開した店舗・事業者（HP制作後のSEO/MEO/AIO/運用提案リスト）
+  { type: 'new_homepage_published_within_7days', label: '新規HP公開7日以内', group: '新規HP公開', mode: 'serp', defaultEnabled: true, signalType: 'new_homepage_published',
+    recencyDays: 7, requireOfficialUrl: true, freshness: 'week', hpPublish: true,
+    queries: [
+      // 基本（公開/開設/リニューアルのお知らせ）
+      '"ホームページを公開しました" 店舗', '"ホームページを開設しました" 店舗', '"公式ホームページを公開しました"',
+      '"公式サイトを公開しました"', '"公式サイトを開設しました"', '"Webサイトを公開しました"', '"Webサイトを開設しました"',
+      '"ホームページ開設のお知らせ"', '"公式サイト開設のお知らせ"', '"サイト公開のお知らせ"',
+      '"ホームページをリニューアルしました" 店舗', '"サイトをリニューアルしました" 店舗', '"ホームページができました" 店舗',
+      '"ホームページ完成しました" 店舗', '"新しいホームページ" 公開 店舗',
+      '"新店舗" "ホームページ公開"', '"新規オープン" "公式サイト" 公開', '"開業" "ホームページ公開"', '"開院" "ホームページ公開"',
+      '"新規開院" "公式サイト"', '"オープンに合わせて" ホームページ 公開', '"ホームページ公開" "新規オープン"', '"Webサイト公開" "新規オープン"',
+      // 業種別
+      '"美容室" "ホームページを公開しました"', '"整体院" "ホームページを公開しました"', '"歯科医院" "公式サイトを公開しました"',
+      '"クリニック" "ホームページ開設のお知らせ"', '"カフェ" "公式サイトを公開しました"', '"居酒屋" "ホームページを開設しました"',
+      '"サロン" "ホームページ公開"', '"エステ" "公式サイト開設"', '"動物病院" "ホームページ公開"', '"ペットサロン" "公式サイト公開"',
+      '"ハウスクリーニング" "ホームページ公開"', '"リフォーム" "ホームページ公開"', '"学習塾" "ホームページ開設"', '"パーソナルジム" "公式サイト公開"',
+      // 制作会社の制作実績由来
+      '"制作実績" "ホームページ公開" "新規オープン"', '"制作実績" "公式サイト公開" "店舗"', '"ホームページ制作実績" "新規開業"',
+      '"Web制作実績" "新規オープン"', '"店舗サイト制作" "公開しました"', '"お客様のホームページを公開しました"',
+      '"新規サイトを公開しました" "店舗"', '"ホームページ制作" "公開しました" "美容室"', '"ホームページ制作" "公開しました" "整体院"',
+      '"ホームページ制作" "公開しました" "クリニック"', '"ホームページ制作" "公開しました" "飲食店"',
+    ] },
   { type: 'google_serp_new_opening', label: 'Google検索 新規オープン横断', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article',
     queries: [
       // 汎用・連絡先バイアス（電話/住所が載るページを優先的に拾う）

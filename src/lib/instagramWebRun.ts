@@ -157,7 +157,7 @@ function isFreePatternError(msg: string): boolean {
 
 interface WebResult { title: string; url: string; snippet: string }
 
-export async function webSearch(query: string, num: number, preferProvider?: 'serper' | 'bing'): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string; provider?: string }> {
+export async function webSearch(query: string, num: number, preferProvider?: 'serper' | 'bing', opts?: { tbs?: string; freshness?: string }): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string; provider?: string }> {
   // preferProvider のキーがあればそれを使う。無ければ既定（Serper優先）
   const prov = (preferProvider === 'bing' && process.env.BING_SEARCH_API_KEY) ? 'bing'
     : (preferProvider === 'serper' && process.env.SERPER_API_KEY) ? 'serper'
@@ -172,7 +172,8 @@ export async function webSearch(query: string, num: number, preferProvider?: 'se
         const res = await fetch('https://google.serper.dev/search', {
           method: 'POST', signal: ctrl.signal,
           headers: { 'X-API-KEY': process.env.SERPER_API_KEY as string, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q, gl: 'jp', hl: 'ja', num: Math.min(20, num) }),
+          // tbs=qdr:w 等で検索期間を直近に限定（新規HP公開など鮮度が要件の取得元で使用）
+          body: JSON.stringify({ q, gl: 'jp', hl: 'ja', num: Math.min(20, num), ...(opts?.tbs ? { tbs: opts.tbs } : {}) }),
         })
         clearTimeout(to)
         const j: any = await res.json().catch(() => ({}))
@@ -181,7 +182,7 @@ export async function webSearch(query: string, num: number, preferProvider?: 'se
         return { results: organic.map((o: any) => ({ title: o.title || '', url: o.link || '', snippet: o.snippet || '' })), error: null }
       }
       if (prov === 'bing') {
-        const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${Math.min(20, num)}&mkt=ja-JP`
+        const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${Math.min(20, num)}&mkt=ja-JP${opts?.freshness ? `&freshness=${encodeURIComponent(opts.freshness)}` : ''}`
         const res = await fetch(u, { headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY as string }, signal: ctrl.signal })
         clearTimeout(to)
         const j: any = await res.json().catch(() => ({}))
@@ -904,9 +905,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (insErr) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(insErr.message) } else counts.saved++
         const candidateId = ins?.id || null
 
-        // 自動投入は「最終temperature=HOT」かつ「tierが投入可(HOT_A/HOT_B)」かつ「電話あり」のみ。
-        // ※大型/多店舗/高フォロワー等でtemperatureをEXCLUDEDへ強制降格した候補（sc.tierはHOTのまま）を投入しない安全ゲート。
-        if (s.iwAutoImport && temperature === 'HOT' && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
+        // Instagram Web の HOT は常時自動投入（連番/SERP取得元と同じ挙動）。設定トグルには依存しない。
+        // 安全ゲート: 「最終temperature=HOT」かつ「tierが投入可(HOT_A/HOT_B)」かつ「電話あり」のみ。
+        // ※大型/多店舗/高フォロワー等でtemperatureをEXCLUDEDへ強制降格した候補（sc.tierはHOTのまま）は投入しない。
+        if (temperature === 'HOT' && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
           const dupCaseId = await findCaseIdByPhone(admin, finalPhone)
           if (dupCaseId) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)

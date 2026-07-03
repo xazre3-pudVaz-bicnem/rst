@@ -1617,7 +1617,7 @@ export default function Leads() {
                     <div className="text-[10px] text-muted-foreground">Serper無料枠は site:instagram.com や "完全一致" が使えません。簡易検索（例: Instagram 開業しました / #新規オープン Instagram）に自動でフォールバックします。</div>
                   </div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
-                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期ON：電話+住所+新店根拠+日本のHOT-A/HOT-Bのみ）</label>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground"><span className="rounded bg-green-500 px-1.5 py-0.5 text-[10px] font-bold text-white">常時ON</span>HOT自動投入：Instagram WebのHOT-A/HOT-B（電話+住所+新店根拠+日本）は自動で案件へ投入されます</div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAllowNoPhone} onChange={(e) => saveSettings({ ...settings, iwAllowNoPhone: e.target.checked })} />電話番号なしでもHOT許可（初期OFF・通常は電話番号なしはHOLD）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
