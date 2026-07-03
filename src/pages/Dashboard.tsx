@@ -667,11 +667,11 @@ export default function Dashboard() {
 
       {showLoading ? (
         <div className="flex flex-1 gap-3 p-3">
-          <div className="hidden w-[34%] min-w-[400px] max-w-[500px] shrink-0 flex-col gap-2 md:flex">
+          <div className="hidden w-[44%] min-w-[360px] max-w-[720px] shrink-0 flex-col gap-2 md:flex 2xl:w-[34%] 2xl:max-w-[500px]">
             <SkeletonRows count={8} />
           </div>
           <div className="flex-1"><SkeletonRows count={5} /></div>
-          <div className="hidden w-[320px] shrink-0 md:block"><SkeletonRows count={5} /></div>
+          <div className="hidden w-[320px] shrink-0 2xl:block"><SkeletonRows count={5} /></div>
         </div>
       ) : showEmptyState ? (
         <div className="flex flex-1 items-center justify-center p-6">
@@ -711,7 +711,7 @@ export default function Dashboard() {
           {/* PC: 3カラム（左:案件一覧 / 中央:案件詳細 / 右:コール履歴） */}
           {/* PC: xl(≧1280px)=一覧/詳細/コール履歴の3カラム。ノートPC(md〜xl)=一覧を広げた2カラム＋履歴は詳細下に折りたたみ。 */}
           <div className="hidden flex-1 overflow-hidden md:flex">
-            <div className="flex w-[40%] min-w-[340px] max-w-[620px] shrink-0 flex-col border-r xl:w-[34%] xl:max-w-[500px]">
+            <div className="flex w-[44%] min-w-[360px] max-w-[720px] shrink-0 flex-col border-r 2xl:w-[34%] 2xl:max-w-[500px]">
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CaseList {...listProps} />
               </div>
@@ -724,14 +724,14 @@ export default function Dashboard() {
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CaseDetail {...detailProps} />
               </div>
-              {/* ノートPC(xl未満)ではコール履歴を詳細の下に折りたたみで確保（3カラムが入り切らないため） */}
-              <details className="shrink-0 border-t xl:hidden">
+              {/* ノートPC(2xl未満)ではコール履歴を詳細の下に折りたたみで確保（3カラムが入り切らないため） */}
+              <details className="shrink-0 border-t 2xl:hidden">
                 <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted/40">📞 コール履歴を開く</summary>
                 <div className="h-[240px] overflow-hidden border-t"><CallLogPanel {...logProps} /></div>
               </details>
             </div>
 
-            <div className="hidden w-[320px] shrink-0 xl:block">
+            <div className="hidden w-[320px] shrink-0 2xl:block">
               <CallLogPanel {...logProps} />
             </div>
           </div>
