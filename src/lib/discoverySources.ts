@@ -29,9 +29,23 @@ export function pastDates(n: number): { slash: string; jp: string }[] {
 
 export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'google_serp_new_opening', label: 'Google検索 新規オープン横断', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article',
-    queries: ['新規オープン 店舗 電話番号', 'ニューオープン 店舗 住所', 'グランドオープン 店舗', 'プレオープン 店舗', '開店しました 店舗', '開業しました 店舗', '開院しました クリニック', '近日オープン 店舗', '新店舗 オープン', '移転オープン', 'リニューアルオープン 店舗'] },
+    queries: [
+      // 汎用・連絡先バイアス（電話/住所が載るページを優先的に拾う）
+      '新規オープン 店舗 電話番号', 'ニューオープン 店舗 住所', 'グランドオープン 店舗 電話', 'プレオープン 店舗 予約',
+      '開店しました 店舗 住所', '開業しました 電話番号', '近日オープン 店舗 予約受付', '新店舗 オープン 電話番号',
+      '移転オープン 店舗 住所', 'リニューアルオープン 店舗 電話',
+      // 業種別（飲食）
+      '新規オープン カフェ 電話番号', 'グランドオープン 飲食店 住所', '新規オープン 居酒屋', '新規オープン ラーメン',
+      'オープンしました 焼肉 店舗', 'テイクアウト 新規オープン 電話', 'キッチンカー 開業 電話番号',
+      // 業種別（美容・リラク）
+      '新規オープン 美容室 電話番号', '新規オープン ネイルサロン 住所', 'オープンしました エステサロン 予約',
+      '新規オープン 整体院 電話', '開業しました 鍼灸院', 'パーソナルジム オープン 新規 電話',
+      // 業種別（医療・ペット・教室・その他）
+      '開院しました 歯科 電話番号', '開院しました クリニック 住所', '開院しました 動物病院',
+      'ペットサロン 新規オープン 電話', '教室 新規開業 電話番号', 'リフォーム 新規開業 電話',
+    ] },
   { type: 'job_opening_search', label: 'オープニングスタッフ求人', group: '求人由来', mode: 'serp', defaultEnabled: true, signalType: 'job_opening',
-    queries: ['オープニングスタッフ 店舗 電話番号', 'オープニングスタッフ 新規オープン', '新規オープン スタッフ募集', 'オープニングスタッフ 飲食店', 'オープニングスタッフ 美容室', 'オープニングスタッフ 整体', '新規開院 スタッフ募集', '開業予定 クリニック 求人'] },
+    queries: ['オープニングスタッフ 店舗 電話番号', 'オープニングスタッフ 新規オープン 住所', '新規オープン スタッフ募集 電話', 'オープニングスタッフ 飲食店 開店', 'オープニングスタッフ カフェ 開業', 'オープニングスタッフ 美容室 新規', 'オープニングスタッフ ネイルサロン', 'オープニングスタッフ 整体院', 'オープニングスタッフ エステ 開業', '新規開院 スタッフ募集 歯科', '開業予定 クリニック 求人', 'オープニングスタッフ 動物病院', 'オープニングスタッフ ジム 開業'] },
   { type: 'press_release_search', label: 'プレスリリース', group: 'プレスリリース由来', mode: 'serp', defaultEnabled: true, signalType: 'press_release',
     queries: ['site:prtimes.jp 新店舗 オープン', 'site:prtimes.jp 新規オープン 店舗', 'site:prtimes.jp グランドオープン', 'site:prtimes.jp 開業', 'site:prtimes.jp 開院', 'site:atpress.ne.jp 新規オープン', 'site:value-press.com 新店舗 オープン'] },
   { type: 'portal_published_date_search', label: 'エキテン公開日7日以内', group: '公開日7日以内', mode: 'existing', defaultEnabled: true, signalType: 'portal_published_date', note: '既存のエキテン公開日探索を使用' },
@@ -49,7 +63,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'new_official_site_discovery', label: '新しい公式サイト検出', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news',
     queries: ['"ホームページを公開しました" 店舗', '"公式サイトを公開しました" 店舗', '"サイトオープンしました" 店舗', '"ホームページ開設のお知らせ"', '"公式ホームページを開設しました"'] },
   { type: 'weak_builder_site_scan', label: '簡易HP(Wix/ペライチ等)検出', group: '簡易HP利用', mode: 'serp', defaultEnabled: true, signalType: 'weak_builder_site',
-    queries: ['site:wixsite.com "新規オープン" 店舗', 'site:jimdofree.com "新規オープン"', 'site:peraichi.com 整体', 'site:studio.site 美容室', 'site:amebaownd.com サロン', 'site:sites.google.com 店舗 オープン'] },
+    queries: ['site:wixsite.com "新規オープン" 店舗', 'site:wixsite.com "オープンしました" 電話', 'site:jimdofree.com "新規オープン"', 'site:jimdosite.com "オープンしました"', 'site:peraichi.com 整体 オープン', 'site:peraichi.com サロン 新規オープン', 'site:studio.site 美容室 オープン', 'site:amebaownd.com サロン 開業', 'site:sites.google.com 店舗 新規オープン', 'site:localinfo.jp 新規オープン', 'site:crayonsite.com 店舗 オープン', 'site:goope.jp 新規オープン 店舗'] },
   { type: 'instagram_only_business_scan', label: 'Instagramのみ店舗', group: 'Instagramのみ', mode: 'places', defaultEnabled: true, signalType: 'instagram_only' },
   { type: 'new_review_signal_scan', label: '口コミ急増・新規口コミ監視', group: '口コミ急増', mode: 'places', defaultEnabled: true, signalType: 'new_review_delta', note: 'place_idスナップショット差分' },
   // ---- 初期OFF（高負荷・要調整・外部API確認が必要） ----
