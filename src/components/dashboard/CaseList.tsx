@@ -114,7 +114,7 @@ const SORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'priority', label: '優先度が高い順' },
 ]
 
-const ROW_HEIGHT = 34
+const ROW_HEIGHT = 30
 
 export default function CaseList(props: Props) {
   const {

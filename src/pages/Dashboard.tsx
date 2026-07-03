@@ -715,7 +715,7 @@ export default function Dashboard() {
               <div className="min-h-0 flex-1 overflow-hidden">
                 <CaseList {...listProps} />
               </div>
-              <div className="h-[260px] shrink-0">
+              <div className="h-[190px] shrink-0">
                 <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={loadAll} />
               </div>
             </div>
@@ -750,7 +750,7 @@ export default function Dashboard() {
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <CaseList {...listProps} />
                 </div>
-                <div className="h-[220px] shrink-0">
+                <div className="h-[160px] shrink-0">
                   <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={loadAll} />
                 </div>
               </TabsContent>
