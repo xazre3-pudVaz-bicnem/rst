@@ -314,7 +314,7 @@ export default async function handler(req: any, res: any) {
       //   「実行に失敗しました」になっていた。45秒で打ち切り、取得済み分は保存して返す。
       if (def.mode === 'places') {
         if (!mapsKey) return res.status(200).json({ ok: true, skipped: true, sourceType: st, label: def.label, reason: `${def.label} は Google Places 由来ですが GOOGLE_MAPS_API_KEY が未設定のため実行できません` })
-        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 40000, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
+        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 35000, placesDetailsLimitPerRun: 30, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
         return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: (out as any).fetched ?? 0, detailFetched: (out as any).fetched ?? 0, hotB: (out as any).hot ?? 0 })
       }
       // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は40秒で打ち切り、

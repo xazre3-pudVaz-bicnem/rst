@@ -203,12 +203,16 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
       locationRestriction: { rectangle: rect || JAPAN_RECTANGLE },
     }
     if (pageToken) body.pageToken = pageToken
+    // タイムアウト必須: Places APIが応答しないと関数が60秒上限で504（FUNCTION_INVOCATION_TIMEOUT）になる。12秒で打ち切る。
+    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000)
     const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': LIGHT_FIELDS },
       body: JSON.stringify(body),
+      signal: ctrl.signal,
     })
     const text = await res.text().catch(() => '')
+    clearTimeout(to)
     let json: any = {}
     try { json = text ? JSON.parse(text) : {} } catch { json = {} }
     if (!res.ok) return { status: res.status, places: [], error: String(json?.error?.message || text || `HTTP ${res.status}`).slice(0, 400), nextPageToken: null }
@@ -237,11 +241,15 @@ export async function searchPaged(apiKey: string, query: string, perPage: number
 /** 第2段階: 詳細取得（電話・レビュー日・開店日）。openingDate/reviewsが400なら自動でBASEに落とす */
 export async function placeDetails(apiKey: string, placeId: string): Promise<any | null> {
   async function attempt(ext: boolean) {
+    // タイムアウト必須（60秒関数上限で504になるのを防ぐ）。Place Detailsは10秒で打ち切る。
+    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 10000)
     const res = await fetch(DETAILS_ENDPOINT + encodeURIComponent(placeId) + '?languageCode=ja&regionCode=JP', {
       method: 'GET',
       headers: { 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': ext ? DETAIL_FIELDS_EXT : DETAIL_FIELDS_BASE },
+      signal: ctrl.signal,
     })
     const text = await res.text().catch(() => '')
+    clearTimeout(to)
     let json: any = {}
     try { json = text ? JSON.parse(text) : {} } catch { json = {} }
     return { ok: res.ok, status: res.status, json }
