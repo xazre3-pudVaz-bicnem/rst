@@ -1086,6 +1086,10 @@ export default function Leads() {
         const imp = j.imported ?? 0, hotB = j.hotB ?? j.hot ?? 0, det = j.detailFetched ?? j.newUrls ?? 0
         const names: string[] = Array.isArray(j.importedCases) ? j.importedCases.map((c: any) => c.name).filter(Boolean) : []
         const namePart = names.length ? `｜追加: ${names.slice(0, 5).join('、')}${names.length > 5 ? ` 他${names.length - 5}件` : ''}` : ''
+        // スコアリング/再補完エンジンは独自の集計を表示（詳細/HOTでは実態が出ないため）
+        if (j.scored != null) { toast.success(`${label}: 採点${j.scored}件（S${j.s ?? 0}/A${j.a ?? 0}/B${j.b ?? 0}/C${j.c ?? 0}）`); load(); loadDiscovery(); loadRecentImported(); return }
+        if (j.scanned != null && j.promotedHot != null) { toast.success(`${label}: 走査${j.scanned} 補完${j.enriched ?? 0} 電話取得${j.phoneFound ?? 0} HOT昇格${j.promotedHot} 投入${imp}`); load(); loadDiscovery(); loadRecentImported(); return }
+        if (j.recent != null && j.promotedHot != null) { toast.success(`${label}: 対象${j.fetched ?? 0} 直近更新${j.recent} HOT昇格${j.promotedHot} 投入${imp}`); load(); loadDiscovery(); loadRecentImported(); return }
         const head = imp > 0 ? `✅ ${imp}件を案件へ投入` : hotB > 0 ? `HOT-B ${hotB}件検出（電話/住所の確定待ち・未投入）` : det > 0 ? `${det}件確認したが投入条件を満たす新店なし` : '新規ヒットなし'
         toast.success(`${label}: ${head}｜詳細${det} HOT-B${hotB} HOLD${j.hold ?? 0} 除外${j.excluded ?? 0} 投入${imp}${namePart}`)
         load(); loadDiscovery(); loadRecentImported()

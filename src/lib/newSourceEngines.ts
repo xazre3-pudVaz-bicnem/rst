@@ -33,6 +33,13 @@ async function fetchText(url: string, timeoutMs = 8000, accept = 'text/html'): P
   } catch { return { ok: false, status: 0, text: '' } }
 }
 
+// 外部呼び出しのハード上限。enrichCandidate/placesEstablishmentSignal は内部で複数の外部fetchを直列に行い
+// 最悪数十秒かかり得る（各fetchのタイムアウトの総和）。Promise.raceで頭打ちにし、超過時はfallbackで先へ進む
+// （敗者の未await promiseはレスポンス送出後にVercelが解放）。これで1件あたりの処理時間を確定させ504を防ぐ。
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([Promise.resolve(p).catch(() => fallback), new Promise<T>((res) => setTimeout(() => res(fallback), ms))])
+}
+
 function extractDetail(html: string): { name: string; phone: string; address: string; official: string } {
   const og = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)/i)?.[1] || ''
   const h1 = strip(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '')
@@ -55,7 +62,7 @@ export interface IngestResult { status: 'valid' | 'invalid' | 'error'; temperatu
 export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
   url: string; sourceType: string; label: string; signalType: string; evidenceIso?: string | null
   hintName?: string; hintPhone?: string; hintAddress?: string; hintOfficial?: string; extraText?: string
-  userId: string | null; autoImport?: boolean; runId?: string | null
+  userId: string | null; autoImport?: boolean; runId?: string | null; saveAlways?: boolean
 }): Promise<IngestResult> {
   const url = String(o.url || '').split('#')[0].trim()
   if (!/^https?:\/\//.test(url)) return { status: 'error', reason: '不正なURL' }
@@ -69,7 +76,7 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
   const sn0 = sanitizeShopName(o.hintName || d.name, { placesMatched: false })
   let enrich: any = null
   const needEnrich = (!(o.hintPhone || d.phone) || !(o.hintAddress || d.address)) && sn0.valid && !!mapsKey
-  if (needEnrich) { try { enrich = await enrichCandidate(mapsKey, { shop: sn0.name, username: '', areaHint: o.hintAddress || d.address || '', industry: '', havePhone: o.hintPhone || d.phone || '', haveAddress: o.hintAddress || d.address || '' }, { maxQueries: 1, perQuery: 5 }) } catch { /* noop */ } }
+  if (needEnrich) enrich = await withTimeout(enrichCandidate(mapsKey!, { shop: sn0.name, username: '', areaHint: o.hintAddress || d.address || '', industry: '', havePhone: o.hintPhone || d.phone || '', haveAddress: o.hintAddress || d.address || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null)
   const phone = o.hintPhone || d.phone || enrich?.phone || ''
   const address = o.hintAddress || d.address || enrich?.address || ''
   const official = o.hintOfficial || d.official || enrich?.official || (/(instagram\.com|prtimes\.jp|ekiten|camp-fire|makuake|crt\.sh)/i.test(url) ? '' : url)
@@ -106,6 +113,11 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
     owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason, last_seen_at: nowIso, source_run_id: o.runId || null,
     auto_insert_skipped_reason: temperature === 'HOLD' && holdReason ? holdReason : null,
   }
+  // クロール発見URL(saveAlways無し)で、実店舗情報(電話/住所/新規根拠)が皆無なら保存しない（新規ドメイン等の無関係ページで
+  // lead_candidatesを汚さないため）。ユーザーが明示的に貼ったURL(bulk/manual)は saveAlways=true で常に保存。
+  if (!o.saveAlways && !exC?.[0] && temperature !== 'HOT' && !phone && !address && !hasNewness) {
+    return { status: 'invalid', temperature: 'SKIPPED', name, reason: '実店舗情報なし（電話/住所/新規根拠なし）・保存せず' }
+  }
   const qr = computeQuality(payload)
   Object.assign(payload, { quality_score: qr.score, quality_grade: qr.grade, industry_category: qr.category, dedup_key: qr.dedupKey, quality_flags: qr.flags, phone_pref_match: qr.phoneMatch, quality_computed_at: nowIso })
 
@@ -126,7 +138,7 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
   if (o.autoImport !== false && temperature === 'HOT' && phoneOk && candidateId && !already) {
     // 既存店ガード（口コミ30件以上/最古1ヶ月超）
     let established: any = null
-    if (mapsKey && sn.valid && name !== '店名未確定') { try { established = await placesEstablishmentSignal(mapsKey, name, address) } catch { established = null } }
+    if (mapsKey && sn.valid && name !== '店名未確定') established = await withTimeout(placesEstablishmentSignal(mapsKey, name, address), 8000, null)
     const isEstablished = !!established && ((established.count != null && established.count >= BIG_GOOGLE_REVIEWS) || (established.oldestDays != null && established.oldestDays > 30))
     if (isEstablished) {
       await admin.from('lead_candidates').update({ lead_temperature: established.count >= BIG_GOOGLE_REVIEWS ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: established.count >= BIG_GOOGLE_REVIEWS, user_rating_count: established.count ?? null, oldest_review_days_ago: established.oldestDays ?? null, auto_insert_skipped_reason: '既存店（口コミ多数/最古1ヶ月超）のため投入せず', auto_import_reason: null }).eq('id', candidateId)
@@ -159,9 +171,11 @@ async function finishRun(admin: any, runId: string | null, counts: any, status =
 const BIZ_DOMAIN_HINT = /(clinic|dental|salon|hair|nail|beauty|esthe|seitai|cafe|kitchen|dining|ramen|gym|fitness|pet|trimming|school|juku|reform|cleaning|studio|shop|store|tenpo|inc|co\.jp)/i
 export async function runSslCertScan(admin: any, mapsKey: string | null, opts: { maxDomains?: number; runBudgetMs?: number; recencyDays?: number } = {}, userId: string | null): Promise<any> {
   const startMs = Date.now()
-  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000))
+  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 48000))
   const remain = () => budgetMs - (Date.now() - startMs)
   const maxDomains = Math.max(1, Math.min(40, opts.maxDomains || 20))
+  // 1件あたり最悪 fetch(8)+enrich(12)+既存店確認(8)+DB(3)=31s。残り32s未満なら新規着手しない（60秒枠死守）。
+  const PER_ITEM_MS = 32000
   const counts: any = { sourceType: 'new_ssl_certificate_domain_scan', label: 'SSL新規発行ドメイン監視', fetched: 0, candidates: 0, hot: 0, hold: 0, excluded: 0, imported: 0, skipped: 0 }
   const runId = await startRun(admin, 'new_ssl_certificate_domain_scan', userId)
   try {
@@ -180,14 +194,14 @@ export async function runSslCertScan(admin: any, mapsKey: string | null, opts: {
       if (domains.length >= maxDomains * 3) break
     }
     for (const dom of domains.slice(0, maxDomains)) {
-      if (remain() < 10000) break
+      if (remain() < PER_ITEM_MS) break
       // 既に取得済みドメインはスキップ
       const { data: seenDom } = await admin.from('discovery_seen_urls').select('id').eq('source_type', 'new_ssl_certificate_domain_scan').eq('url', `https://${dom}/`).limit(1)
       if (seenDom?.[0]) { counts.skipped++; continue }
       await admin.from('discovery_seen_urls').upsert({ source_type: 'new_ssl_certificate_domain_scan', url_hash: dom, url: `https://${dom}/` }, { onConflict: 'source_type,url_hash' }).then(() => {}, () => {})
       counts.fetched++
       const r = await ingestFromUrl(admin, mapsKey, { url: `https://${dom}/`, sourceType: 'new_ssl_certificate_domain_scan', label: 'SSL新規発行ドメイン', signalType: 'new_ssl_certificate', evidenceIso: new Date().toISOString(), userId, runId })
-      if (r.temperature === 'HOT') { counts.hot++; if (r.imported) counts.imported++ } else if (r.temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
+      if (r.temperature === 'HOT') { counts.hot++; if (r.imported) counts.imported++ } else if (r.temperature === 'EXCLUDED') counts.excluded++; else if (r.temperature === 'SKIPPED') counts.skipped++; else counts.hold++
     }
     await finishRun(admin, runId, counts)
     return { ok: true, ...counts, domainsFound: domains.length }
@@ -215,8 +229,9 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
   const nowMs = Date.now()
   try {
     // official_url があり、直近未チェックの候補（HOLD/HOT中心）
+    // official_url を持つ非EXCLUDED候補（serpDiscovery等は official_url と website_url を同値で保存するため official_url で足りる）
     const { data: rows } = await admin.from('lead_candidates').select('id,name,official_url,website_url,phone_number,address,lead_temperature,imported_to_cases')
-      .or('official_url.not.is.null,website_url.not.is.null').neq('lead_temperature', 'EXCLUDED').limit(400)
+      .not('official_url', 'is', null).neq('lead_temperature', 'EXCLUDED').limit(400)
     const list = (rows || []).filter((c: any) => (c.official_url || c.website_url) && /^https?:\/\//.test(c.official_url || c.website_url)).slice(0, limit)
     for (const c of list) {
       if (remain() < 9000) break
@@ -286,11 +301,11 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     const { data: rows } = await q
     const list = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id).slice(0, limit)
     for (const c of list) {
-      if (remain() < 12000) break
+      if (remain() < 17000) break // enrich(≤12s)＋case投入の余白を確保して60秒枠を死守
       const shop = c.extracted_shop_name || c.name || ''
       if (!shop || shop === '店名未確定') continue
       counts.scanned++
-      const e = await enrichCandidate(mapsKey, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '' }, { maxQueries: 2, perQuery: 5 }).catch(() => null)
+      const e = await withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null)
       if (!e) continue
       counts.enriched++
       const phone = c.phone_number || e.phone || ''
@@ -324,14 +339,14 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
 // 4) 手動URL一括インポート
 // ============================================================
 export async function runBulkUrlImport(admin: any, mapsKey: string | null, urls: string[], meta: { memo?: string; sourceType?: string }, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = 45000; const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = 48000; const remain = () => budgetMs - (Date.now() - startMs)
   const clean = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter((u) => /^https?:\/\//.test(u)))).slice(0, 40)
   const counts: any = { sourceType: 'manual_url_bulk_import', label: '手動URL一括インポート', total: clean.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0 }
   const runId = await startRun(admin, 'manual_url_bulk_import', userId)
   const results: any[] = []
   for (const url of clean) {
-    if (remain() < 10000) { counts.stoppedEarly = true; break }
-    const r = await ingestFromUrl(admin, mapsKey, { url, sourceType: 'manual_url_bulk_import', label: '手動URL一括', signalType: 'manual_import', extraText: meta.memo || '', userId, runId })
+    if (remain() < 32000) { counts.stoppedEarly = true; break } // 1件最悪31s。残り32s未満なら次回へ（60秒枠死守）
+    const r = await ingestFromUrl(admin, mapsKey, { url, sourceType: 'manual_url_bulk_import', label: '手動URL一括', signalType: 'manual_import', extraText: meta.memo || '', userId, runId, saveAlways: true })
     counts.processed++
     if (r.temperature === 'HOT') { counts.hot++; if (r.imported) counts.imported++ } else if (r.temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
     if (results.length < 40) results.push({ url, name: r.name, temperature: r.temperature, phone: r.phone, imported: r.imported })

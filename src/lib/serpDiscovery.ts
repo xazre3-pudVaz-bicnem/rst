@@ -100,6 +100,10 @@ function buildHpSalesAngle(pubDate: string | null, daysAgo: number | null, wq: R
 }
 
 function urlHash(u: string): string { let h = 0; const s = String(u); for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0 } return String(h >>> 0) }
+// 外部呼び出し(enrich/Places)の最悪時間を頭打ちにするハード上限（各内部fetchのタイムアウト総和で数十秒になり得るため）
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([Promise.resolve(p).catch(() => fallback), new Promise<T>((res) => setTimeout(() => res(fallback), ms))])
+}
 const strip = (h: string) => h.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim()
 
 async function fetchPage(url: string, timeoutMs = 9000): Promise<string> {
@@ -229,7 +233,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const sn0 = sanitizeShopName(d.name, { placesMatched: false })
         // 補完は最大~10秒かかるため残り12秒以上のときだけ実行（1クエリに制限して暴走を防ぐ）。
         const needEnrich = (!d.phone || !d.address) && sn0.valid && !!mapsKey && remain() > 12000
-        if (needEnrich) { try { enrich = await enrichCandidate(mapsKey, { shop: sn0.name, username: '', areaHint: d.address || '', industry: '', havePhone: d.phone || '', haveAddress: d.address || '' }, { maxQueries: 1, perQuery: 5 }) } catch { /* noop */ } }
+        if (needEnrich) enrich = await withTimeout(enrichCandidate(mapsKey, { shop: sn0.name, username: '', areaHint: d.address || '', industry: '', havePhone: d.phone || '', haveAddress: d.address || '' }, { maxQueries: 1, perQuery: 5 }), 11000, null)
         const phone = d.phone || enrich?.phone || ''
         const address = d.address || enrich?.address || ''
         const official = d.official || enrich?.official || (/(instagram\.com|prtimes\.jp|ekiten|camp-fire|makuake)/i.test(url) ? '' : url)
@@ -334,7 +338,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             let established: { count: number | null; oldestDays: number | null } | null = null
             if (!isHp && mapsKey && sn.valid && name !== '店名未確定' && establishmentLookups < MAX_ESTABLISHMENT_LOOKUPS && remain() > 8000) {
               establishmentLookups++
-              try { established = await placesEstablishmentSignal(mapsKey, name, address) } catch { established = null }
+              established = await withTimeout(placesEstablishmentSignal(mapsKey, name, address), 7000, null)
             }
             const isEstablished = !!established && ((established.count != null && established.count >= BIG_GOOGLE_REVIEWS) || (established.oldestDays != null && established.oldestDays > 30))
             if (isEstablished) {
