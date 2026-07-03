@@ -310,18 +310,42 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: out.detailFetched ?? 0 })
       }
       // places: Google Placesエンジン由来（口コミ0〜5件/Instagramのみ/HP未整備/口コミ急増）。APIキー必須。
+      // ※時間予算(runBudgetMs)/クエリ上限を必ず渡す。無指定だと既定で長時間走り60秒関数上限を超過し504（=非JSON応答）で
+      //   「実行に失敗しました」になっていた。45秒で打ち切り、取得済み分は保存して返す。
       if (def.mode === 'places') {
         if (!mapsKey) return res.status(200).json({ ok: true, skipped: true, sourceType: st, label: def.label, reason: `${def.label} は Google Places 由来ですが GOOGLE_MAPS_API_KEY が未設定のため実行できません` })
-        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st }, userData.user.id)
+        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 45000, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
         return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: (out as any).fetched ?? 0, detailFetched: (out as any).fetched ?? 0, hotB: (out as any).hot ?? 0 })
       }
-      // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）
+      // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は予算を大きめに（45秒で打ち切り）。
       const out = await runSerpDiscovery(admin, st, mapsKey, {
         ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
+        runBudgetMs: 45000, maxQueriesPerRun: 10, maxDetails: 20, perQuery: 8,
       }, userData.user.id)
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
+  // 最近AI投入された案件の一覧（取得元横断・新しい順）。「どの案件が追加されたか」を可視化。
+  if (body?.recentImported) {
+    const limit = Math.min(200, Number(body.recentImported.limit) || 60)
+    const sinceMin = Number(body.recentImported.sinceMinutes) || 0
+    let q = admin.from('lead_candidates')
+      .select('imported_case_id,imported_at,name,extracted_shop_name,phone_number,address,source_type,lead_source,discovery_source_type,source_site_name,lead_temperature,hot_tier')
+      .eq('imported_to_cases', true).not('imported_case_id', 'is', null)
+      .order('imported_at', { ascending: false }).limit(limit)
+    if (sinceMin > 0) q = q.gte('imported_at', new Date(Date.now() - sinceMin * 60000).toISOString())
+    const { data, error } = await q
+    if (error) return res.status(200).json({ ok: false, error: error.message })
+    const items = (data || []).map((r: any) => ({
+      caseId: r.imported_case_id, importedAt: r.imported_at,
+      name: r.name && r.name !== '店名未確定' ? r.name : (r.extracted_shop_name || '（店名未確定）'),
+      phone: r.phone_number || '', address: r.address || '',
+      source: r.source_site_name || r.source_type || r.discovery_source_type || r.lead_source || '不明',
+      temperature: r.lead_temperature, hotTier: r.hot_tier,
+    }))
+    return res.status(200).json({ ok: true, items })
+  }
+
   // 未投入HOTの一括投入スイープ（電話/住所なしHOTはHOLD降格・適格HOTはcases投入・重複はリンク）
   if (body?.sweepHot) {
     try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null }); return res.status(200).json(out) }

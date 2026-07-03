@@ -167,6 +167,7 @@ export default function Leads() {
   // ===== 新規取得元レジストリ（27 source_type） =====
   const [discovery, setDiscovery] = useState<{ sources: any[]; toggles: Record<string, boolean>; excluded: string[]; cost: any } | null>(null)
   const [discoveryBusy, setDiscoveryBusy] = useState<string>('')
+  const [recentImported, setRecentImported] = useState<{ caseId: string; importedAt: string; name: string; phone: string; address: string; source: string; temperature: string; hotTier: string | null }[]>([])
   // ===== トリアージ拡張フィルタ =====
   const [tSalesGrade, setTSalesGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C'>('all')
   const [tSource, setTSource] = useState<string>('all')
@@ -314,8 +315,25 @@ export default function Leads() {
     const { data: sess } = await supabase.auth.getSession()
     const token = sess.session?.access_token
     if (!token) { toast.error('ログインが必要です'); return null }
-    const res = await fetch('/api/leads/regional-media/run', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) })
-    return res.json().catch(() => ({}))
+    let res: Response
+    try {
+      res = await fetch('/api/leads/regional-media/run', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) })
+    } catch (e) {
+      return { ok: false, error: `通信に失敗しました（ネットワーク/タイムアウト）: ${jpError(e)}` }
+    }
+    // レスポンス本文を一度テキストで受け、JSONでなければHTTPステータス＋本文抜粋をエラーとして返す
+    // （関数クラッシュ/タイムアウト時のVercelエラーページはJSONでないため、従来は握りつぶされて原因不明だった）
+    const text = await res.text().catch(() => '')
+    try {
+      const json = text ? JSON.parse(text) : {}
+      if (!res.ok && json && json.ok === undefined && !json.error) return { ...json, ok: false, error: `サーバーエラー(HTTP ${res.status})` }
+      return json
+    } catch {
+      const snippet = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+      const hint = res.status === 504 ? '（処理が60秒を超過＝タイムアウト。対象件数を減らすか時間をおいて再実行）'
+        : res.status >= 500 ? '（サーバー関数がクラッシュ。Vercelのログを確認してください）' : ''
+      return { ok: false, error: `サーバーエラー(HTTP ${res.status})${hint}${snippet ? ': ' + snippet : ''}` }
+    }
   }
   async function runDiscovery() {
     setDiscovering(true)
@@ -993,7 +1011,11 @@ export default function Leads() {
     const j = await regionalApi({ discoveryStatus: true })
     if (j?.ok) setDiscovery({ sources: j.sources || [], toggles: j.toggles || {}, excluded: j.excluded || [], cost: j.cost })
   }, [])
-  useEffect(() => { if (mainView === 'get') loadDiscovery() }, [mainView, loadDiscovery])
+  const loadRecentImported = useCallback(async () => {
+    const j = await regionalApi({ recentImported: { limit: 60 } })
+    if (j?.ok) setRecentImported(j.items || [])
+  }, [])
+  useEffect(() => { if (mainView === 'get') { loadDiscovery(); loadRecentImported() } }, [mainView, loadDiscovery, loadRecentImported])
   async function toggleDiscovery(type: string, enabled: boolean) {
     const j = await regionalApi({ discoveryToggle: { type, enabled } })
     if (j?.ok) { setDiscovery((p) => p ? { ...p, toggles: j.toggles } : p); toast.success(`${enabled ? 'ON' : 'OFF'}にしました`) }
@@ -1005,9 +1027,11 @@ export default function Leads() {
       if (j?.skipped) toast.info(`${label}: ${j.reason || '未実装（土台）のためスキップ'}`)
       else if (j?.ok) {
         const imp = j.imported ?? 0, hotB = j.hotB ?? j.hot ?? 0, det = j.detailFetched ?? j.newUrls ?? 0
+        const names: string[] = Array.isArray(j.importedCases) ? j.importedCases.map((c: any) => c.name).filter(Boolean) : []
+        const namePart = names.length ? `｜追加: ${names.slice(0, 5).join('、')}${names.length > 5 ? ` 他${names.length - 5}件` : ''}` : ''
         const head = imp > 0 ? `✅ ${imp}件を案件へ投入` : hotB > 0 ? `HOT-B ${hotB}件検出（電話/住所の確定待ち・未投入）` : det > 0 ? `${det}件確認したが投入条件を満たす新店なし` : '新規ヒットなし'
-        toast.success(`${label}: ${head}｜詳細${det} HOT-B${hotB} HOLD${j.hold ?? 0} 除外${j.excluded ?? 0} 投入${imp}`)
-        load(); loadDiscovery()
+        toast.success(`${label}: ${head}｜詳細${det} HOT-B${hotB} HOLD${j.hold ?? 0} 除外${j.excluded ?? 0} 投入${imp}${namePart}`)
+        load(); loadDiscovery(); loadRecentImported()
       }
       else toast.error(`${label}: ${j?.error || '実行に失敗しました'}`)
     } finally { setDiscoveryBusy('') }
@@ -1715,6 +1739,37 @@ export default function Leads() {
               {discovery.excluded?.length > 0 && <div className="mt-1.5 text-[9px] text-muted-foreground">追加しない（除外指定）: {discovery.excluded.join(', ')}</div>}
             </div>
           )}
+
+          {/* ===== 最近AI投入された案件（取得元横断・どの案件が追加されたか） ===== */}
+          <div className="rounded-xl border-2 border-primary/30 bg-card p-3">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-bold">🆕 最近AI投入された案件（{recentImported.length}件・新しい順）</span>
+              <button className="rounded border border-primary px-2 py-0.5 text-[10px] text-primary hover:bg-primary/10" onClick={loadRecentImported}>更新</button>
+            </div>
+            <div className="mb-1 text-[10px] text-muted-foreground">各取得元の「実行」や自動巡回で案件へ投入された店舗です。行をクリックすると案件一覧で開きます。</div>
+            {recentImported.length === 0 ? (
+              <div className="py-3 text-center text-[11px] text-muted-foreground">まだ投入された案件がありません（取得元の「実行」を押すと、投入された案件がここに表示されます）</div>
+            ) : (
+              <div className="max-h-64 overflow-y-auto rounded border border-border/60">
+                <table className="w-full text-[10px]">
+                  <thead className="sticky top-0 bg-muted/80 text-muted-foreground">
+                    <tr><th className="px-1.5 py-1 text-left">店名</th><th className="px-1.5 py-1 text-left">電話</th><th className="px-1.5 py-1 text-left">住所</th><th className="px-1.5 py-1 text-left">取得元</th><th className="px-1.5 py-1 text-left">投入日時</th></tr>
+                  </thead>
+                  <tbody>
+                    {recentImported.map((r) => (
+                      <tr key={r.caseId} className="cursor-pointer border-t border-border/40 hover:bg-accent" onClick={() => { window.location.href = `/?case=${r.caseId}` }} title="案件一覧で開く">
+                        <td className="px-1.5 py-1"><span className="font-medium">{r.name}</span>{r.hotTier && <span className="ml-1 rounded bg-red-200 px-1 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-{r.hotTier}</span>}</td>
+                        <td className="px-1.5 py-1 whitespace-nowrap">{r.phone || '—'}</td>
+                        <td className="px-1.5 py-1 max-w-[220px] truncate" title={r.address}>{r.address || '—'}</td>
+                        <td className="px-1.5 py-1 whitespace-nowrap text-muted-foreground">{r.source}</td>
+                        <td className="px-1.5 py-1 whitespace-nowrap text-muted-foreground">{r.importedAt ? moment(r.importedAt).format('MM/DD HH:mm') : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           {/* Google Places API パネル */}
           <div className="rounded-xl border bg-card p-3">

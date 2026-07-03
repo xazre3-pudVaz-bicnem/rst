@@ -97,7 +97,10 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: sourceType, status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
   const seen = new Set<string>()
+  const importedCases: { id: string; name: string; phone: string; address: string }[] = []
   let importedThisRun = 0
+  let establishmentLookups = 0
+  const MAX_ESTABLISHMENT_LOOKUPS = 20 // 既存店ガードのPlaces確認は1実行あたり上限（60秒枠を守る）
 
   try {
     for (const q of queries) {
@@ -203,8 +206,10 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
           if (temperature === 'HOT' && phoneOk && address && !already && importedThisRun < autoImportPerRun && autoImportAllowed('HOT_B' as any, mode)) {
             // 確立済みガード: Google口コミ30件以上 or 最古クチコミ1ヶ月超 = 既存店。投入前にPlacesで確認し、該当なら降格して架電しない。
             // （SERP自動投入は一括投入スイープを経由しないため、ここでスイープ相当の既存店チェックを行う）
+            // 時間予算・回数上限を守る（Places確認が積み重なって60秒枠を超えないよう、残り8秒未満/上限到達なら確認せず投入）。
             let established: { count: number | null; oldestDays: number | null } | null = null
-            if (mapsKey && sn.valid && name !== '店名未確定') {
+            if (mapsKey && sn.valid && name !== '店名未確定' && establishmentLookups < MAX_ESTABLISHMENT_LOOKUPS && (Date.now() - startMs) < budgetMs - 8000) {
+              establishmentLookups++
               try { established = await placesEstablishmentSignal(mapsKey, name, address) } catch { established = null }
             }
             const isEstablished = !!established && ((established.count != null && established.count >= BIG_GOOGLE_REVIEWS) || (established.oldestDays != null && established.oldestDays > 30))
@@ -229,7 +234,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             } else {
               const memo = (full as any)?.call_memo ? `\n\n${(full as any).call_memo}` : ''
               const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
-              if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
+              if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++; importedCases.push({ id: created.id, name, phone, address }) }
             }
           }
         }
@@ -238,7 +243,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
     }
     await writeCost(admin, cost)
     await admin.from('auto_lead_runs').update({ status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.queries, fetched_count: counts.detailFetched, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
-    return { ok: true, runId, ...counts, debug }
+    return { ok: true, runId, ...counts, importedCases, debug }
   } catch (e: any) {
     await writeCost(admin, cost)
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: String(e?.message || e) }).eq('id', runId).then(() => {}, () => {})
