@@ -171,7 +171,10 @@ export default function Leads() {
   const [autoCrawlOn, setAutoCrawlOn] = useState<boolean>(true)
   // ===== 新規取得元レジストリ（27 source_type） =====
   const [discovery, setDiscovery] = useState<{ sources: any[]; toggles: Record<string, boolean>; excluded: string[]; cost: any } | null>(null)
-  const [discoveryBusy, setDiscoveryBusy] = useState<string>('')
+  // 複数取得元を並行実行できるよう「実行中の集合」で管理（単一文字列だと1つしか実行中表示できず並行不可だった）
+  const [discoveryBusy, setDiscoveryBusy] = useState<Set<string>>(new Set())
+  const addBusy = (t: string) => setDiscoveryBusy((s) => { const n = new Set(s); n.add(t); return n })
+  const busyDone = (t: string) => setDiscoveryBusy((s) => { const n = new Set(s); n.delete(t); return n })
   const [recentImported, setRecentImported] = useState<{ caseId: string; importedAt: string; name: string; phone: string; address: string; source: string; temperature: string; hotTier: string | null }[]>([])
   // ===== トリアージ拡張フィルタ =====
   const [tSalesGrade, setTSalesGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C'>('all')
@@ -1078,7 +1081,7 @@ export default function Leads() {
     if (j?.ok) { setDiscovery((p) => p ? { ...p, toggles: j.toggles } : p); toast.success(`${enabled ? 'ON' : 'OFF'}にしました`) }
   }
   async function runDiscoveryOne(type: string, label: string) {
-    setDiscoveryBusy(type)
+    addBusy(type)
     try {
       const j = await regionalApi({ runDiscovery: { sourceType: type }, settings: { aiInjectMode: settings.aiInjectMode, serperDailyCap: (settings as any).serperDailyCap ?? 50 } })
       if (j?.skipped) toast.info(`${label}: ${j.reason || '未実装（土台）のためスキップ'}`)
@@ -1095,11 +1098,26 @@ export default function Leads() {
         load(); loadDiscovery(); loadRecentImported()
       }
       else toast.error(`${label}: ${j?.error || '実行に失敗しました'}`)
-    } finally { setDiscoveryBusy('') }
+    } catch (e) { toast.error(`${label}: 実行に失敗しました: ` + jpError(e)) } finally { busyDone(type) }
   }
   async function recomputeSales() {
-    setDiscoveryBusy('sales')
-    try { const j = await regionalApi({ recomputeSales: { limit: 800, onlyHot: true } }); if (j?.ok) { toast.success(`営業優先度再計算: ${j.updated}件 / メモ${j.memos}件`); load() } else toast.error(j?.error || '失敗') } finally { setDiscoveryBusy('') }
+    addBusy('sales')
+    try { const j = await regionalApi({ recomputeSales: { limit: 800, onlyHot: true } }); if (j?.ok) { toast.success(`営業優先度再計算: ${j.updated}件 / メモ${j.memos}件`); load() } else toast.error(j?.error || '失敗') } finally { busyDone('sales') }
+  }
+  // ONの取得元をまとめて並行実行（最大4件ずつ）。各 runDiscoveryOne は独立して実行中管理されるので同時進行できる。
+  async function runAllEnabledDiscovery() {
+    if (!discovery) { toast.error('取得元一覧を読み込み中です'); return }
+    const targets = discovery.sources.filter((s: any) => discovery.toggles[s.type] !== false && (s.mode === 'serp' || s.mode === 'places' || s.mode === 'foundation'))
+    if (!targets.length) { toast.info('ONの取得元がありません'); return }
+    addBusy('__all__')
+    toast.info(`ONの取得元 ${targets.length}件を並行巡回します（4件ずつ・数分かかります）`)
+    try {
+      const CONC = 4
+      for (let i = 0; i < targets.length; i += CONC) {
+        await Promise.allSettled(targets.slice(i, i + CONC).map((s: any) => runDiscoveryOne(s.type, s.label)))
+      }
+      toast.success('ONの取得元の一括巡回が完了しました')
+    } finally { busyDone('__all__') }
   }
 
   async function autoExcludeBad() {
@@ -1775,7 +1793,8 @@ export default function Leads() {
                 <span className="text-sm font-bold">🧭 新規取得元（{discovery.sources.length}種）— 質の高い新規リスト自動作成</span>
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                   {discovery.cost && <span>本日Serper {discovery.cost.serper ?? 0}/{(settings as any).serperDailyCap ?? 50}クエリ</span>}
-                  <Button size="sm" variant="outline" onClick={recomputeSales} disabled={!!discoveryBusy}>{discoveryBusy === 'sales' ? '計算中...' : '営業優先度を再計算'}</Button>
+                  <Button size="sm" variant="outline" onClick={runAllEnabledDiscovery} disabled={discoveryBusy.has('__all__')} title="ONの取得元をまとめて並行実行（最大4件ずつ）">{discoveryBusy.has('__all__') ? `一括実行中(${discoveryBusy.size - 1})` : 'ON取得元を一括巡回'}</Button>
+                  <Button size="sm" variant="outline" onClick={recomputeSales} disabled={discoveryBusy.has('sales')}>{discoveryBusy.has('sales') ? '計算中...' : '営業優先度を再計算'}</Button>
                 </div>
               </div>
               <div className="mb-1 text-[10px] text-muted-foreground">電話/住所なしはHOT禁止・店名未確定でも電話+住所+新規根拠でHOT-B・日本国内のみ・大手/公共/閉店/重複は除外。検索駆動(SERP)はその場で実行、土台は外部API確認後に有効化。</div>
@@ -1789,7 +1808,7 @@ export default function Leads() {
                         <div key={s.type} className="flex items-center gap-1.5 rounded border border-border/60 bg-background px-1.5 py-1 text-[10px]">
                           <button onClick={() => toggleDiscovery(s.type, !on)} className={cn('rounded-full px-1.5 py-0.5 font-bold', on ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-700')}>{on ? 'ON' : 'OFF'}</button>
                           <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{ENGINE_SOURCE_TYPES.includes(s.type) ? <span className="ml-1 rounded bg-green-200 px-1 font-bold text-green-800 dark:bg-green-500/30 dark:text-green-200">本稼働</span> : s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}{s.mode === 'places' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places</span>}</span>
-                          {(s.mode === 'serp' || s.mode === 'places' || s.mode === 'foundation') && <button onClick={() => runDiscoveryOne(s.type, s.label)} disabled={discoveryBusy === s.type} className="rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10 disabled:opacity-50">{discoveryBusy === s.type ? '実行中' : '実行'}</button>}
+                          {(s.mode === 'serp' || s.mode === 'places' || s.mode === 'foundation') && <button onClick={() => runDiscoveryOne(s.type, s.label)} disabled={discoveryBusy.has(s.type)} className="rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10 disabled:opacity-50">{discoveryBusy.has(s.type) ? '実行中' : '実行'}</button>}
                           {s.type === 'portal_published_date_search' && <button onClick={runEkiten} disabled={ekitenRunning} className="rounded border border-pink-500 px-1.5 py-0.5 text-pink-700 dark:text-pink-300 disabled:opacity-50">{ekitenRunning ? '実行中' : '実行'}</button>}
                         </div>
                       )

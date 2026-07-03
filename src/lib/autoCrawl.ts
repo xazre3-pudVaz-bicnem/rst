@@ -56,8 +56,8 @@ function mapCounts(r: any) {
 export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: CrawlOpts = {}): Promise<any> {
   const only = opts.only || 'all'
   const trigger = opts.trigger || 'cron'
-  // Vercel maxDuration=60s。外部fetchのオーバーシュートを見込み、余白を大きく取り40sで打ち切る。
-  const budgetMs = Math.max(20000, Math.min(50000, opts.budgetMs || 40000))
+  // Vercel maxDuration=60s。取得元は並行実行するため各自の内部予算を大きめに取り、全体は52sで打ち切る（sweep余白込み）。
+  const budgetMs = Math.max(20000, Math.min(54000, opts.budgetMs || 50000))
   const startMs = Date.now()
   const mapsKey = env.GOOGLE_MAPS_API_KEY || null
 
@@ -96,13 +96,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'lead_auto')
     if (cfg.autoFetch === false) return { skipped: true }
     // 全取得元巡回では10s/5クエリに制限し他フェーズへ譲る。Places単独実行(only=places)は42s/設定値で本格実行。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(9000, 42000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 3 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(34000, 42000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 12 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 50 : 12, maxSitesPerDay: focused ? 50 : 12, runBudgetMs: pb(13000, 40000), maxDetailFetchesPerRun: pb(10, 25) }, opts.userId || null)
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 50 : 28, maxSitesPerDay: focused ? 50 : 28, runBudgetMs: pb(34000, 40000), maxDetailFetchesPerRun: pb(22, 25) }, opts.userId || null)
   } })
   if (wantType('instagram')) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
@@ -113,7 +113,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'sequential_auto')
     if (cfg.sequentialEnabled === false) return { skipped: true }
     // 全巡回時は forwardCount/cap を小さく（~10s）。連番単独実行時は設定値で本格実行（バウンドは設定より優先）
-    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 300) : 80, ...(focused ? {} : { forwardCount: 10 }) }, opts.userId || null)
+    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 300) : 150, ...(focused ? {} : { forwardCount: 25 }) }, opts.userId || null)
   } })
   if (wantType('discovery')) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
     const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }
@@ -125,10 +125,10 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     for (const r of (last || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }
     enabled.sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))
     const agg: any = { hot: 0, hotB: 0, hold: 0, excluded: 0, saved: 0, imported: 0, detailFetched: 0, ran: [] as string[] }
-    // 1回の巡回ではSERP取得元を最大2件だけ（60s枠を超えないため）。残りは次回（古い順ローテ）。
-    for (const st of enabled.slice(0, 2)) {
-      if (Date.now() - startMs > budgetMs - 11000) break
-      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 2, perQuery: 6, maxDetails: 6, runBudgetMs: 9000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
+    // 並行実行内で古い順にSERP取得元を回す（最大4件・各自の内部予算＋全体予算で打ち切り）。残りは次回ローテ。
+    for (const st of enabled.slice(0, 4)) {
+      if (Date.now() - startMs > budgetMs - 12000) break
+      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 3, perQuery: 6, maxDetails: 10, runBudgetMs: 12000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
       if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hotB += r.hotB || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.saved += r.saved || 0; agg.imported += r.imported || 0; agg.detailFetched += r.detailFetched || 0; agg.ran.push(st) }
     }
     return agg
@@ -146,28 +146,19 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     types.sort((a, b) => (tier(a.key) - tier(b.key)) || ((lastByType.get(a.type) ?? 0) - (lastByType.get(b.type) ?? 0)))
   }
 
-  // 60s枠を守りつつ生産的な取得元を確実に回すため、全取得元巡回では1回あたり最大3取得元まで実行し、残りは次回ローテーション。
-  // OFF/対象なしで即skipになった取得元は枠を消費しない（生産的な取得元を枠から締め出さないため）。
-  const maxPhases = only === 'all' ? 3 : types.length
-  let phasesRun = 0
-  for (const t of types) {
-    const elapsed = Date.now() - startMs
+  // 全取得元を「並行実行」する（以前は順次＋1回3取得元までで、遅い取得元がタイムアウトし残りがdeferred＝
+  // 何も投入されない問題があった）。並行なら壁時計は最も遅い1取得元の時間で済み、全取得元が毎回カバーされる。
+  // 各取得元は自前の内部予算＋ここのハード上限で二重に打ち切り、60s関数上限を死守する。
+  const sourceHardMs = Math.max(15000, budgetMs - 12000) // sweep用に余白を残す。並行なのでwall-clock≒これ。
+  await Promise.allSettled(types.map(async (t) => {
     const itemStart = new Date().toISOString()
-    if (phasesRun >= maxPhases || elapsed > budgetMs - t.minMs) {
-      // 今回は打ち切り → 次回継続（ローテーションで全取得元を順にカバー）
-      items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'deferred', error_message: phasesRun >= maxPhases ? '今回は3取得元まで（次回ローテーションで継続）' : '時間予算切れのため次回継続', started_at: itemStart, finished_at: new Date().toISOString() })
-      continue
-    }
-    phasesRun++
     try {
-      // ハード時間上限: 予算残り or 最大22秒で強制打ち切り（run関数が予算を守らず暴走しても60s枠を死守）。
-      const hardMs = Math.max(6000, Math.min(22000, budgetMs - (Date.now() - startMs) - 8000))
       const r: any = await Promise.race([
-        t.run(),
-        new Promise((res) => setTimeout(() => res({ __timeout: true }), hardMs)),
+        Promise.resolve(t.run()),
+        new Promise((res) => setTimeout(() => res({ __timeout: true }), sourceHardMs)),
       ])
-      if (r?.__timeout) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'timeout', error_message: `時間上限(${Math.round(hardMs / 1000)}s)で打ち切り・取得済み分は保存・次回継続`, started_at: itemStart, finished_at: new Date().toISOString() }); continue }
-      if (r?.skipped) { phasesRun--; items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); continue }
+      if (r?.__timeout) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_kind: 'timeout', error_message: `時間上限(${Math.round(sourceHardMs / 1000)}s)で打ち切り・取得済み分は保存・次回継続`, started_at: itemStart, finished_at: new Date().toISOString() }); return }
+      if (r?.skipped) { items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'skipped', error_message: r.reason || 'OFF/上限', started_at: itemStart, finished_at: new Date().toISOString() }); return }
       const c = mapCounts(r)
       agg.hot_a_count += c.hotA; agg.hot_b_count += c.hotB; agg.hold_count += c.hold; agg.excluded_count += c.excluded; agg.cases_inserted_count += c.inserted; agg.lead_saved_count += c.saved
       if (t.type === 'google_places') agg.google_places_count += c.fetched
@@ -182,7 +173,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
       const kind = /timeout|ETIMEDOUT|aborted/i.test(msg) ? 'timeout' : /429|rate/i.test(msg) ? 'rate_limit' : /40\d|50\d|fetch/i.test(msg) ? 'api_error' : 'error'
       items.push({ run_id: runId, source_type: t.type, source_name: t.name, status: 'error', error_kind: kind, error_message: msg.slice(0, 500), started_at: itemStart, finished_at: new Date().toISOString() })
     }
-  }
+  }))
 
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
