@@ -314,13 +314,14 @@ export default async function handler(req: any, res: any) {
       //   「実行に失敗しました」になっていた。45秒で打ち切り、取得済み分は保存して返す。
       if (def.mode === 'places') {
         if (!mapsKey) return res.status(200).json({ ok: true, skipped: true, sourceType: st, label: def.label, reason: `${def.label} は Google Places 由来ですが GOOGLE_MAPS_API_KEY が未設定のため実行できません` })
-        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 45000, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
+        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 40000, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
         return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: (out as any).fetched ?? 0, detailFetched: (out as any).fetched ?? 0, hotB: (out as any).hot ?? 0 })
       }
-      // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は予算を大きめに（45秒で打ち切り）。
+      // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は40秒で打ち切り、
+      // 取得済み分は保存して返す（内部で残り時間ガードあり＝60秒関数上限を超えない）。
       const out = await runSerpDiscovery(admin, st, mapsKey, {
         ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
-        runBudgetMs: 45000, maxQueriesPerRun: 10, maxDetails: 20, perQuery: 8,
+        runBudgetMs: 40000, maxQueriesPerRun: 8, maxDetails: 14, perQuery: 6,
       }, userData.user.id)
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
