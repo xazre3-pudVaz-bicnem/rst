@@ -246,6 +246,15 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
 // 追加しない（明示除外）source_type
 export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_places_no_website_scan', 'gbp_content_weakness_scan', 'brand_serp_weakness_scan', 'reservation_portal_dependency_scan', 'franchise_new_store_search', 'competitor_gap_scan']
 
+// 専用エンジンで本稼働している source_type（run.ts が newSourceEngines.runEngineSource に振り分ける）。
+// UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
+export const ENGINE_SOURCE_TYPES = [
+  'new_ssl_certificate_domain_scan', 'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
+  'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
+  'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',
+  'lead_exclusion_classifier', 'sales_angle_classifier', 'calling_priority_queue', 'industry_fit_score', 'ai_duplicate_merge', 'area_hotspot_expansion',
+]
+
 export function defaultSourceToggles(): Record<string, boolean> {
   const o: Record<string, boolean> = {}
   for (const s of DISCOVERY_SOURCES) o[s.type] = s.defaultEnabled

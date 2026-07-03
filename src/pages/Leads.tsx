@@ -14,6 +14,7 @@ import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { useAuth } from '@/context/AuthContext'
 import { CaseApi, LeadCandidateApi, ImportBatchApi, AuditApi, AppConfigApi, LeadQueryLogApi } from '@/lib/api'
+import { ENGINE_SOURCE_TYPES } from '@/lib/discoverySources'
 import { classifyLead, generateMockLeads } from '@/lib/leadScoring'
 import {
   DEFAULT_STATUS, LEAD_TEMP_COLORS, LS_LEAD_SETTINGS, DEFAULT_LEAD_SETTINGS, parseList,
@@ -122,6 +123,8 @@ export default function Leads() {
   const [iwResult, setIwResult] = useState<any>(null)
   const [iwManual, setIwManual] = useState({ url: '', shopName: '', phone: '', address: '', industry: '', hashtags: '', memo: '' })
   const [iwImporting, setIwImporting] = useState(false)
+  const [bulkUrls, setBulkUrls] = useState('')
+  const [bulkImporting, setBulkImporting] = useState(false)
   const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
@@ -546,6 +549,19 @@ export default function Leads() {
       setIwManual({ url: '', shopName: '', phone: '', address: '', industry: '', hashtags: '', memo: '' })
       load(); loadRecentImported()
     } catch (e) { toast.error('インポートに失敗しました: ' + jpError(e)) } finally { setIwImporting(false) }
+  }
+
+  // 手動URL一括インポート（複数行のURLを共通pipelineで候補化→HOTはcases投入）
+  async function bulkImportUrls() {
+    const urls = bulkUrls.split(/[\s\n]+/).map((u) => u.trim()).filter((u) => /^https?:\/\//.test(u))
+    if (!urls.length) { toast.error('http(s)で始まるURLを1行以上入力してください'); return }
+    setBulkImporting(true)
+    try {
+      const j = await regionalApi({ bulkImport: { urls, memo: '' } })
+      if (!j?.ok) { toast.error(j?.error || '一括インポートに失敗しました'); return }
+      toast.success(`一括インポート: 処理${j.processed}/${j.total} ｜ HOT${j.hot} 投入${j.imported} HOLD${j.hold} 除外${j.excluded}${j.stoppedEarly ? '（時間上限で一部次回）' : ''}`)
+      setBulkUrls(''); load(); loadRecentImported()
+    } catch (e) { toast.error('一括インポートに失敗しました: ' + jpError(e)) } finally { setBulkImporting(false) }
   }
 
   // 外部の複数ハッシュタグ検索ツール（Google CSE）。検索語をハッシュに載せて開く。
@@ -1768,7 +1784,7 @@ export default function Leads() {
                       return (
                         <div key={s.type} className="flex items-center gap-1.5 rounded border border-border/60 bg-background px-1.5 py-1 text-[10px]">
                           <button onClick={() => toggleDiscovery(s.type, !on)} className={cn('rounded-full px-1.5 py-0.5 font-bold', on ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-700')}>{on ? 'ON' : 'OFF'}</button>
-                          <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}{s.mode === 'places' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places</span>}</span>
+                          <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{ENGINE_SOURCE_TYPES.includes(s.type) ? <span className="ml-1 rounded bg-green-200 px-1 font-bold text-green-800 dark:bg-green-500/30 dark:text-green-200">本稼働</span> : s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}{s.mode === 'places' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places</span>}</span>
                           {(s.mode === 'serp' || s.mode === 'places' || s.mode === 'foundation') && <button onClick={() => runDiscoveryOne(s.type, s.label)} disabled={discoveryBusy === s.type} className="rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10 disabled:opacity-50">{discoveryBusy === s.type ? '実行中' : '実行'}</button>}
                           {s.type === 'portal_published_date_search' && <button onClick={runEkiten} disabled={ekitenRunning} className="rounded border border-pink-500 px-1.5 py-0.5 text-pink-700 dark:text-pink-300 disabled:opacity-50">{ekitenRunning ? '実行中' : '実行'}</button>}
                         </div>
@@ -2457,6 +2473,15 @@ export default function Leads() {
                   <div className="flex items-center gap-2">
                     <Button size="sm" onClick={manualImportIg} disabled={iwImporting || !iwManual.url.trim()}>{iwImporting ? 'インポート中…' : 'RSTへ手動インポート'}</Button>
                     <span className="text-[9px] text-muted-foreground">URL正規化→重複チェック→プロフィール/Places補完→電話・住所検証→HOT判定→HOTはcases投入</span>
+                  </div>
+                  {/* 複数URL一括インポート（Instagram/HP/記事/求人/ポータル 何でも可） */}
+                  <div className="mt-2 border-t pt-2">
+                    <div className="mb-1 text-[11px] font-bold">URL一括インポート（複数行・種類問わず）</div>
+                    <textarea value={bulkUrls} onChange={(e) => setBulkUrls(e.target.value)} rows={3} placeholder={'https://... を1行に1つ（最大40件）\nInstagram/公式HP/地域記事/求人/ポータル 何でも可'} className="w-full rounded border border-input bg-card px-2 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                    <div className="mt-1 flex items-center gap-2">
+                      <Button size="sm" variant="outline" onClick={bulkImportUrls} disabled={bulkImporting || !bulkUrls.trim()}>{bulkImporting ? '一括処理中…' : 'URLを一括インポート'}</Button>
+                      <span className="text-[9px] text-muted-foreground">各URLを共通pipeline（取得→抽出→Places補完→検証→HOT判定→投入）で処理</span>
+                    </div>
                   </div>
                 </div>
               </div>

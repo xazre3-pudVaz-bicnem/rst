@@ -12,6 +12,7 @@ import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectPro
 import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
 import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/leadQualityRun.js'
 import { runSerpDiscovery } from '../../../src/lib/serpDiscovery.js'
+import { runEngineSource, runBulkUrlImport } from '../../../src/lib/newSourceEngines.js'
 import { recomputeSalesBatch } from '../../../src/lib/leadSignals.js'
 import { sweepHotToCases } from '../../../src/lib/importHot.js'
 import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles, getSourceDef } from '../../../src/lib/discoverySources.js'
@@ -304,6 +305,9 @@ export default async function handler(req: any, res: any) {
     const mapsKey = process.env.GOOGLE_MAPS_API_KEY || null
     try {
       if (!def) return res.status(200).json({ ok: false, error: `未知の取得元: ${st}` })
+      // 専用エンジン（SSL/ドメイン/WordPress/sitemap/再評価キュー/スコアリング）。対応外はnull→通常routingへ。
+      const eng = await runEngineSource(admin, mapsKey, st, { runBudgetMs: 40000, limit: Number(body.settings?.reprocessLimit) || undefined }, userData.user.id)
+      if (eng) return res.status(200).json({ ...eng, sourceType: st, label: def.label, newUrls: (eng as any).fetched ?? (eng as any).scanned ?? 0, detailFetched: (eng as any).fetched ?? (eng as any).scanned ?? 0, hotB: (eng as any).hot ?? (eng as any).promotedHot ?? 0, imported: (eng as any).imported ?? 0 })
       // existing: エキテン公開日7日以内（専用エンジン）
       if (def.mode === 'existing') {
         const out = await runEkitenDiscovery(admin, mapsKey, { ...(body.settings || {}), ...(body.runDiscovery.opts || {}) }, userData.user.id)
@@ -326,6 +330,15 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
+  // 手動URL一括インポート（複数URLを共通pipelineで候補化→HOTはcases投入）
+  if (body?.bulkImport?.urls) {
+    try {
+      const urls: string[] = Array.isArray(body.bulkImport.urls) ? body.bulkImport.urls : String(body.bulkImport.urls || '').split(/[\s\n]+/)
+      const out = await runBulkUrlImport(admin, process.env.GOOGLE_MAPS_API_KEY || null, urls, { memo: body.bulkImport.memo || '', sourceType: 'manual_url_bulk_import' }, userData.user.id)
+      return res.status(200).json(out)
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+
   // 最近AI投入された案件の一覧（取得元横断・新しい順）。「どの案件が追加されたか」を可視化。
   if (body?.recentImported) {
     const limit = Math.min(200, Number(body.recentImported.limit) || 60)
