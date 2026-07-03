@@ -10,6 +10,10 @@ import { runInstagramWeb, getDefaultIwSettings, searchProvider, anthropicJudge, 
 import { authorizeAdmin } from '../../src/lib/regionalAdmin.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress, isOrgNonStore } from '../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../src/lib/hotReject.js'
+import { isValidJpPhone, isTollFreeJp } from '../../src/lib/regionalParsers.js'
+import { classifyIndustry, normalizeIndustry } from '../../src/lib/industry.js'
+import { findCaseIdByPhone } from '../../src/lib/caseDedup.js'
+import { DEFAULT_STATUS } from '../../src/lib/constants.js'
 
 // Instagram Web候補のHOT再計算＋HOT未達理由を生成（再補完/再判定で共通利用）
 function recomputeIwHot(cand: any, opts: { phone?: string | null; address?: string | null; prefecture?: string | null; area?: string | null; industry?: string | null; hasOpening?: boolean; placeMatched?: boolean; newnessType?: string | null; confidence?: number }) {
@@ -142,6 +146,69 @@ export default async function handler(req: any, res: any) {
         hot_blocking_reason: rc.hr.hot_blocking_reason, hot_required_score: rc.hr.hot_required_score,
       }).eq('id', body.rejudge.id)
       return res.status(200).json({ ok: true, rejudged: true, id: body.rejudge.id, temperature, hot_reject_summary: rc.hr.hot_reject_summary, judgement: j })
+    }
+
+    // 外部ツール等で見つけた Instagram URL の手動インポート（正規化→重複チェック→補完→検証→HOT判定→保存→HOT投入）
+    if (body?.manualImport && (body.manualImport.instagramUrl || body.manualImport.url)) {
+      const b = body.manualImport
+      const rawUrl = String(b.instagramUrl || b.url || '').trim()
+      if (!/instagram\.com/i.test(rawUrl)) return res.status(400).json({ ok: false, error: 'Instagram の投稿/プロフィールURLを入力してください' })
+      const igUrl = rawUrl.split('?')[0].split('#')[0]
+      const username = usernameFromUrl(igUrl)
+      const mapsKey = process.env.GOOGLE_MAPS_API_KEY || null
+      const nowIso = new Date().toISOString()
+      // 重複チェック（instagram_url）
+      const { data: dupUrl } = await admin.from('lead_candidates').select('id,imported_case_id,imported_to_cases').eq('instagram_url', igUrl).limit(1)
+      let existing: any = dupUrl?.[0] || null
+      // 補完（プロフィール取得＋Places照合で 正式店名/電話/住所/公式/openingDate）
+      let e: any = {}
+      try { e = await enrichCandidate(mapsKey, { shop: String(b.shopName || '').trim(), username, areaHint: String(b.address || '').trim(), industry: String(b.industry || ''), havePhone: String(b.phone || '').trim(), haveAddress: String(b.address || '').trim(), instagramUrl: igUrl }, { maxQueries: 3, perQuery: 5, fetchProfile: true }) } catch { e = {} }
+      const phone = (String(b.phone || '').trim()) || e.phone || ''
+      const address = (String(b.address || '').trim()) || e.address || ''
+      const prefecture = e.prefecture || null
+      const area = [prefecture, e.city].filter(Boolean).join('') || address || null
+      // 正式店名を優先（Places > プロフィール表示名 > 入力 > @handle）
+      const name = e.place_name || (String(b.shopName || '').trim()) || e.profile_name || (username ? `@${username}` : '店名未確定')
+      if (!existing && phone) { const { data: dupPhone } = await admin.from('lead_candidates').select('id,imported_case_id,imported_to_cases').eq('phone_number', phone).limit(1); existing = dupPhone?.[0] || null }
+      const cand: any = { name, phone_number: phone, address, extracted_shop_name: name, extracted_area: area, extracted_prefecture: prefecture, extracted_industry: b.industry || null, newness_type: 'manual_instagram', has_google_opening_date: e.has_opening, match_confidence: e.confidence ?? 60 }
+      const rc = recomputeIwHot(cand, { phone, address, prefecture, area, hasOpening: e.has_opening, placeMatched: !!e.place_id, confidence: e.confidence ?? 60 })
+      const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
+      // 電話が無効/フリーダイヤルなら HOT にしない（電話番号なしはHOT禁止の徹底）
+      let temperature = rc.temperature === 'HOT' && !phoneOk ? 'HOLD' : rc.temperature
+      const hotTier = temperature === 'HOT' ? 'B' : null
+      const payload: any = {
+        name, address: address || null, phone_number: phone || null, extracted_phone: phone || null, extracted_address: address || null,
+        instagram_url: igUrl, official_url: e.official || null, website_url: e.official || null,
+        source: 'instagram_manual', lead_source: 'instagram_web', source_type: '手動インポート(Instagram)', source_site_name: 'Instagram手動', parser_used: 'manual',
+        lead_temperature: temperature, hot_tier: hotTier, recommended_status: temperature === 'HOT' ? 'HOT_B' : temperature, should_exclude_from_call_list: temperature === 'EXCLUDED',
+        name_unconfirmed_hot: temperature === 'HOT' && (name === '店名未確定' || name.startsWith('@')),
+        newness_type: 'manual_instagram', extracted_shop_name: name, extracted_area: area, extracted_prefecture: prefecture, extracted_city: e.city || null,
+        extracted_industry: b.industry || null, search_query: String(b.hashtags || ''), search_snippet: String(b.memo || '').slice(0, 500),
+        hot_reject_reasons: rc.hr.hot_reject_reasons, hot_reject_summary: rc.hr.hot_reject_summary, hot_check_result: rc.hr.hot_check_result,
+        hot_missing_requirements: rc.hr.hot_missing_requirements, hot_blocking_reason: rc.hr.hot_blocking_reason, hot_required_score: rc.hr.hot_required_score,
+        enriched_phone: e.phone || null, enriched_address: e.address || null, enriched_official_url: e.official || null, enriched_google_place_id: e.place_id || null,
+        last_enriched_at: nowIso, enrichment_status: e.status || 'manual', enrichment_confidence: e.confidence ?? null,
+        google_business_status: e.business_status || null, has_google_opening_date: e.has_opening || false,
+        ai_comment: `手動インポート(Instagram) / ハッシュタグ:${b.hashtags || '-'}${b.memo ? ' / ' + b.memo : ''}${e.status ? ` / 補完[${e.status}]` : ''}`.slice(0, 500),
+        auto_import_reason: temperature === 'HOT' ? '手動インポート(Instagram) HOT: 電話+住所+新店根拠あり' : null,
+        owner_reachability_score: phone ? 70 : 30,
+      }
+      let candidateId: string | null = existing?.id || null
+      if (candidateId) await admin.from('lead_candidates').update(payload).eq('id', candidateId)
+      else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: auth.userId }).select('id').single(); candidateId = ins?.id || null }
+      // HOTならcases投入（電話重複は既存案件へリンク）
+      let importedCaseId: string | null = existing?.imported_case_id || null
+      let imported = false
+      if (temperature === 'HOT' && phoneOk && candidateId && !existing?.imported_to_cases) {
+        const dupCaseId = await findCaseIdByPhone(admin, phone)
+        if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId); importedCaseId = dupCaseId }
+        else {
+          const memo = [`【手動インポート / Instagram】`, `URL: ${igUrl}`, `ハッシュタグ: ${b.hashtags || '-'}`, b.memo ? `メモ: ${b.memo}` : '', `電話: ${phone}`, `住所: ${address}`].filter(Boolean).join('\n')
+          const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: normalizeIndustry(b.industry) || classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '中', instagram: igUrl, hp1: e.official || null, source_urls: igUrl, memo, created_by_id: auth.userId }).select('id').single()
+          if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); importedCaseId = created.id; imported = true }
+        }
+      }
+      return res.status(200).json({ ok: true, manualImport: true, candidateId, temperature, name, phone, address, imported, importedCaseId, duplicate: !!existing, hot_reject_summary: rc.hr.hot_reject_summary })
     }
 
     // body.settings(UI手動) が無ければ app_config を参照

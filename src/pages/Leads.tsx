@@ -120,6 +120,8 @@ export default function Leads() {
   const [iwDiag, setIwDiag] = useState<any>(null)
   const [iwRunning, setIwRunning] = useState(false)
   const [iwResult, setIwResult] = useState<any>(null)
+  const [iwManual, setIwManual] = useState({ url: '', shopName: '', phone: '', address: '', industry: '', hashtags: '', memo: '' })
+  const [iwImporting, setIwImporting] = useState(false)
   const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
@@ -524,6 +526,45 @@ export default function Leads() {
       load(); loadRuns()
     } catch (e) { toast.error('実行に失敗しました: ' + jpError(e)) } finally { setIwRunning(false) }
   }
+
+  // 外部の複数ハッシュタグ検索ツール等で見つけた Instagram URL を手動インポート
+  async function manualImportIg() {
+    if (!/instagram\.com/i.test(iwManual.url)) { toast.error('Instagram の投稿/プロフィールURLを入力してください'); return }
+    setIwImporting(true)
+    try {
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess.session?.access_token
+      if (!token) { toast.error('ログインが必要です'); return }
+      const res = await fetch('/api/cron/instagram-web-leads', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ manualImport: { instagramUrl: iwManual.url.trim(), shopName: iwManual.shopName, phone: iwManual.phone, address: iwManual.address, industry: iwManual.industry, hashtags: iwManual.hashtags, memo: iwManual.memo } }),
+      })
+      const raw = await res.text(); let j: any; try { j = JSON.parse(raw) } catch { j = { ok: false, error: `サーバーエラー(HTTP ${res.status})` } }
+      if (!res.ok || j.ok === false) { toast.error(typeof j.error === 'string' ? j.error : 'インポートに失敗しました'); return }
+      const head = j.imported ? `✅ 案件へ投入（${j.name}）` : j.temperature === 'HOT' ? `HOT（既存案件へリンク: ${j.name}）` : `${j.temperature}で保存（${j.name}）`
+      toast.success(`手動インポート: ${head}｜電話${j.phone || '—'} / 住所${j.address || '—'}${j.duplicate ? ' / 既存候補を更新' : ''}${j.hot_reject_summary ? ' / ' + j.hot_reject_summary : ''}`)
+      setIwManual({ url: '', shopName: '', phone: '', address: '', industry: '', hashtags: '', memo: '' })
+      load(); loadRecentImported()
+    } catch (e) { toast.error('インポートに失敗しました: ' + jpError(e)) } finally { setIwImporting(false) }
+  }
+
+  // 外部の複数ハッシュタグ検索ツール（Google CSE）。検索語をハッシュに載せて開く。
+  const EXT_TOOL_URL = 'https://xn--n8jvkib9a4a8p9bzdx320b0p4b.com/tool/multi-search.php'
+  const extToolLink = (expr: string) => `${EXT_TOOL_URL}#gsc.tab=0&gsc.q=${encodeURIComponent(expr)}`
+  const copyText = (t: string) => { navigator.clipboard?.writeText(t).then(() => toast.success('コピーしました'), () => toast.error('コピーできませんでした')) }
+  // 複数ハッシュタグ検索の高精度な検索式（新店ワード×業種）。外部ツール確認・RST自動検索の両方で使う考え方。
+  const MULTI_EXPRS: { label: string; expr: string }[] = [
+    { label: '新規オープン×カフェ', expr: '#新規オープン #カフェ #開業準備' },
+    { label: 'オープン予定×美容室', expr: '#オープン予定 #美容室 #新規オープン' },
+    { label: '開業しました×整体院', expr: '#開業しました #整体院 #新規開業' },
+    { label: '初投稿×新規オープン', expr: '#初投稿 #新規オープン #はじめまして' },
+    { label: '開院しました×歯科', expr: '#開院しました #歯科 #新規開院' },
+    { label: 'プレオープン×ネイルサロン', expr: '#プレオープン #ネイルサロン #新規オープン' },
+    { label: '内装工事中×オープン予定', expr: '#内装工事中 #オープン予定 #店舗準備中' },
+    { label: '看板つきました×新店舗', expr: '#看板つきました #新店舗 #もうすぐオープン' },
+    { label: 'はじめまして×開業準備', expr: '#はじめまして #開業準備 #独立開業' },
+    { label: 'テイクアウト×新規オープン', expr: '#テイクアウト #新規オープン #開店しました' },
+  ]
 
   async function rejudgeCandidate(c: LeadCandidate) {
     try {
@@ -2375,6 +2416,51 @@ export default function Leads() {
                 )}
               </div>
             )}
+          </div>
+
+          {/* Instagram複数ハッシュタグ検索・外部ツール確認・手動インポート */}
+          <div className="rounded-xl border-2 border-fuchsia-500/30 bg-card p-3">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-bold text-fuchsia-600 dark:text-fuchsia-300">🔎 Instagram複数ハッシュタグ検索（高精度・新店候補）</span>
+              <Button size="sm" onClick={runIw} disabled={iwRunning || !settings.iwEnabled} title="新店ワード×業種の掛け合わせ＋高精度ANDクエリでInstagram Web検索を実行">{iwRunning ? '検索中…' : '複数ハッシュタグ検索を実行'}</Button>
+            </div>
+            <div className="mb-2 text-[10px] text-muted-foreground">単発ハッシュタグより精度が高い「新店ワード×業種」「"新規オープン"×"電話番号/住所"」の掛け合わせで自動検索します（RSTの自動取得はSerper/Bing/Google主軸）。下の検索式は<b>外部の複数検索ツールでの手動確認</b>にも使えます。見つけたURLは右下から手動インポートできます。</div>
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {/* 検索式（コピー＋外部ツール確認） */}
+              <div className="rounded border border-border/60 p-2">
+                <div className="mb-1 text-[11px] font-bold">検索式（コピー / 外部ツールで確認）</div>
+                <div className="max-h-56 space-y-1 overflow-y-auto">
+                  {MULTI_EXPRS.map((m) => (
+                    <div key={m.expr} className="flex items-center gap-1 rounded bg-muted/40 px-1.5 py-1 text-[10px]">
+                      <span className="w-32 shrink-0 truncate font-medium" title={m.label}>{m.label}</span>
+                      <span className="min-w-0 flex-1 truncate text-muted-foreground" title={m.expr}>{m.expr}</span>
+                      <button onClick={() => copyText(m.expr)} className="shrink-0 rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10">コピー</button>
+                      <a href={extToolLink(m.expr)} target="_blank" rel="noreferrer" className="shrink-0 rounded border border-fuchsia-500 px-1.5 py-0.5 text-fuchsia-600 hover:bg-fuchsia-500/10 dark:text-fuchsia-300">外部ツール</a>
+                    </div>
+                  ))}
+                </div>
+                <a href={`${EXT_TOOL_URL}#gsc.tab=0`} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[10px] text-fuchsia-600 hover:underline dark:text-fuchsia-300">↗ Instagram複数ハッシュタグ検索ツールを開く</a>
+              </div>
+              {/* 手動インポート */}
+              <div className="rounded border border-border/60 p-2">
+                <div className="mb-1 text-[11px] font-bold">Instagram URL 手動インポート</div>
+                <div className="space-y-1">
+                  <Input value={iwManual.url} onChange={(e) => setIwManual({ ...iwManual, url: e.target.value })} placeholder="Instagram投稿/プロフィールURL（必須）" className="h-8 text-xs" />
+                  <div className="grid grid-cols-2 gap-1">
+                    <Input value={iwManual.shopName} onChange={(e) => setIwManual({ ...iwManual, shopName: e.target.value })} placeholder="店名候補（任意）" className="h-8 text-xs" />
+                    <Input value={iwManual.industry} onChange={(e) => setIwManual({ ...iwManual, industry: e.target.value })} placeholder="業種（任意）" className="h-8 text-xs" />
+                    <Input value={iwManual.phone} onChange={(e) => setIwManual({ ...iwManual, phone: e.target.value })} placeholder="電話番号（任意・自動補完）" className="h-8 text-xs" />
+                    <Input value={iwManual.address} onChange={(e) => setIwManual({ ...iwManual, address: e.target.value })} placeholder="住所（任意・自動補完）" className="h-8 text-xs" />
+                    <Input value={iwManual.hashtags} onChange={(e) => setIwManual({ ...iwManual, hashtags: e.target.value })} placeholder="使用ハッシュタグ（任意）" className="h-8 text-xs" />
+                    <Input value={iwManual.memo} onChange={(e) => setIwManual({ ...iwManual, memo: e.target.value })} placeholder="メモ（任意）" className="h-8 text-xs" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" onClick={manualImportIg} disabled={iwImporting || !iwManual.url.trim()}>{iwImporting ? 'インポート中…' : 'RSTへ手動インポート'}</Button>
+                    <span className="text-[9px] text-muted-foreground">URL正規化→重複チェック→プロフィール/Places補完→電話・住所検証→HOT判定→HOTはcases投入</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Instagram Web検索 パネル */}
