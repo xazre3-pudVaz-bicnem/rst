@@ -19,14 +19,14 @@ import { DEFAULT_STATUS } from './constants.js'
 export function getDefaultIwSettings() {
   return {
     iwEnabled: true,
-    iwAutoImport: false,        // HOT自動投入（初期OFF・HOLD中心）
+    iwAutoImport: true,         // HOT自動投入（初期ON：HOT-A/HOT-B＝電話+住所+新店根拠+日本のみ投入）
     iwRequirePhone: false,      // 電話番号必須（初期OFF）
     iwPlacesRequired: false,    // Google Places照合必須（初期OFF）
     iwAnthropic: true,          // Anthropic判定（初期ON）
     iwMaxRunsPerDay: 4,         // 1日最大実行回数
-    iwPerRun: 30,               // 1回最大クエリ数（後方互換）
-    iwMaxQueriesPerRun: 30,     // 1回最大クエリ数（最低30・最大50）
-    iwMaxQueriesPerDay: 120,    // 1日最大クエリ数
+    iwPerRun: 40,               // 1回最大クエリ数（後方互換）
+    iwMaxQueriesPerRun: 40,     // 1回最大クエリ数（30〜50推奨）
+    iwMaxQueriesPerDay: 150,    // 1日最大クエリ数
     iwPerQuery: 10,             // 1クエリ取得件数
     iwAnthropicDailyCap: 100,   // 1日最大AI判定件数
     iwProvider: 'serper',       // 検索プロバイダ: serper / bing / both
@@ -43,40 +43,98 @@ export function getDefaultIwSettings() {
   }
 }
 
-// 簡易クエリ（Serper無料枠向け。site:・完全一致クォート・「日本」「地域名」「業種名」を使わない）。地域/業種は取得後の抽出・判定で見る。
-export const NATIONAL_QUERIES_SIMPLE = [
-  // 新店ワード本体（言い換えを大幅に拡充）
-  'Instagram 新規オープンしました', 'Instagram 新規OPEN', 'Instagram 新規オープン', 'Instagram ニューオープン',
-  'Instagram New Open', 'Instagram NEW OPEN', 'Instagram グランドオープン', 'Instagram GRAND OPEN',
-  'Instagram プレオープン', 'Instagram pre open', 'Instagram オープンしました', 'Instagram オープンします',
-  'Instagram 開店しました', 'Instagram 開店します', 'Instagram 開業しました', 'Instagram 開業します',
-  'Instagram 開院しました', 'Instagram 開院します', 'Instagram 開設しました', 'Instagram 開設します',
-  'Instagram リニューアルオープン', 'Instagram 移転オープン', 'Instagram 本日オープン', 'Instagram 明日オープン',
-  'Instagram 近日オープン', 'Instagram もうすぐオープン', 'Instagram オープン準備中', 'Instagram 内装工事中',
-  'Instagram 物件決まりました', 'Instagram 看板つきました', 'Instagram 予約開始', 'Instagram 受付開始',
-  'Instagram 初投稿', 'Instagram はじめまして', 'Instagram 店舗準備', 'Instagram お店作り',
-  'Instagram 開店準備', 'Instagram 独立開業', 'Instagram 新店舗', 'Instagram 新店', 'Instagram 新しいお店',
-  // ハッシュタグ系
-  '#新規オープン Instagram', '#ニューオープン Instagram', '#グランドオープン Instagram', '#プレオープン Instagram',
-  '#開店 Instagram', '#開業 Instagram', '#開院 Instagram', '#新店 Instagram', '#新店舗 Instagram',
-  '#オープンしました Instagram', '#オープン準備中 Instagram', '#開店準備 Instagram', '#独立開業 Instagram',
-  '#移転オープン Instagram', '#リニューアルオープン Instagram', '#本日オープン Instagram', '#明日オープン Instagram',
-  '#近日オープン Instagram', '#予約開始 Instagram', '#受付開始 Instagram',
+// ============================================================
+// Instagram Web検索クエリ定義（優先度 S/A/B/C 付き・全国対応）。
+//   S: 新規オープン確定系（最頻・毎日実行）  A: 開業前兆・初投稿・準備系
+//   B: 業種別オープン（飲食/美容/整体/医療/ペット/教室/その他）  C: 開業前シグナル
+// 地域/業種はクエリに含めず、取得後の本文抽出・判定で見る（全国を薄く広く拾う）。
+// ローテーションは ig_web_query_log.last_run_at（古い順=未実行優先）＋優先度ボーナスで選択。
+// ============================================================
+export type IwQueryTier = 'S' | 'A' | 'B' | 'C'
+export interface IwQueryDef { q: string; tier: IwQueryTier; cat?: string }
+
+const ig = (w: string) => `Instagram ${w}`
+const tag = (t: string) => `${t} Instagram` // ハッシュタグは「#xxx Instagram」形（simplifyQueryと同形）
+
+// S: 新規オープン確定系（言い換え網羅）
+const S_WORDS = [
+  '新規オープン', '新規オープンしました', '新規OPEN', 'ニューオープン', 'New Open', 'NEW OPEN', 'newopen',
+  'グランドオープン', 'GRAND OPEN', 'プレオープン', 'pre open', '本日オープン', '明日オープン', '近日オープン',
+  'まもなくオープン', 'もうすぐオープン', 'オープン予定', 'オープンしました', 'オープンします',
+  '開店', '開店しました', '開業', '開業しました', '開院', '開院しました', '開設しました',
+  '新規開業', '新規開店', '新店舗', '新店', '新しくオープン', '新しいお店', '移転オープン', 'リニューアルオープン',
 ]
-// 高度クエリ（Bing / 有料Serper向け。site:instagram.com＋完全一致）。「日本」「地域名」「業種名」は入れない。
-export const NATIONAL_QUERIES_ADVANCED = [
-  'site:instagram.com "#新規オープン"', 'site:instagram.com "#ニューオープン"', 'site:instagram.com "#グランドオープン"',
-  'site:instagram.com "#プレオープン"', 'site:instagram.com "#開店"', 'site:instagram.com "#開業"',
-  'site:instagram.com "#開院"', 'site:instagram.com "#新店"', 'site:instagram.com "#新店舗"',
-  'site:instagram.com "#独立開業"', 'site:instagram.com "#移転オープン"', 'site:instagram.com "#リニューアルオープン"',
-  'site:instagram.com "#本日オープン"', 'site:instagram.com "#オープン準備中"', 'site:instagram.com "#開店準備"',
-  'site:instagram.com "新規オープンしました"', 'site:instagram.com "オープンしました"', 'site:instagram.com "開業しました"',
-  'site:instagram.com "開店しました"', 'site:instagram.com "開院しました"', 'site:instagram.com "本日オープン"',
-  'site:instagram.com "グランドオープンしました"', 'site:instagram.com "プレオープンしました"', 'site:instagram.com "リニューアルオープン"',
-  'site:instagram.com "予約開始"', 'site:instagram.com "受付開始"', 'site:instagram.com "独立開業"',
+const S_TAGS = [
+  '#新規オープン', '#ニューオープン', '#newopen', '#newopening', '#newshop', '#グランドオープン', '#プレオープン',
+  '#本日オープン', '#明日オープン', '#近日オープン', '#オープン予定', '#オープンしました',
+  '#開店', '#開店しました', '#開業', '#開業しました', '#開院', '#開院しました',
+  '#新規開業', '#新規開店', '#新店舗', '#新店', '#移転オープン', '#リニューアルオープン',
 ]
+// A: 開業前兆・初投稿・準備系
+const A_WORDS = [
+  '初投稿', 'はじめまして', 'お店を始めました', '独立開業', '開業準備', '開店準備',
+  'オープン準備', 'オープン準備中', '店舗準備中', '予約開始', '受付開始',
+  '初投稿 新規オープン', 'はじめまして 新規オープン',
+]
+const A_TAGS = [
+  '#初投稿', '#はじめまして', '#独立開業', '#開業準備', '#開店準備', '#オープン準備中', '#店舗準備中',
+  '#予約開始', '#受付開始',
+]
+// C: 開業前シグナル（弱め・低頻度ローテ）
+const C_WORDS = [
+  '内装工事中', '看板つきました', '看板がつきました', '物件決まりました', 'もうすぐ開店',
+  '店舗準備', 'お店作り', 'オープンに向けて', '内装工事中 オープン予定', '看板つきました オープン',
+]
+const C_TAGS = ['#内装工事中', '#看板つきました', '#もうすぐオープン', '#まもなくオープン', '#店舗準備中']
+// B: 業種別オープン（飲食/美容/整体/医療/ペット/教室/その他サービス）
+const B_WORDS: { q: string; cat: string }[] = [
+  ...['カフェオープン', '新規オープンカフェ', 'ニューオープンカフェ', 'カフェ開業', 'カフェ開店', 'カフェ開業準備',
+    '飲食店オープン', '飲食店開業', '居酒屋オープン', 'ラーメン屋オープン', '焼肉屋オープン', 'バーオープン',
+    'レストランオープン', 'テイクアウトオープン', 'キッチンカー開業'].map((q) => ({ q, cat: '飲食' })),
+  ...['美容室オープン', '美容室開業', 'ヘアサロンオープン', 'サロンオープン', 'ネイルサロンオープン',
+    'アイラッシュサロンオープン', 'エステサロンオープン', '脱毛サロンオープン', 'プライベートサロンオープン',
+    '自宅サロン開業', 'サロン開業準備', 'サロン開業'].map((q) => ({ q, cat: '美容' })),
+  ...['整体院オープン', '整体院開業', 'リラクゼーションサロンオープン', 'マッサージ店オープン', 'もみほぐしオープン',
+    '鍼灸院開業', '整骨院開業', 'パーソナルジムオープン', 'ジムオープン', 'パーソナルジム開業'].map((q) => ({ q, cat: '整体・リラク' })),
+  ...['歯科医院 開院', '歯科開院', 'クリニック開院', '新規開院', '内覧会 開院', '開院準備',
+    '動物病院開院', '薬局オープン'].map((q) => ({ q, cat: '医療・歯科' })),
+  ...['ペットサロンオープン', 'トリミングサロンオープン', 'ドッグサロンオープン', 'ペットホテルオープン'].map((q) => ({ q, cat: 'ペット' })),
+  ...['教室開業', '習い事教室オープン', 'ピアノ教室開業', '英会話教室オープン', '学習塾開校', '塾開業'].map((q) => ({ q, cat: '教室・スクール' })),
+  ...['ハウスクリーニング開業', '不用品回収開業', 'リフォーム会社開業', '写真スタジオオープン',
+    'セレクトショップオープン', '雑貨屋オープン', '古着屋オープン'].map((q) => ({ q, cat: 'その他' })),
+]
+
+// 簡易クエリ（Serper無料枠向け。site:・完全一致クォートを使わない自然文＋#）
+export const IW_QUERY_DEFS: IwQueryDef[] = [
+  ...S_WORDS.map((w) => ({ q: ig(w), tier: 'S' as const })),
+  ...S_TAGS.map((t) => ({ q: tag(t), tier: 'S' as const })),
+  ...A_WORDS.map((w) => ({ q: ig(w), tier: 'A' as const })),
+  ...A_TAGS.map((t) => ({ q: tag(t), tier: 'A' as const })),
+  ...B_WORDS.map((b) => ({ q: ig(b.q), tier: 'B' as const, cat: b.cat })),
+  ...C_WORDS.map((w) => ({ q: ig(w), tier: 'C' as const })),
+  ...C_TAGS.map((t) => ({ q: tag(t), tier: 'C' as const })),
+]
+export const NATIONAL_QUERIES_SIMPLE = IW_QUERY_DEFS.map((d) => d.q)
+
+// 高度クエリ（Bing / 有料Serper向け。site:instagram.com＋完全一致）。地域/業種名は入れない。
+const ADV_S = ['新規オープン', 'ニューオープン', 'グランドオープン', 'プレオープン', '本日オープン', 'オープンしました',
+  '開店しました', '開業しました', '開院しました', '新規開店', '新店舗', '移転オープン', 'リニューアルオープン']
+const ADV_A = ['初投稿 新規オープン', 'はじめまして 新規オープン', '開業準備', '開店準備', 'オープン準備中', '独立開業', '予約開始', '受付開始']
+const ADV_B = ['カフェオープン', '美容室オープン', '整体院オープン', '歯科医院 開院', 'ペットサロン オープン', 'サロン開業', 'ネイルサロンオープン', 'ジムオープン']
+export const IW_QUERY_DEFS_ADVANCED: IwQueryDef[] = [
+  ...ADV_S.map((w) => ({ q: `site:instagram.com "${w}"`, tier: 'S' as const })),
+  ...ADV_A.map((w) => ({ q: `site:instagram.com ${w}`, tier: 'A' as const })),
+  ...ADV_B.map((w) => ({ q: `site:instagram.com ${w}`, tier: 'B' as const })),
+]
+export const NATIONAL_QUERIES_ADVANCED = IW_QUERY_DEFS_ADVANCED.map((d) => d.q)
 // 後方互換（既存参照用）。既定は簡易クエリ。
 export const NATIONAL_QUERIES = NATIONAL_QUERIES_SIMPLE
+
+// クエリ→優先度ランク（ローテーションの重み付け用）。S=最優先。
+export const IW_QUERY_TIER = new Map<string, IwQueryTier>(
+  [...IW_QUERY_DEFS, ...IW_QUERY_DEFS_ADVANCED].map((d) => [d.q, d.tier] as [string, IwQueryTier]),
+)
+export const IW_TIER_RANK: Record<IwQueryTier, number> = { S: 4, A: 3, B: 2, C: 1 }
 
 /** site:・完全一致クォート・「日本」を外した簡易クエリへ変換（Serper無料枠/フォールバック用） */
 export function simplifyQuery(q: string): string {
@@ -587,14 +645,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       : (useAdvanced ? NATIONAL_QUERIES_ADVANCED : NATIONAL_QUERIES_SIMPLE)
     debug.searchMode = searchMode; debug.iwProvider = iwProvider; debug.querySet = iwProvider === 'both' ? 'simple+advanced' : (useAdvanced ? 'advanced(site:)' : 'simple')
     debug.querySetSize = querySet.length
-    // クエリ回転: 以前は querySet.slice(0, runQueryLimit) 固定で、先頭N件(既定30)より後ろのクエリが
-    // 永久に実行されなかった（querySetは60〜85件）。ig_web_query_log の最終実行日時で「古い順(未実行=最優先)」
-    // に並べ替えてから選ぶことで、全クエリが順に実行される。
+    // クエリ回転（優先度順＋ローテーション）: ig_web_query_log の最終実行日時で「古い順(未実行=最優先)」に
+    // 並べつつ、優先度ボーナス（S>A>B>C）を減算して有効age を底上げ。これにより S系は毎回上位に来て高頻度、
+    // 一方で長く実行されていないB/Cも有効ageが大きくなり順に浮上する（低優先クエリが永久に埋もれない）。
+    const TIER_BONUS_MS = 2 * 86400000 // 1ランク=2日ぶんの「見かけの古さ」
+    const effAge = (q: string, lastRun: Map<string, number>) =>
+      (lastRun.get(q) ?? 0) - (IW_TIER_RANK[IW_QUERY_TIER.get(q) || 'B'] ?? 2) * TIER_BONUS_MS
     let ordered = querySet
     {
       const { data: qlog } = await admin.from('ig_web_query_log').select('query,last_run_at').in('query', querySet).limit(5000)
       const lastRun = new Map<string, number>((qlog || []).map((r: any) => [String(r.query), Date.parse(r.last_run_at || '') || 0]))
-      ordered = [...querySet].sort((a, b) => (lastRun.get(a) ?? 0) - (lastRun.get(b) ?? 0))
+      ordered = [...querySet].sort((a, b) => effAge(a, lastRun) - effAge(b, lastRun))
     }
     const notSkipped = ordered.filter((q) => !recent.has(q))
     let picked = notSkipped.slice(0, runQueryLimit)
@@ -604,6 +665,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     debug.skippedByRecent = querySet.length - notSkipped.length
     debug.skippedByLimit = Math.max(0, notSkipped.length - picked.length)
     debug.runQueryLimit = runQueryLimit
+    // 今回実行クエリの優先度内訳（UI/ログ確認用）
+    debug.pickedTiers = picked.reduce((a: Record<string, number>, q) => { const t = IW_QUERY_TIER.get(q) || 'B'; a[t] = (a[t] || 0) + 1; return a }, { S: 0, A: 0, B: 0, C: 0 })
     debug.queryLimitReason = runQueryLimit < perRun ? `本日のクエリ上限(残り${remainingQueries}/${maxQueriesPerDay})` : (picked.length < perRun ? `クエリ定義/スキップにより${picked.length}件` : 'OK')
     // 補完: 1日の補完候補上限と、7日以内に実行済みの補完クエリ
     const { count: enrichedTodayCount } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
@@ -841,7 +904,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (insErr) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(insErr.message) } else counts.saved++
         const candidateId = ins?.id || null
 
-        if (s.iwAutoImport && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
+        // 自動投入は「最終temperature=HOT」かつ「tierが投入可(HOT_A/HOT_B)」かつ「電話あり」のみ。
+        // ※大型/多店舗/高フォロワー等でtemperatureをEXCLUDEDへ強制降格した候補（sc.tierはHOTのまま）を投入しない安全ゲート。
+        if (s.iwAutoImport && temperature === 'HOT' && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
           const dupCaseId = await findCaseIdByPhone(admin, finalPhone)
           if (dupCaseId) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)

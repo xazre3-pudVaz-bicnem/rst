@@ -1593,13 +1593,13 @@ export default function Leads() {
                     <div className="text-[10px] text-muted-foreground">Serper無料枠は site:instagram.com や "完全一致" が使えません。簡易検索（例: Instagram 開業しました / #新規オープン Instagram）に自動でフォールバックします。</div>
                   </div>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAnthropic} onChange={(e) => saveSettings({ ...settings, iwAnthropic: e.target.checked })} />Anthropic判定（初期ON）</label>
-                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期OFF）</label>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAutoImport} onChange={(e) => saveSettings({ ...settings, iwAutoImport: e.target.checked })} />HOT自動投入（初期ON：電話+住所+新店根拠+日本のHOT-A/HOT-Bのみ）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwAllowNoPhone} onChange={(e) => saveSettings({ ...settings, iwAllowNoPhone: e.target.checked })} />電話番号なしでもHOT許可（初期OFF・通常は電話番号なしはHOLD）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwRequirePhone} onChange={(e) => saveSettings({ ...settings, iwRequirePhone: e.target.checked })} />電話番号必須（初期OFF）</label>
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.iwPlacesRequired} onChange={(e) => saveSettings({ ...settings, iwPlacesRequired: e.target.checked })} />Places照合必須（初期OFF）</label>
                   <div className="space-y-1"><Label>1日最大実行回数</Label><Input type="number" min={1} value={settings.iwMaxRunsPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxRunsPerDay: Math.max(1, Number(e.target.value) || 4) })} className="h-8" /></div>
-                  <div className="space-y-1"><Label>1回最大クエリ数（30〜50推奨）</Label><Input type="number" min={1} max={50} value={settings.iwMaxQueriesPerRun ?? 30} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 30)), iwPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 30)) })} className="h-8" /></div>
-                  <div className="space-y-1"><Label>1日最大クエリ数</Label><Input type="number" min={1} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Number(e.target.value) || 120) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1回最大クエリ数（30〜50推奨）</Label><Input type="number" min={1} max={50} value={settings.iwMaxQueriesPerRun ?? 40} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 40)), iwPerRun: Math.max(1, Math.min(50, Number(e.target.value) || 40)) })} className="h-8" /></div>
+                  <div className="space-y-1"><Label>1日最大クエリ数（最大150）</Label><Input type="number" min={1} max={150} value={settings.iwMaxQueriesPerDay} onChange={(e) => saveSettings({ ...settings, iwMaxQueriesPerDay: Math.max(1, Math.min(150, Number(e.target.value) || 150)) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>1クエリ取得件数（最大20）</Label><Input type="number" min={1} max={20} value={settings.iwPerQuery} onChange={(e) => saveSettings({ ...settings, iwPerQuery: Math.max(1, Math.min(20, Number(e.target.value) || 10)) })} className="h-8" /></div>
                   <div className="space-y-1"><Label>検索プロバイダ</Label>
                     <select value={settings.iwProvider || 'serper'} onChange={(e) => saveSettings({ ...settings, iwProvider: e.target.value as any })} className="h-8 w-full rounded border border-input bg-card px-2 text-sm">
@@ -2382,6 +2382,8 @@ export default function Leads() {
                       <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">AI判定 {iwResult.judged ?? 0}</span>
                       <span className="rounded bg-muted px-1.5 py-0.5">ルール判定 {iwResult.heuristicUsed ?? 0}</span>
                       <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700 dark:bg-red-500/20 dark:text-red-300">HOT {iwResult.hot ?? 0}</span>
+                      <span className="rounded bg-red-200 px-1.5 py-0.5 font-bold text-red-800 dark:bg-red-500/30 dark:text-red-200">HOT-A {iwResult.hotA ?? 0}</span>
+                      <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">HOT-B {iwResult.hotB ?? 0}</span>
                       <span className="rounded bg-slate-100 px-1.5 py-0.5 dark:bg-slate-700">HOLD {iwResult.hold ?? 0}</span>
                       <span className="rounded bg-zinc-200 px-1.5 py-0.5 dark:bg-zinc-700">EXCLUDED {iwResult.excluded ?? 0}</span>
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-500/20 dark:text-green-300">投入 {iwResult.imported ?? 0}</span>
@@ -2405,6 +2407,10 @@ export default function Leads() {
                     <div className="flex flex-wrap gap-1.5 text-[10px]">
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日実行 {iwResult.debug?.runsToday ?? '-'}回</span>
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">本日クエリ {iwResult.debug?.queriesToday ?? 0}</span>
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">クエリ定義 {iwResult.debug?.querySetSize ?? 0}件</span>
+                      {iwResult.debug?.pickedTiers && (
+                        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300" title="今回実行クエリの優先度内訳（S:新規オープン確定 / A:開業前兆 / B:業種別 / C:前兆シグナル）">優先度 S{iwResult.debug.pickedTiers.S ?? 0}/A{iwResult.debug.pickedTiers.A ?? 0}/B{iwResult.debug.pickedTiers.B ?? 0}/C{iwResult.debug.pickedTiers.C ?? 0}</span>
+                      )}
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">AI残枠 {iwResult.debug?.anthropicBudget ?? '-'}</span>
                       <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">推定Serper ¥{iwResult.debug?.estSerperCost ?? 0}</span>
                       <span className="rounded bg-rose-100 px-1.5 py-0.5 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300">推定AI ¥{iwResult.debug?.estAnthropicCost ?? 0}</span>
