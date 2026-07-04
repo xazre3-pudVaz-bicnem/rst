@@ -9,7 +9,7 @@ import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from '
 import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
-import { computeQuality, detectNegative, isRealStoreAddress } from './leadQuality.js'
+import { computeQuality, detectNegative, isRealStoreAddress, phoneAddressMatch } from './leadQuality.js'
 import { hardExcludeReason } from './excludeGate.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { addSignals, applySalesScore } from './leadSignals.js'
@@ -356,6 +356,176 @@ export async function runBulkUrlImport(admin: any, mapsKey: string | null, urls:
 }
 
 // ============================================================
+// 4.2) 抽出済み店舗レコードの一括取込（新店まとめ記事の展開・ニュース由来などで共用）
+//   店名+電話（+住所）を受け取り、補完→品質ゲート→重複→signal→HOT判定→保存→HOT投入まで行う。
+// ============================================================
+export interface ExtractedStore { name: string; phone: string; address?: string; snippet?: string }
+export async function ingestExtractedStores(admin: any, mapsKey: string | null, stores: ExtractedStore[], o: {
+  sourceType: string; label: string; signalType: string; sourceUrl: string; evidenceIso?: string | null
+  userId: string | null; runId?: string | null; budgetEndMs?: number
+}): Promise<any> {
+  const endMs = o.budgetEndMs || (Date.now() + 40000)
+  const remain = () => endMs - Date.now()
+  const nowIso = new Date().toISOString()
+  const out: any = { processed: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, importedCases: [] as any[] }
+  let estabLookups = 0
+  for (const st of stores) {
+    if (remain() < 16000) break
+    const phone = (st.phone || '').trim()
+    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
+    if (!phoneOk) continue
+    out.processed++
+    // 再実行/重複の高速スキップ: 同一電話の投入済み候補
+    const { data: dup } = await admin.from('lead_candidates').select('id,imported_to_cases,discovery_source_type,lead_source').eq('phone_number', phone).limit(1)
+    if (dup?.[0]?.imported_to_cases) { out.excluded += 0; continue }
+    let address = (st.address || '').trim()
+    let e: any = null
+    if (!address && mapsKey && remain() > 14000) { e = await withTimeout(enrichCandidate(mapsKey, { shop: st.name, username: '', areaHint: '', industry: '', havePhone: phone, haveAddress: '' }, { maxQueries: 1, perQuery: 4 }), 10000, null); address = e?.address || '' }
+    const sn = sanitizeShopName(e?.place_name || st.name, { placesMatched: !!e?.place_id })
+    const name = sn.valid ? sn.name : (st.name || '店名未確定')
+    const text = `${name} ${st.snippet || ''}`
+    const big = detectBigOrPublic(`${name} ${address}`); const chain = detectChain(name); const multi = detectMultiStore(text)
+    const hardEx = hardExcludeReason({ name, phone, text })
+    const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone))
+    const pmMismatch = phoneAddressMatch(phone, address) === 'mismatch'
+    let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null; let holdReason = ''
+    if (big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || hardEx) temperature = 'EXCLUDED'
+    else if (phoneOk && address && isRealStoreAddress(address) && isJapan && !pmMismatch) { temperature = 'HOT'; hotTier = 'B' }
+    else holdReason = !address || !isRealStoreAddress(address) ? '実店舗住所なし' : pmMismatch ? '電話と住所の地域不一致（誤抽出の疑い）' : '要確認'
+    // 既存店ガード（まとめ記事は既存店も混ざるため、投入前にGoogle口コミで確認。上限つき）
+    if (temperature === 'HOT' && mapsKey && sn.valid && estabLookups < 3 && remain() > 12000) {
+      estabLookups++
+      const est = await withTimeout(placesEstablishmentSignal(mapsKey, name, address), 7000, null as any)
+      if (est && ((est.count != null && est.count >= BIG_GOOGLE_REVIEWS) || (est.oldestDays != null && est.oldestDays > 30))) { temperature = 'HOLD'; hotTier = null; holdReason = `既存店の疑い（Google口コミ${est.count ?? '?'}件/最古${est.oldestDays ?? '?'}日前）` }
+    }
+    if (temperature === 'HOT') { out.hot++; out.hotB++ } else if (temperature === 'EXCLUDED') out.excluded++; else out.hold++
+    const reason = `${o.label}: 「${name}」${o.evidenceIso ? ` / 根拠日:${o.evidenceIso.slice(0, 10)}` : ''}${holdReason ? `（HOLD理由: ${holdReason}）` : ''}`
+    const payload: any = {
+      name, address: address || null, phone_number: phone, extracted_phone: phone, extracted_address: address || null,
+      website_url: e?.official || null, official_url: e?.official || null,
+      source: o.sourceType, lead_source: o.sourceType, discovery_source_type: o.sourceType, source_type: `AI自動投入(${o.label})`, source_site_name: o.label, parser_used: 'store_block_extract',
+      source_detail_url: `${o.sourceUrl}#tel-${phone.replace(/\D/g, '')}`, search_snippet: (st.snippet || '').slice(0, 300),
+      newness_type: o.signalType, regional_media_newness_reason: reason, regional_media_detected_at: o.evidenceIso || nowIso, first_discovered_at: nowIso,
+      lead_temperature: temperature, hot_tier: hotTier, recommended_status: temperature === 'HOT' ? 'HOT_B' : temperature, should_exclude_from_call_list: temperature === 'EXCLUDED',
+      name_unconfirmed_hot: temperature === 'HOT' && !sn.valid, phone_source: 'detail_page', matched_google_place_id: e?.place_id || null, extracted_shop_name: name,
+      owner_reachability_score: 65, auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason, last_seen_at: nowIso, source_run_id: o.runId || null,
+      auto_insert_skipped_reason: temperature === 'HOLD' && holdReason ? holdReason : null,
+    }
+    const qr = computeQuality(payload)
+    Object.assign(payload, { quality_score: qr.score, quality_grade: qr.grade, industry_category: qr.category, dedup_key: qr.dedupKey, quality_flags: qr.flags, phone_pref_match: qr.phoneMatch, quality_computed_at: nowIso })
+    let candidateId: string | null = dup?.[0]?.id || null
+    if (candidateId) await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {})
+    else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: o.userId }).select('id').single(); candidateId = ins?.id || null; if (candidateId) out.saved++ }
+    if (candidateId) await addSignals(admin, candidateId, [{ type: o.signalType, source: o.label, url: o.sourceUrl, date: o.evidenceIso || null, text: name.slice(0, 180), confidence: 0.7 }])
+    if (temperature === 'HOT' && candidateId) {
+      const dupCaseId = await findCaseIdByPhone(admin, phone)
+      if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+      else {
+        const memo = `【AI自動投入 / ${o.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\n掲載元: ${o.sourceUrl}`
+        const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: e?.official || null, source_urls: o.sourceUrl, memo, created_by_id: o.userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+        if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); out.imported++; out.importedCases.push({ id: created.id, name, phone, address }) }
+      }
+    }
+  }
+  return out
+}
+
+// ============================================================
+// 4.3) Googleニュース RSS 新店取込（キー不要・Serper消費ゼロ・直近7日のニュースだけ）
+// ============================================================
+const NEWS_QUERIES = ['新規オープン 店舗', 'グランドオープン', 'ニューオープン', '開院 クリニック', '新規開業 店', 'オープン予定 店舗']
+export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts: { runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
+  const startMs = Date.now(); const budgetMs = Math.max(20000, Math.min(50000, opts.runBudgetMs || 48000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const counts: any = { sourceType: 'google_news_rss_opening', label: 'Googleニュース新店(RSS)', queries: 0, items: 0, fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, seenSkipped: 0 }
+  const runId = await startRun(admin, 'google_news_rss_opening', userId)
+  const importedCases: any[] = []
+  try {
+    // 日替わりで2クエリずつローテーション
+    const dayIdx = Math.floor(Date.now() / 86400000)
+    const picked = [NEWS_QUERIES[dayIdx % NEWS_QUERIES.length], NEWS_QUERIES[(dayIdx + 1) % NEWS_QUERIES.length]]
+    for (const q of picked) {
+      if (remain() < 30000) break
+      counts.queries++
+      const rss = await fetchText(`https://news.google.com/rss/search?q=${encodeURIComponent(`${q} when:7d`)}&hl=ja&gl=JP&ceid=JP:ja`, 8000, 'application/rss+xml')
+      if (!rss.ok || !rss.text) continue
+      const items = Array.from(rss.text.matchAll(/<item>([\s\S]*?)<\/item>/g)).map((m) => m[1]).slice(0, 10)
+      for (const it of items) {
+        // 1件あたり最悪 ~28s（fetch8+enrich12+既存店8）。残り30s未満なら次回へ（60秒枠死守）
+        if (remain() < 30000) break
+        const link = (it.match(/<link>([^<]+)<\/link>/)?.[1] || '').trim()
+        const title = (it.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1] || '').trim()
+        const pub = Date.parse(it.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1] || '')
+        if (!/^https?:\/\//.test(link)) continue
+        if (!Number.isNaN(pub) && (Date.now() - pub) > 7 * 86400000) continue
+        counts.items++
+        // 既読スキップ
+        const { data: seen } = await admin.from('discovery_seen_urls').select('id').eq('source_type', 'google_news_rss_opening').eq('url', link).limit(1)
+        if (seen?.[0]) { counts.seenSkipped++; continue }
+        await admin.from('discovery_seen_urls').upsert({ source_type: 'google_news_rss_opening', url_hash: link.slice(-80), url: link }, { onConflict: 'source_type,url_hash' }).then(() => {}, () => {})
+        counts.fetched++
+        const r = await ingestFromUrl(admin, mapsKey, { url: link, sourceType: 'google_news_rss_opening', label: 'Googleニュース新店', signalType: 'new_article', evidenceIso: Number.isNaN(pub) ? null : new Date(pub).toISOString(), extraText: title, userId, runId })
+        if (r.temperature === 'HOT') { counts.hot++; if (r.imported) { counts.imported++; importedCases.push({ id: r.importedCaseId, name: r.name, phone: r.phone, address: r.address }) } }
+        else if (r.temperature === 'EXCLUDED') counts.excluded++
+        else if (r.temperature === 'SKIPPED') counts.seenSkipped++
+        else counts.hold++
+      }
+    }
+    await finishRun(admin, runId, counts)
+    return { ok: true, ...counts, importedCases }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+}
+
+// ============================================================
+// 4.4) 開業予定日キュー: Google確認済みの FUTURE_OPENING / 開業予定日45日以内 / 開業30日以内 を HOT-A で自動投入
+//   （開業前〜直後がMEO/HP営業の黄金期。openingDateはGoogle裏取り済みの最強シグナル）
+// ============================================================
+export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
+  const startMs = Date.now(); const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const limit = Math.max(1, Math.min(300, opts.limit || 150))
+  const counts: any = { sourceType: 'opening_soon_promotion', label: '開業予定日キュー', scanned: 0, promotedHot: 0, imported: 0, skipped: 0 }
+  const runId = await startRun(admin, 'opening_soon_promotion', userId)
+  const importedCases: any[] = []
+  try {
+    const { data: rows } = await admin.from('lead_candidates')
+      .select('id,name,phone_number,extracted_phone,address,extracted_address,lead_temperature,hot_tier,google_business_status,days_until_opening,days_since_opening,imported_to_cases,should_exclude_from_call_list,is_chain_store,duplicate_of_case_id,official_url,website_url,instagram_url,google_opening_date_raw')
+      .eq('imported_to_cases', false).neq('lead_temperature', 'EXCLUDED').eq('should_exclude_from_call_list', false)
+      .or('google_business_status.eq.FUTURE_OPENING,days_until_opening.lte.45,days_since_opening.lte.30')
+      .order('first_seen_at', { ascending: false }).limit(limit)
+    for (const c of (rows || []) as any[]) {
+      if (remain() < 6000) break
+      counts.scanned++
+      if (c.is_chain_store || c.duplicate_of_case_id) { counts.skipped++; continue }
+      // 鮮度確認: days_until_opening は負値（開業済み）も lte.45 に一致するため、開業からの経過が大きいものは除外
+      const duo = c.days_until_opening, dso = c.days_since_opening
+      const openingFresh = c.google_business_status === 'FUTURE_OPENING'
+        || (duo != null && duo >= -45 && duo <= 45)
+        || (dso != null && dso >= 0 && dso <= 30)
+      if (!openingFresh) { counts.skipped++; continue }
+      const phone = c.phone_number || c.extracted_phone || ''
+      const address = c.address || c.extracted_address || ''
+      const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
+      if (!phoneOk || !address || !isRealStoreAddress(address) || isForeignAddress(address)) { counts.skipped++; continue }
+      if (phoneAddressMatch(phone, address) === 'mismatch') { counts.skipped++; continue }
+      const name = c.name && c.name !== '店名未確定' ? c.name : ''
+      if (!name || detectChain(name).definite || detectBigOrPublic(`${name} ${address}`).exclude) { counts.skipped++; continue }
+      const why = c.google_business_status === 'FUTURE_OPENING' ? `開業予定(FUTURE_OPENING${c.google_opening_date_raw ? `・${c.google_opening_date_raw}` : ''})`
+        : (c.days_until_opening != null && c.days_until_opening >= 0) ? `開業まで${c.days_until_opening}日`
+        : `開業${Math.abs(c.days_since_opening ?? 0)}日目`
+      await admin.from('lead_candidates').update({ lead_temperature: 'HOT', hot_tier: 'A', recommended_status: 'HOT_A', auto_import_reason: `開業予定日キュー: ${why}（Google openingDate裏取り済み）`, ai_comment: `開業予定日キュー: ${why}。開業前後はMEO/HP提案の最適期。` }).eq('id', c.id)
+      counts.promotedHot++
+      const dupCaseId = await findCaseIdByPhone(admin, phone)
+      const nowIso = new Date().toISOString()
+      if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', c.id); continue }
+      const memo = `【AI自動投入 / 開業予定日キュー / HOT-A】${why}（Google裏取り済み）\n電話: ${phone}\n住所: ${address}\n開業前後はGBP整備・HP・MEOの提案最適期。`
+      const { data: created } = await admin.from('cases').insert({ name, address, phone1: phone, industry: classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '高', hp1: c.official_url || c.website_url || null, instagram: c.instagram_url || null, source_urls: '開業予定日キュー', memo, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+      if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', c.id); counts.imported++; importedCases.push({ id: created.id, name, phone, address }) }
+    }
+    await finishRun(admin, runId, { ...counts, hot: counts.promotedHot })
+    return { ok: true, ...counts, importedCases }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+}
+
+// ============================================================
 // 4.5) テキスト貼り付けインポート（チラシ/PDF/Excel/リストの内容を貼るだけで候補化。OCR不要のファイル取込代替）
 //   空行区切りのブロック（無ければ1行=1件）から 店名/電話/住所 を抽出→Places補完→検証→HOT判定→保存→HOT投入。
 // ============================================================
@@ -508,6 +678,8 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
 export async function runEngineSource(admin: any, mapsKey: string | null, sourceType: string, opts: any, userId: string | null): Promise<any | null> {
   switch (sourceType) {
     case 'new_ssl_certificate_domain_scan': return runSslCertScan(admin, mapsKey, opts, userId)
+    case 'google_news_rss_opening': return runGoogleNewsRss(admin, mapsKey, opts, userId)
+    case 'opening_soon_promotion': return runOpeningSoonQueue(admin, opts, userId)
     case 'wordpress_first_post_scan': return runDomainSignalScan(admin, mapsKey, 'wordpress', opts, userId)
     case 'sitemap_recent_url_scan': return runDomainSignalScan(admin, mapsKey, 'sitemap', opts, userId)
     case 'new_domain_registration_scan': return runDomainSignalScan(admin, mapsKey, 'rdap', opts, userId)

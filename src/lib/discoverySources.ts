@@ -87,6 +87,10 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   // 日付指定オープン検索: 「7月4日オープン」等、過去7日の日付を展開して直近オープンをピンポイントで拾う
   { type: 'dated_opening_search', label: '日付指定オープン検索(過去7日)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
     queries: ['"{md}オープン" 店舗', '"{md} オープン" 電話', '"{md}にオープン"', '"{md}グランドオープン"', '"{md} 開院"'] },
+  // Googleニュース RSS（キー不要・Serper消費ゼロ）: 直近7日の新店ニュースを直接取込
+  { type: 'google_news_rss_opening', label: 'Googleニュース新店(RSS)', group: '新規候補', mode: 'foundation', defaultEnabled: true, signalType: 'new_article', note: '本稼働: Googleニュース RSSで直近7日の新店記事を取込（検索APIキー不要・Serper消費ゼロ）' },
+  // 開業予定日キュー: Google確認済みの開業予定/開業直後の候補を最優先HOT-Aで投入（開業前後が営業の黄金期）
+  { type: 'opening_soon_promotion', label: '開業予定日キュー(HOT-A)', group: '新規候補', mode: 'foundation', defaultEnabled: true, signalType: 'new_gbp', note: '本稼働: FUTURE_OPENING/開業予定日45日以内/開業30日以内の候補（Google openingDate裏取り済み）をHOT-A・優先度高で自動投入' },
   { type: 'job_opening_search', label: 'オープニングスタッフ求人', group: '求人由来', mode: 'serp', defaultEnabled: true, signalType: 'job_opening', freshness: 'month',
     queries: ['オープニングスタッフ 店舗 電話番号', 'オープニングスタッフ 新規オープン 住所', '新規オープン スタッフ募集 電話', 'オープニングスタッフ 飲食店 開店', 'オープニングスタッフ カフェ 開業', 'オープニングスタッフ 美容室 新規', 'オープニングスタッフ ネイルサロン', 'オープニングスタッフ 整体院', 'オープニングスタッフ エステ 開業', '新規開院 スタッフ募集 歯科', '開業予定 クリニック 求人', 'オープニングスタッフ 動物病院', 'オープニングスタッフ ジム 開業'] },
   { type: 'press_release_search', label: 'プレスリリース', group: 'プレスリリース由来', mode: 'serp', defaultEnabled: true, signalType: 'press_release', freshness: 'month',
@@ -265,7 +269,7 @@ export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_pl
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
 export const ENGINE_SOURCE_TYPES = [
   'new_ssl_certificate_domain_scan', 'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
-  'document_to_lead_import', 'event_vendor_list_import',
+  'document_to_lead_import', 'event_vendor_list_import', 'google_news_rss_opening', 'opening_soon_promotion',
   'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
   'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',
   'lead_exclusion_classifier', 'sales_angle_classifier', 'calling_priority_queue', 'industry_fit_score', 'ai_duplicate_merge', 'area_hotspot_expansion',

@@ -18,6 +18,7 @@ import { getSourceDef, pastDates } from './discoverySources.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
+import { ingestExtractedStores } from './newSourceEngines.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -308,6 +309,33 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const pageAgeOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 90
         // 電話×住所の地域整合: 固定電話の市外局番が住所の都道府県と不一致＝別店舗/本社番号の誤抽出の疑い（HOT禁止）
         const pmMismatch = phoneAddressMatch(phone, address) === 'mismatch'
+
+        // ===== 新店まとめ記事の一括展開 =====
+        // 「◯月オープンの新店10選」等のまとめ記事は従来EXCLUDEDで捨てていたが、1ページに複数の新店
+        // （店名/電話/住所）が載っている宝庫。見出し(h2/h3)単位で店舗ブロックを抽出し、それぞれ候補化する。
+        const matomeTitle = /まとめ|ランキング|特集|\d+選|新店(?:情報|ラッシュ|続々)/.test(`${rr.title || ''} ${d.name}`)
+        const uniqPhones = Array.from(new Set((bodyStrip.match(/0\d{1,3}[-(]?\d{2,4}[-)]?\d{3,4}/g) || []).map((p) => p.replace(/\D/g, '')).filter((p) => p.length >= 10)))
+        if (matomeTitle && hasNewness && uniqPhones.length >= 2 && !pageAgeVeryOld && !pageAgeOld && remain() > 22000) {
+          const sections = html.split(/<h[23][^>]*>/i).slice(1, 14).map((sec) => {
+            const end = sec.search(/<\/h[23]>/i)
+            const heading = strip(end >= 0 ? sec.slice(0, end) : sec.slice(0, 120)).slice(0, 50)
+            const body2 = strip(end >= 0 ? sec.slice(end) : sec).slice(0, 700)
+            return { heading, body2 }
+          })
+          const stores = sections
+            .map((sec) => ({ name: sec.heading.replace(/^[\d①-⑳．.、,\s]+/, '').trim(), phone: extractJpPhone(sec.body2), address: (sec.body2.match(PREF_RE)?.[0] || '').slice(0, 70), snippet: sec.body2.slice(0, 200) }))
+            .filter((s2) => s2.phone && s2.name.length >= 2)
+            .slice(0, 6)
+          if (stores.length >= 2) {
+            const exp = await ingestExtractedStores(admin, mapsKey, stores, { sourceType, label: `${def.label}(まとめ展開)`, signalType: def.signalType, sourceUrl: url, evidenceIso: hpPub.iso, userId, runId, budgetEndMs: startMs + budgetMs })
+            counts.matomeExpanded = (counts.matomeExpanded || 0) + (exp.processed || 0)
+            counts.hot += exp.hot || 0; counts.hotB += exp.hotB || 0; counts.hold += exp.hold || 0; counts.excluded += exp.excluded || 0; counts.imported += exp.imported || 0; counts.saved += exp.saved || 0
+            if (exp.importedCases?.length) importedCases.push(...exp.importedCases)
+            if (debug.samples.length < 12) debug.samples.push({ url, name: `まとめ展開×${stores.length}`, phone: '', address: '', temperature: `HOT${exp.hot || 0}/投入${exp.imported || 0}` })
+            continue
+          }
+        }
+
         let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null
         let holdReason = ''
         if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
