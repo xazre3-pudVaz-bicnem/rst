@@ -176,6 +176,10 @@ export default function Leads() {
   const addBusy = (t: string) => setDiscoveryBusy((s) => { const n = new Set(s); n.add(t); return n })
   const busyDone = (t: string) => setDiscoveryBusy((s) => { const n = new Set(s); n.delete(t); return n })
   const [recentImported, setRecentImported] = useState<{ caseId: string; importedAt: string; name: string; phone: string; address: string; source: string; temperature: string; hotTier: string | null }[]>([])
+  const [boostBusy, setBoostBusy] = useState(false)
+  const [boostStep, setBoostStep] = useState('')
+  const [srcFilter, setSrcFilter] = useState('')
+  const [srcOnOnly, setSrcOnOnly] = useState(false)
   // ===== トリアージ拡張フィルタ =====
   const [tSalesGrade, setTSalesGrade] = useState<'all' | 'S' | 'A' | 'B' | 'C'>('all')
   const [tSource, setTSource] = useState<string>('all')
@@ -1066,6 +1070,51 @@ export default function Leads() {
     try { const j = await regionalApi({ sweepHot: { limit: 200 } }); if (j?.ok) { toast.success(`HOT一括投入: ${j.imported}件投入 / 重複リンク${j.linkedDup} / HOLD降格${j.downgraded}（電話・住所なし）`); load(); loadAutoCrawl() } else toast.error(j?.error || '失敗') } finally { setCrawlBusy('') }
   }
 
+  // 🚀 新店ブースト投入: 「巡回(2周)→未投入HOT一括投入→HOLD救済→優先度再計算」をワンクリックで連続実行。
+  // Hobbyの60秒関数制限のため1回のAPIでは完結できず、クライアント側で順番に叩いて疑似的なロング処理にする。
+  async function boostInject() {
+    if (boostBusy) return
+    const { data: sess } = await supabase.auth.getSession()
+    const token = sess.session?.access_token
+    if (!token) { toast.error('ログインが必要です'); return }
+    setBoostBusy(true)
+    const t0 = { imported: 0, hotA: 0, hotB: 0 }
+    const crawlOnce = async (round: number) => {
+      setBoostStep(`巡回 ${round}/2`)
+      const res = await fetch('/api/cron/auto-lead-crawl', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ only: 'all' }) })
+      const j = await res.json().catch(() => null)
+      if (j?.ok) { t0.imported += j.cases_inserted_count || 0; t0.hotA += j.hot_a_count || 0; t0.hotB += j.hot_b_count || 0 }
+      return j
+    }
+    try {
+      toast.info('🚀 ブースト投入を開始: 全取得元巡回→HOT一括投入→HOLD救済→優先度再計算（2〜3分）')
+      const r1 = await crawlOnce(1)
+      if (r1?.skipped) toast.info(`巡回1: ${r1.reason || 'スキップ'}`)
+      // ロック解放（TTL）を待ってから2周目（カーソル続行・SERPローテ続き）
+      setBoostStep('待機中…')
+      await new Promise((rs) => setTimeout(rs, 8000))
+      await crawlOnce(2)
+      // HOLD救済はHOT昇格まで（投入はしない）→ 先に救済し、後のHOT一括投入で昇格分もまとめて案件化する
+      setBoostStep('HOLD救済')
+      const rh = await regionalApi({ rescueHolds: { limit: 80 } })
+      setBoostStep('HOT一括投入')
+      const sw = await regionalApi({ sweepHot: { limit: 300 } })
+      if (sw?.ok) t0.imported += sw.imported || 0
+      setBoostStep('優先度再計算')
+      const rs2 = await regionalApi({ recomputeSales: { limit: 800, onlyHot: true } })
+      const parts = [
+        `投入 合計${t0.imported}件`, `HOT-A ${t0.hotA} / HOT-B ${t0.hotB}`,
+        sw?.ok ? `一括投入${sw.imported}(重複リンク${sw.linkedDup ?? 0})` : null,
+        rh?.ok ? `HOLD救済: 電話取得${rh.phoneFound ?? 0}・HOT昇格${rh.promotedHot ?? 0}` : null,
+        rs2?.ok ? `優先度更新${rs2.updated ?? 0}件` : null,
+      ].filter(Boolean)
+      toast.success(`🚀 ブースト完了｜${parts.join('｜')}`)
+      load(); loadAutoCrawl(); loadRecentImported(); loadDiscovery()
+    } catch (e) {
+      toast.error('ブースト投入が中断しました: ' + jpError(e) + '（取得済み分は保存されています。再実行で続きから処理します）')
+    } finally { setBoostBusy(false); setBoostStep('') }
+  }
+
   // ===== 新規取得元レジストリ =====
   const loadDiscovery = useCallback(async () => {
     const j = await regionalApi({ discoveryStatus: true })
@@ -1440,6 +1489,21 @@ export default function Leads() {
             ))}
           </div>
 
+          {/* クイックアクションバー: 迷わず1クリックで新店を投入できる導線 */}
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border-2 border-primary/40 bg-gradient-to-r from-primary/5 to-fuchsia-500/5 p-2.5">
+            <Button size="sm" onClick={boostInject} disabled={boostBusy || !!crawlBusy} className="bg-gradient-to-r from-primary to-fuchsia-600 font-bold text-white hover:opacity-90" title="全取得元巡回(2周)→未投入HOT一括投入→HOLD救済(電話補完)→優先度再計算 をまとめて実行">
+              {boostBusy ? `🚀 ${boostStep || '実行中'}…` : '🚀 新店ブースト投入（全部おまかせ）'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => runCrawl('all')} disabled={!!crawlBusy || boostBusy}>{crawlBusy === 'all' ? '巡回中…' : '全取得元を巡回'}</Button>
+            <Button size="sm" variant="outline" onClick={sweepHot} disabled={!!crawlBusy || boostBusy} className="border-emerald-500 text-emerald-700 dark:text-emerald-300">未投入HOTを投入</Button>
+            <Button size="sm" variant="outline" onClick={rescueHolds} disabled={rescuing || boostBusy} className="border-amber-500 text-amber-700 dark:text-amber-300">{rescuing ? '救済中…' : 'HOLD救済（電話補完）'}</Button>
+            <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span>本日投入 <b className="text-green-600">{summary.todayImported}</b>件</span>
+              <span>／ 未投入HOT <b className={summary.notImported > 0 ? 'text-amber-600' : ''}>{summary.notImported}</b>件</span>
+              {summary.notImported > 0 && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">←「未投入HOTを投入」で案件化できます</span>}
+            </div>
+          </div>
+
           {/* メインタブ */}
           <div className="flex flex-wrap gap-1 border-b pb-1">
             {([['list', '架電対象リスト'], ['triage', '統合トリアージ★'], ['get', '取得・投入'], ['manage', '取得元管理'], ['probe', '連番URL探索'], ['errors', 'エラー/ログ'], ['settings', '設定']] as const).map(([k, lbl]) => (
@@ -1452,7 +1516,7 @@ export default function Leads() {
           <div className="rounded-md bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
             {mainView === 'list' && '営業電話できる可能性が高い候補です。HOT-A / HOT-B を優先して確認してください。行をクリックすると詳細が開きます。'}
             {mainView === 'triage' && '全ソース横断のトリアージ画面。品質スコア/グレード・業種・都道府県・電話・重複で絞り込み、まとめて投入/除外できます。「今日の架電リスト」で重複を除いた高品質候補を即作成。CSV出力可。'}
-            {mainView === 'get' && '新しい候補を各取得元（Google Places / Instagram Web / 地域メディア）から集めて、自動でHOT判定します。'}
+            {mainView === 'get' && '新しい候補を各取得元（96種）から集めて自動でHOT判定→案件投入します。迷ったら上の「🚀 新店ブースト投入」を1回押せば、巡回→投入→HOLD救済まで全自動で実行します。'}
             {mainView === 'manage' && '巡回サイト（source_sites）の管理と、新店情報サイトの自動発見・登録を行います。'}
             {mainView === 'probe' && 'じゃらん等の連番URLを確認し、新しく存在する掲載ページ（新規掲載候補）を探します。新規オープン確定ではありません。'}
             {mainView === 'errors' && '取得処理の失敗理由・APIエラー・保存失敗・文字化け・SKIP理由などを確認します。'}
@@ -1798,11 +1862,22 @@ export default function Leads() {
                 </div>
               </div>
               <div className="mb-1 text-[10px] text-muted-foreground">電話/住所なしはHOT禁止・店名未確定でも電話+住所+新規根拠でHOT-B・日本国内のみ・大手/公共/閉店/重複は除外。検索駆動(SERP)はその場で実行、土台は外部API確認後に有効化。</div>
-              {Array.from(new Set(discovery.sources.map((s: any) => s.group))).map((grp) => (
+              {/* 取得元の絞り込み（96種から探しやすく） */}
+              <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                <Input value={srcFilter} onChange={(e) => setSrcFilter(e.target.value)} placeholder="取得元を絞り込み（名前/グループ）" className="h-7 w-56 text-xs" />
+                <label className="flex items-center gap-1 text-[11px]"><input type="checkbox" checked={srcOnOnly} onChange={(e) => setSrcOnOnly(e.target.checked)} />ONのみ表示</label>
+                {(srcFilter || srcOnOnly) && <span className="text-[10px] text-muted-foreground">{discovery.sources.filter((s: any) => (!srcOnOnly || discovery.toggles[s.type] !== false) && (!srcFilter || `${s.label}${s.group}${s.type}`.toLowerCase().includes(srcFilter.toLowerCase()))).length}件表示</span>}
+              </div>
+              {Array.from(new Set(discovery.sources.map((s: any) => s.group))).map((grp) => {
+                const inGroup = discovery.sources.filter((s: any) => s.group === grp
+                  && (!srcOnOnly || discovery.toggles[s.type] !== false)
+                  && (!srcFilter || `${s.label}${s.group}${s.type}`.toLowerCase().includes(srcFilter.toLowerCase())))
+                if (!inGroup.length) return null
+                return (
                 <div key={grp} className="mt-1.5">
                   <div className="text-[10px] font-bold text-muted-foreground">{grp}</div>
                   <div className="mt-0.5 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                    {discovery.sources.filter((s: any) => s.group === grp).map((s: any) => {
+                    {inGroup.map((s: any) => {
                       const on = discovery.toggles[s.type] !== false
                       return (
                         <div key={s.type} className="flex items-center gap-1.5 rounded border border-border/60 bg-background px-1.5 py-1 text-[10px]">
@@ -1815,7 +1890,7 @@ export default function Leads() {
                     })}
                   </div>
                 </div>
-              ))}
+              ) })}
               {discovery.excluded?.length > 0 && <div className="mt-1.5 text-[9px] text-muted-foreground">追加しない（除外指定）: {discovery.excluded.join(', ')}</div>}
             </div>
           )}

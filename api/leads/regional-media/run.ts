@@ -361,8 +361,9 @@ export default async function handler(req: any, res: any) {
   }
 
   // 未投入HOTの一括投入スイープ（電話/住所なしHOTはHOLD降格・適格HOTはcases投入・重複はリンク）
+  // budgetMs必須: 未指定だと内部デフォルト10分でVercel 60秒上限を超え504（=投入ボタンが無言で失敗）になっていた。
   if (body?.sweepHot) {
-    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null }); return res.status(200).json(out) }
+    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null, budgetMs: 45000 }); return res.status(200).json(out) }
     catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
   // 営業優先度/Web弱点/架電前メモの一括再計算
@@ -420,13 +421,16 @@ export default async function handler(req: any, res: any) {
       .not('address', 'is', null).not('name', 'is', null)
       .limit(limit)
     let scanned = 0, enriched = 0, phoneFound = 0, promotedHot = 0
+    // 時間予算: 補完1件は数秒〜十数秒かかるため、45秒で打ち切って60秒関数上限を死守（残りは次回実行で継続）
+    const rescueDeadline = Date.now() + 45000
     for (const cand of (rows || [])) {
+      if (Date.now() > rescueDeadline - 12000) break
       scanned++
       if (cand.is_chain_store || cand.duplicate_of_case_id) continue
       const shop = cand.extracted_shop_name_from_article || cand.extracted_shop_name || cand.name || ''
       if (!shop || shop === '店名未確定') continue
       const areaHint = cand.extracted_area_from_article || cand.extracted_area || cand.address || ''
-      const e = await enrichCandidate(process.env.GOOGLE_MAPS_API_KEY || null, { shop, username: '', areaHint, industry: cand.extracted_industry || '', havePhone: '', haveAddress: cand.address || '' }, { maxQueries: 3, perQuery: 5 })
+      const e = await enrichCandidate(process.env.GOOGLE_MAPS_API_KEY || null, { shop, username: '', areaHint, industry: cand.extracted_industry || '', havePhone: '', haveAddress: cand.address || '' }, { maxQueries: 2, perQuery: 5 })
       enriched++
       const phone = e.phone || null
       if (!phone || !isJapanPhone(phone) || !isValidJpPhone(phone)) continue  // 地域矛盾・不正電話は enrichCandidate 側で除外済み
