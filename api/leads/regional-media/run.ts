@@ -12,7 +12,7 @@ import { runAllSequentialProbes, runSequentialProbe, testProbeSite, recorrectPro
 import { runEkitenDiscovery } from '../../../src/lib/ekitenDiscovery.js'
 import { recomputeQualityBatch, recomputeDupGroups } from '../../../src/lib/leadQualityRun.js'
 import { runSerpDiscovery } from '../../../src/lib/serpDiscovery.js'
-import { runEngineSource, runBulkUrlImport } from '../../../src/lib/newSourceEngines.js'
+import { runEngineSource, runBulkUrlImport, runTextImport } from '../../../src/lib/newSourceEngines.js'
 import { recomputeSalesBatch } from '../../../src/lib/leadSignals.js'
 import { sweepHotToCases } from '../../../src/lib/importHot.js'
 import { DISCOVERY_SOURCES, EXCLUDED_SOURCE_TYPES, defaultSourceToggles, getSourceDef } from '../../../src/lib/discoverySources.js'
@@ -330,6 +330,14 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
+  // テキスト貼り付けインポート（チラシ/PDF/Excel/リストの内容から店名・電話・住所を抽出→補完→HOT判定→投入）
+  if (body?.textImport?.text) {
+    try {
+      const out = await runTextImport(admin, process.env.GOOGLE_MAPS_API_KEY || null, String(body.textImport.text || ''), { memo: body.textImport.memo || '' }, userData.user.id)
+      return res.status(200).json(out)
+    } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
+  }
+
   // 手動URL一括インポート（複数URLを共通pipelineで候補化→HOTはcases投入）
   if (body?.bulkImport?.urls) {
     try {

@@ -356,6 +356,101 @@ export async function runBulkUrlImport(admin: any, mapsKey: string | null, urls:
 }
 
 // ============================================================
+// 4.5) テキスト貼り付けインポート（チラシ/PDF/Excel/リストの内容を貼るだけで候補化。OCR不要のファイル取込代替）
+//   空行区切りのブロック（無ければ1行=1件）から 店名/電話/住所 を抽出→Places補完→検証→HOT判定→保存→HOT投入。
+// ============================================================
+export async function runTextImport(admin: any, mapsKey: string | null, text: string, meta: { memo?: string }, userId: string | null): Promise<any> {
+  const startMs = Date.now(); const budgetMs = 48000; const remain = () => budgetMs - (Date.now() - startMs)
+  const nowIso = new Date().toISOString()
+  // ブロック分割: 空行区切り。空行が無い場合は「電話番号を含む行が2行以上＝1行1店舗のリスト」のときだけ行分割し、
+  // 電話が0〜1個なら全体を1店舗として扱う（店名/電話/住所を3行で貼った1店舗レコードを3件に分解しない）。
+  let blocks = String(text || '').split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean)
+  if (blocks.length <= 1) {
+    const lines = String(text || '').split(/\n/).map((b) => b.trim()).filter((b) => b.length >= 4)
+    const phoneLines = lines.filter((l) => !!extractJpPhone(l)).length
+    blocks = phoneLines >= 2 ? lines : [String(text || '').trim()].filter(Boolean)
+  }
+  blocks = blocks.slice(0, 30)
+  const counts: any = { sourceType: 'document_to_lead_import', label: 'テキスト貼り付け取込', total: blocks.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0, skipped: 0, alreadyImported: 0 }
+  const runId = await startRun(admin, 'document_to_lead_import', userId)
+  const results: any[] = []
+  let bi = -1
+  for (const block of blocks) {
+    bi++
+    // 時間切れ: 未処理ブロックを remaining として返し、UI側でテキストエリアに残す（続きは再実行で処理できる）
+    if (remain() < 20000) { counts.stoppedEarly = true; counts.remaining = blocks.slice(bi).join('\n\n'); break }
+    const phone0 = extractJpPhone(block)
+    const address0 = (block.match(PREF_RE)?.[0] || '').slice(0, 70)
+    // 再実行の高速スキップ: 同一電話の候補が既に案件投入済みなら補完せず即スキップ（続き処理へ時間を回す）
+    if (phone0) {
+      const { data: done } = await admin.from('lead_candidates').select('id,imported_to_cases').eq('phone_number', phone0).limit(1)
+      if (done?.[0]?.imported_to_cases) { counts.alreadyImported++; counts.processed++; continue }
+    }
+    // 店名候補: 電話/住所/URLを除いた最初の行（記号除去・40字まで）
+    const nameLine = block.split('\n').map((l) => l.replace(/https?:\/\/\S+/g, '').replace(/0\d[\d\-()\s]{8,}/g, '').replace(new RegExp(PREF_RE.source), '').trim()).find((l) => l.length >= 2) || ''
+    const name0 = nameLine.replace(/[【】\[\]■●・☆★]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40)
+    if (!phone0 && !name0) { counts.skipped++; continue }
+    counts.processed++
+    const sn0 = sanitizeShopName(name0, { placesMatched: false })
+    // Places/検索補完（店名 or 電話を手がかりに正式店名・電話・住所を確定）
+    let e: any = null
+    if (mapsKey && (sn0.valid || address0)) e = await withTimeout(enrichCandidate(mapsKey, { shop: sn0.valid ? sn0.name : name0, username: '', areaHint: address0, industry: '', havePhone: phone0, haveAddress: address0 }, { maxQueries: 1, perQuery: 5 }), 12000, null)
+    const phone = phone0 || e?.phone || ''
+    const address = address0 || e?.address || ''
+    const sn = sanitizeShopName(e?.place_name || name0, { placesMatched: !!e?.place_id })
+    const name = sn.valid ? sn.name : (name0 || '店名未確定')
+    const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
+    const isJapan = !isForeignAddress(address) && (isJapanAddress(address) || isJapanPhone(phone) || !!e?.prefecture)
+    const hardEx = hardExcludeReason({ name, phone, text: block })
+    const big = detectBigOrPublic(`${name} ${address}`); const chain = detectChain(name); const multi = detectMultiStore(block.slice(0, 300))
+    let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null; let holdReason = ''
+    // 誤マッチ防止: 貼り付けテキスト自体に電話も住所も無い（店名だけ）場合、名前一致だけのPlaces補完で
+    // 全国の同名店に誤ヒットし得るため、補完で揃ってもHOTにせず要確認(HOLD)に留める。
+    const anchored = !!phone0 || !!address0
+    if (big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || hardEx) temperature = 'EXCLUDED'
+    // 人手で選んだリスト＝新規根拠は担保されている前提。電話+実店舗住所+日本ならHOT-B（店名未確定でも可）
+    else if (anchored && phoneOk && address && isRealStoreAddress(address) && isJapan) { temperature = 'HOT'; hotTier = 'B' }
+    else holdReason = !phoneOk ? '電話番号なし/無効' : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし' : !anchored ? '店名のみ入力（補完誤マッチ防止のため要確認）' : '要確認'
+    if (temperature === 'HOT') counts.hot++; else if (temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
+    const reason = `テキスト貼り付け取込: 「${name}」${meta.memo ? ` / メモ:${meta.memo}` : ''}${holdReason ? `（HOLD理由: ${holdReason}）` : ''}${e?.status ? ` / 補完[${e.status}]` : ''}`
+    const payload: any = {
+      name, address: address || null, phone_number: phone || null, extracted_phone: phone || null, extracted_address: address || null,
+      website_url: e?.official || null, official_url: e?.official || null, instagram_url: e?.instagram || null,
+      source: 'document_to_lead_import', lead_source: 'document_to_lead_import', discovery_source_type: 'document_to_lead_import',
+      source_type: 'AI自動投入(テキスト貼り付け)', source_site_name: 'テキスト貼り付け取込', parser_used: 'text_import',
+      search_snippet: block.slice(0, 300), newness_type: 'document_import', regional_media_newness_reason: reason, first_discovered_at: nowIso,
+      lead_temperature: temperature, hot_tier: hotTier, recommended_status: temperature === 'HOT' ? 'HOT_B' : temperature, should_exclude_from_call_list: temperature === 'EXCLUDED',
+      name_unconfirmed_hot: temperature === 'HOT' && !sn.valid, phone_source: phone ? (e?.place_id ? 'google_places' : 'detail_page') : null,
+      matched_google_place_id: e?.place_id || null, extracted_shop_name: name,
+      owner_reachability_score: phone ? 70 : 30, auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason, last_seen_at: nowIso, source_run_id: runId,
+      auto_insert_skipped_reason: temperature === 'HOLD' && holdReason ? holdReason : null,
+    }
+    const qr = computeQuality(payload)
+    Object.assign(payload, { quality_score: qr.score, quality_grade: qr.grade, industry_category: qr.category, dedup_key: qr.dedupKey, quality_flags: qr.flags, phone_pref_match: qr.phoneMatch, quality_computed_at: nowIso })
+    // 重複（電話）
+    let candidateId: string | null = null; let alreadyImported = false
+    if (phone) { const { data: bp } = await admin.from('lead_candidates').select('id,imported_to_cases').eq('phone_number', phone).limit(1); candidateId = bp?.[0]?.id || null; alreadyImported = !!bp?.[0]?.imported_to_cases }
+    if (candidateId) await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {})
+    else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single(); candidateId = ins?.id || null }
+    // signal_urlはdedupキーを兼ねる（空だとinsert時NULL化しdedup不一致→再実行で重複蓄積するため、疑似キーを渡す）
+    if (candidateId) await addSignals(admin, candidateId, [{ type: 'document_import', source: 'テキスト貼り付け取込', url: `text-import:${phone || name}`, date: null, text: name.slice(0, 180), confidence: 0.7 }])
+    // HOT投入
+    if (temperature === 'HOT' && phoneOk && candidateId && !alreadyImported) {
+      const dupCaseId = await findCaseIdByPhone(admin, phone)
+      if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+      else {
+        const memo = `【AI自動投入 / テキスト貼り付け取込 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\n---\n${block.slice(0, 300)}`
+        const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '中', hp1: e?.official || null, source_urls: 'テキスト貼り付け取込', memo, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+        if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++ }
+      }
+    }
+    if (results.length < 30) results.push({ name, phone, address, temperature })
+  }
+  await finishRun(admin, runId, counts)
+  return { ok: true, ...counts, results }
+}
+
+// ============================================================
 // 5) リードスコアリング/学習（鮮度・架電容易性・複数シグナル・業種適合 → 営業優先度 S/A/B/C）
 //    lead_exclusion_classifier / sales_angle_classifier / ai_duplicate_merge も mode で処理。
 // ============================================================
@@ -422,6 +517,9 @@ export async function runEngineSource(admin: any, mapsKey: string | null, source
     case 'places_recheck_queue':
     case 'first_review_detected_scan':
       return runReprocessQueue(admin, mapsKey, sourceType, opts, userId)
+    case 'document_to_lead_import':
+    case 'event_vendor_list_import':
+      return { ok: true, skipped: true, reason: 'テキスト貼り付けで取込できます（取得・投入タブ「テキスト貼り付けインポート」にリスト/チラシ/Excelの内容を貼り付け）。画像はスマホ等でテキスト化してから貼り付けてください。' }
     case 'lead_freshness_scoring':
     case 'callability_score_engine':
     case 'multi_signal_priority_boost':

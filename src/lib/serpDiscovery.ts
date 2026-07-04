@@ -154,9 +154,16 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   const startMs = Date.now()
   const cost = await readCost(admin)
 
-  // クエリ生成（公開日系は過去7日の日付を展開）
+  // クエリ生成: 日付プレースホルダ（{date}=YYYY/MM/DD・{jp}=YYYY年M月D日・{md}=M月D日）を過去7日で展開。
+  // ※以前は type名に portal を含むだけで展開され、プレースホルダの無いクエリが7重複していた（Serper浪費）。
+  //   プレースホルダを含むクエリだけ展開し、重複は除去する。
   let queries = [...def.queries]
-  if (/published_date|portal/.test(def.type)) { const ds = pastDates(7); queries = ds.flatMap((d) => def.queries!.map((q) => q.replace('{date}', d.slash))) }
+  if (def.queries.some((q) => /\{(date|jp|md)\}/.test(q))) {
+    const ds = pastDates(7)
+    queries = Array.from(new Set(def.queries.flatMap((q) =>
+      /\{(date|jp|md)\}/.test(q) ? ds.map((d) => q.replace(/\{date\}/g, d.slash).replace(/\{jp\}/g, d.jp).replace(/\{md\}/g, d.md)) : [q],
+    )))
+  }
   // クエリ回転: 以前は queries.slice(0, maxQ) 固定で、maxQ(既定6)より後ろのクエリが永久に実行されなかった。
   // このsource_typeの過去実行回数でウィンドウをずらし、全クエリを順に網羅する。
   const allQ = queries

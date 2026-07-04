@@ -125,6 +125,8 @@ export default function Leads() {
   const [iwImporting, setIwImporting] = useState(false)
   const [bulkUrls, setBulkUrls] = useState('')
   const [bulkImporting, setBulkImporting] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  const [pasteImporting, setPasteImporting] = useState(false)
   const [rmConfigured, setRmConfigured] = useState<boolean | null>(null)
   const [rmDiag, setRmDiag] = useState<any>(null)
   const [rmRunning, setRmRunning] = useState(false)
@@ -569,6 +571,20 @@ export default function Leads() {
       toast.success(`一括インポート: 処理${j.processed}/${j.total} ｜ HOT${j.hot} 投入${j.imported} HOLD${j.hold} 除外${j.excluded}${j.stoppedEarly ? '（時間上限で一部次回）' : ''}`)
       setBulkUrls(''); load(); loadRecentImported()
     } catch (e) { toast.error('一括インポートに失敗しました: ' + jpError(e)) } finally { setBulkImporting(false) }
+  }
+
+  // テキスト貼り付けインポート（チラシ/PDF/Excelの内容を貼るだけ。空行区切り or 1行1店舗）
+  async function textImportRun() {
+    if (pasteText.trim().length < 4) { toast.error('店名・電話番号・住所を含むテキストを貼り付けてください'); return }
+    setPasteImporting(true)
+    try {
+      const j = await regionalApi({ textImport: { text: pasteText, memo: '' } })
+      if (!j?.ok) { toast.error(j?.error || 'テキスト取込に失敗しました'); return }
+      toast.success(`テキスト取込: ${j.processed}/${j.total}件処理｜HOT${j.hot} 投入${j.imported} HOLD${j.hold} 除外${j.excluded}${j.alreadyImported ? ` 投入済スキップ${j.alreadyImported}` : ''}${j.stoppedEarly ? '（時間上限。未処理分を残したので、もう一度「テキストから取込」を押してください）' : ''}`)
+      // 時間切れ時は未処理ブロックをテキストエリアに残す（消すと再実行できず入力が失われるため）
+      setPasteText(j.stoppedEarly && j.remaining ? j.remaining : '')
+      load(); loadRecentImported()
+    } catch (e) { toast.error('テキスト取込に失敗しました: ' + jpError(e)) } finally { setPasteImporting(false) }
   }
 
   // 外部の複数ハッシュタグ検索ツール（Google CSE）。検索語をハッシュに載せて開く。
@@ -1882,7 +1898,7 @@ export default function Leads() {
                       return (
                         <div key={s.type} className="flex items-center gap-1.5 rounded border border-border/60 bg-background px-1.5 py-1 text-[10px]">
                           <button onClick={() => toggleDiscovery(s.type, !on)} className={cn('rounded-full px-1.5 py-0.5 font-bold', on ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-700')}>{on ? 'ON' : 'OFF'}</button>
-                          <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{ENGINE_SOURCE_TYPES.includes(s.type) ? <span className="ml-1 rounded bg-green-200 px-1 font-bold text-green-800 dark:bg-green-500/30 dark:text-green-200">本稼働</span> : s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}{s.mode === 'places' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places</span>}</span>
+                          <span className="flex-1 truncate" title={s.note || s.label}>{s.label}{ENGINE_SOURCE_TYPES.includes(s.type) ? <span className="ml-1 rounded bg-green-200 px-1 font-bold text-green-800 dark:bg-green-500/30 dark:text-green-200">本稼働</span> : s.mode === 'foundation' && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">土台</span>}{s.mode === 'existing' && <span className="ml-1 rounded bg-blue-100 px-1 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">既存</span>}{s.mode === 'places' && <span className="ml-1 rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">Places</span>}{s.freshness && <span className="ml-1 rounded bg-sky-100 px-1 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300" title="検索を直近期間に限定（古い記事ノイズを排除）">{s.freshness === 'week' ? '直近1週' : '直近1ヶ月'}</span>}</span>
                           {(s.mode === 'serp' || s.mode === 'places' || s.mode === 'foundation') && <button onClick={() => runDiscoveryOne(s.type, s.label)} disabled={discoveryBusy.has(s.type)} className="rounded border border-primary px-1.5 py-0.5 text-primary hover:bg-primary/10 disabled:opacity-50">{discoveryBusy.has(s.type) ? '実行中' : '実行'}</button>}
                           {s.type === 'portal_published_date_search' && <button onClick={runEkiten} disabled={ekitenRunning} className="rounded border border-pink-500 px-1.5 py-0.5 text-pink-700 dark:text-pink-300 disabled:opacity-50">{ekitenRunning ? '実行中' : '実行'}</button>}
                         </div>
@@ -2579,6 +2595,15 @@ export default function Leads() {
                     <div className="mt-1 flex items-center gap-2">
                       <Button size="sm" variant="outline" onClick={bulkImportUrls} disabled={bulkImporting || !bulkUrls.trim()}>{bulkImporting ? '一括処理中…' : 'URLを一括インポート'}</Button>
                       <span className="text-[9px] text-muted-foreground">各URLを共通pipeline（取得→抽出→Places補完→検証→HOT判定→投入）で処理</span>
+                    </div>
+                  </div>
+                  {/* テキスト貼り付けインポート（チラシ/PDF/Excel/出店者リスト → OCR不要で候補化） */}
+                  <div className="mt-2 border-t pt-2">
+                    <div className="mb-1 text-[11px] font-bold">テキスト貼り付けインポート（チラシ/PDF/Excel/リスト）</div>
+                    <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={4} placeholder={'店名・電話番号・住所を含むテキストを貼り付け（最大30件）\n1店舗ごとに空行で区切るか、1行に1店舗\n例:\nカフェ〇〇\n03-1234-5678\n東京都葛飾区亀有1-2-3'} className="w-full rounded border border-input bg-card px-2 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                    <div className="mt-1 flex items-center gap-2">
+                      <Button size="sm" variant="outline" onClick={textImportRun} disabled={pasteImporting || pasteText.trim().length < 4}>{pasteImporting ? '取込中…' : 'テキストから取込'}</Button>
+                      <span className="text-[9px] text-muted-foreground">店名/電話/住所を自動抽出→Places補完→電話+住所が揃えばHOT-Bで投入（PDF/Excelは内容をコピーして貼るだけ）</span>
                     </div>
                   </div>
                 </div>

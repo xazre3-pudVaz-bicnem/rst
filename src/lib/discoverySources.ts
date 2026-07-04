@@ -21,13 +21,13 @@ export interface DiscoverySourceDef {
   hpPublish?: boolean         // 新HP公開検出モード（公開日抽出＋簡易Web品質＋営業角度メモ生成）
 }
 
-// 過去N日の日付文字列（YYYY/MM/DD と YYYY年M月D日）
-export function pastDates(n: number): { slash: string; jp: string }[] {
-  const out: { slash: string; jp: string }[] = []
+// 過去N日の日付文字列（YYYY/MM/DD・YYYY年M月D日・M月D日）
+export function pastDates(n: number): { slash: string; jp: string; md: string }[] {
+  const out: { slash: string; jp: string; md: string }[] = []
   for (let i = 0; i < n; i++) {
     const d = new Date(Date.now() - i * 86400000)
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate()
-    out.push({ slash: `${y}/${String(m).padStart(2, '0')}/${String(day).padStart(2, '0')}`, jp: `${y}年${m}月${day}日` })
+    out.push({ slash: `${y}/${String(m).padStart(2, '0')}/${String(day).padStart(2, '0')}`, jp: `${y}年${m}月${day}日`, md: `${m}月${day}日` })
   }
   return out
 }
@@ -56,7 +56,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
       '"新規サイトを公開しました" "店舗"', '"ホームページ制作" "公開しました" "美容室"', '"ホームページ制作" "公開しました" "整体院"',
       '"ホームページ制作" "公開しました" "クリニック"', '"ホームページ制作" "公開しました" "飲食店"',
     ] },
-  { type: 'google_serp_new_opening', label: 'Google検索 新規オープン横断', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article',
+  { type: 'google_serp_new_opening', label: 'Google検索 新規オープン横断', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'month',
     queries: [
       // 汎用・連絡先バイアス（電話/住所が載るページを優先的に拾う）
       '新規オープン 店舗 電話番号', 'ニューオープン 店舗 住所', 'グランドオープン 店舗 電話', 'プレオープン 店舗 予約',
@@ -72,25 +72,40 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
       '開院しました 歯科 電話番号', '開院しました クリニック 住所', '開院しました 動物病院',
       'ペットサロン 新規オープン 電話', '教室 新規開業 電話番号', 'リフォーム 新規開業 電話',
     ] },
-  { type: 'job_opening_search', label: 'オープニングスタッフ求人', group: '求人由来', mode: 'serp', defaultEnabled: true, signalType: 'job_opening',
+  // 開店・閉店まとめ系ポータル（新店を日次で網羅的に掲載＝熱いリストの宝庫）
+  { type: 'kaiten_heiten_portal_search', label: '開店閉店まとめサイト', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
+    queries: ['site:kaiten-heiten.com オープン', 'site:kaiten-heiten.com 開店 予定', '"開店閉店" "オープン予定" 店舗', '"開店情報" オープン 電話番号', '"開店予定" 店舗 住所 電話'] },
+  // グルメ/美容ポータルの「ニューオープン」ページ（詳細ページに電話・住所が載る）
+  { type: 'portal_newopen_page_scan', label: 'グルメ/美容ポータル新店ページ', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'portal_new_listing', freshness: 'month',
+    queries: ['site:tabelog.com "ニューオープン"', 'site:tabelog.com "オープンしました"', 'site:beauty.hotpepper.jp "ニューオープン"', 'site:beauty.hotpepper.jp "NEW OPEN"', 'site:hotpepper.jp "ニューオープン"', 'site:ekiten.jp "新規オープン"'] },
+  // 個人開業ブログ（アメブロ=個人サロン系が非常に多い / note=開業エッセイ）。店名から Places で電話・住所補完
+  { type: 'blog_opening_search', label: '個人開業ブログ(アメブロ/note)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'sns_opening', freshness: 'month',
+    queries: ['site:ameblo.jp "オープンしました" サロン', 'site:ameblo.jp "新規オープン" 電話', 'site:ameblo.jp "開業しました"', 'site:ameblo.jp "オープン予定" 店舗', 'site:note.com "開業しました" 店舗', 'site:note.com "オープンします" 店舗'] },
+  // 地域ニュース/タウン情報サイトの新店記事（号外NET/まいぷれ/タウンニュース/みん経 等）
+  { type: 'local_news_opening_search', label: '地域ニュース/タウン情報 新店', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
+    queries: ['"号外NET" オープン', '"まいぷれ" 新規オープン', '"タウンニュース" オープン 店舗', '"みんなの経済新聞" オープン', '地域ニュース 新規オープン 電話番号', '"オープンしました" ニュース 店舗 住所'] },
+  // 日付指定オープン検索: 「7月4日オープン」等、過去7日の日付を展開して直近オープンをピンポイントで拾う
+  { type: 'dated_opening_search', label: '日付指定オープン検索(過去7日)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
+    queries: ['"{md}オープン" 店舗', '"{md} オープン" 電話', '"{md}にオープン"', '"{md}グランドオープン"', '"{md} 開院"'] },
+  { type: 'job_opening_search', label: 'オープニングスタッフ求人', group: '求人由来', mode: 'serp', defaultEnabled: true, signalType: 'job_opening', freshness: 'month',
     queries: ['オープニングスタッフ 店舗 電話番号', 'オープニングスタッフ 新規オープン 住所', '新規オープン スタッフ募集 電話', 'オープニングスタッフ 飲食店 開店', 'オープニングスタッフ カフェ 開業', 'オープニングスタッフ 美容室 新規', 'オープニングスタッフ ネイルサロン', 'オープニングスタッフ 整体院', 'オープニングスタッフ エステ 開業', '新規開院 スタッフ募集 歯科', '開業予定 クリニック 求人', 'オープニングスタッフ 動物病院', 'オープニングスタッフ ジム 開業'] },
-  { type: 'press_release_search', label: 'プレスリリース', group: 'プレスリリース由来', mode: 'serp', defaultEnabled: true, signalType: 'press_release',
+  { type: 'press_release_search', label: 'プレスリリース', group: 'プレスリリース由来', mode: 'serp', defaultEnabled: true, signalType: 'press_release', freshness: 'month',
     queries: ['site:prtimes.jp 新店舗 オープン', 'site:prtimes.jp 新規オープン 店舗', 'site:prtimes.jp グランドオープン', 'site:prtimes.jp 開業', 'site:prtimes.jp 開院', 'site:atpress.ne.jp 新規オープン', 'site:value-press.com 新店舗 オープン'] },
   { type: 'portal_published_date_search', label: 'エキテン公開日7日以内', group: '公開日7日以内', mode: 'existing', defaultEnabled: true, signalType: 'portal_published_date', note: '既存のエキテン公開日探索を使用' },
-  { type: 'official_site_news_crawl', label: '公式サイト新着情報', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news',
+  { type: 'official_site_news_crawl', label: '公式サイト新着情報', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news', freshness: 'month',
     queries: ['"新規オープン" "公式サイト"', '"グランドオープン" "公式"', '"開院のお知らせ"', '"開業のお知らせ"', '"移転オープンのお知らせ"', '"リニューアルオープンのお知らせ"', '"プレオープンのお知らせ"'] },
   { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: true, signalType: 'official_news', note: 'RSS/sitemap/WP REST差分。対象URL登録後に有効化' },
-  { type: 'construction_opening_signal_search', label: '看板・内装・開業準備ワード', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'construction_signal',
+  { type: 'construction_opening_signal_search', label: '看板・内装・開業準備ワード', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'construction_signal', freshness: 'month',
     queries: ['看板がつきました オープン', '内装工事中 オープン予定', '店舗準備中 オープン', '開店準備中', '物件決まりました 店舗', 'まもなくオープン', 'プレオープン準備中', '予約受付開始 新店'] },
   { type: 'chamber_commerce_new_member_crawl', label: '商工会議所・商店街 新入会員', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'chamber_new_member',
     queries: ['商工会議所 新入会員 店舗', '商工会 新入会員', '商店街 新規加盟店', '新規会員紹介 店舗', '会員紹介 新規オープン', '商店会 新店舗'] },
   { type: 'review_low_count_places', label: '口コミ0〜5件のGBP', group: '新規候補', mode: 'places', defaultEnabled: true, signalType: 'low_review_count', note: 'MEO営業向き候補（新店確定ではない）' },
   { type: 'website_missing_scan', label: 'HP未整備・Web弱者判定', group: '簡易HP利用', mode: 'places', defaultEnabled: true, signalType: 'website_missing', note: '既存候補のWeb弱点を判定' },
-  { type: 'construction_case_opening_crawl', label: '内装/看板/工務店 施工事例', group: '施工事例由来', mode: 'serp', defaultEnabled: true, signalType: 'construction_case',
+  { type: 'construction_case_opening_crawl', label: '内装/看板/工務店 施工事例', group: '施工事例由来', mode: 'serp', defaultEnabled: true, signalType: 'construction_case', freshness: 'month',
     queries: ['"店舗内装" "施工事例" "新規オープン"', '"看板施工" "新規オープン"', '"美容室 内装 施工事例 オープン"', '"飲食店 内装 施工事例 オープン"', '"クリニック 内装 施工事例 開院"', '"看板が完成しました" "オープン"'] },
-  { type: 'new_official_site_discovery', label: '新しい公式サイト検出', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news',
+  { type: 'new_official_site_discovery', label: '新しい公式サイト検出', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news', freshness: 'month',
     queries: ['"ホームページを公開しました" 店舗', '"公式サイトを公開しました" 店舗', '"サイトオープンしました" 店舗', '"ホームページ開設のお知らせ"', '"公式ホームページを開設しました"'] },
-  { type: 'weak_builder_site_scan', label: '簡易HP(Wix/ペライチ等)検出', group: '簡易HP利用', mode: 'serp', defaultEnabled: true, signalType: 'weak_builder_site',
+  { type: 'weak_builder_site_scan', label: '簡易HP(Wix/ペライチ等)検出', group: '簡易HP利用', mode: 'serp', defaultEnabled: true, signalType: 'weak_builder_site', freshness: 'month',
     queries: ['site:wixsite.com "新規オープン" 店舗', 'site:wixsite.com "オープンしました" 電話', 'site:jimdofree.com "新規オープン"', 'site:jimdosite.com "オープンしました"', 'site:peraichi.com 整体 オープン', 'site:peraichi.com サロン 新規オープン', 'site:studio.site 美容室 オープン', 'site:amebaownd.com サロン 開業', 'site:sites.google.com 店舗 新規オープン', 'site:localinfo.jp 新規オープン', 'site:crayonsite.com 店舗 オープン', 'site:goope.jp 新規オープン 店舗'] },
   { type: 'instagram_only_business_scan', label: 'Instagramのみ店舗', group: 'Instagramのみ', mode: 'places', defaultEnabled: true, signalType: 'instagram_only' },
   { type: 'new_review_signal_scan', label: '口コミ急増・新規口コミ監視', group: '口コミ急増', mode: 'places', defaultEnabled: true, signalType: 'new_review_delta', note: 'place_idスナップショット差分' },
@@ -123,15 +138,15 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'new_domain_registration_scan', label: '新規ドメイン登録日チェック', group: '新規HP公開', mode: 'foundation', defaultEnabled: false, signalType: 'new_domain_registration', note: 'RDAP/WHOISで登録日を確認（補助根拠のみ）。外部API確認後に有効化（土台）' },
 
   // --- 開業前後シグナル（SERP・共通pipelineで即稼働） ---
-  { type: 'open_house_event_search', label: '内覧会検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'open_house_event',
+  { type: 'open_house_event_search', label: '内覧会検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'open_house_event', freshness: 'month',
     queries: ['"内覧会" "新規開院"', '"内覧会" "クリニック" 電話', '"内覧会" "歯科"', '"内覧会" "整体院"', '"内覧会" "サロン" オープン', '"開院前" "内覧会"', '"内覧会" "オープン" 住所'] },
-  { type: 'opening_campaign_search', label: 'オープンキャンペーン検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'opening_campaign',
+  { type: 'opening_campaign_search', label: 'オープンキャンペーン検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'opening_campaign', freshness: 'month',
     queries: ['"オープンキャンペーン" "新規オープン"', '"OPEN記念" 店舗 電話', '"オープン記念キャンペーン" 住所', '"初回キャンペーン" "新規オープン"', '"グランドオープンキャンペーン"', '"開業記念キャンペーン"'] },
-  { type: 'trial_lesson_opening_search', label: '無料体験・体験会開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'trial_lesson',
+  { type: 'trial_lesson_opening_search', label: '無料体験・体験会開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'trial_lesson', freshness: 'month',
     queries: ['"無料体験" "新規オープン"', '"体験会" "オープン" 電話', '"無料体験受付中" "開業"', '"体験レッスン" "新規開校"', '"初回体験" "新店舗"'] },
-  { type: 'reservation_start_signal_search', label: '予約受付開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'reservation_start',
+  { type: 'reservation_start_signal_search', label: '予約受付開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'reservation_start', freshness: 'month',
     queries: ['"予約受付開始" "新規オープン"', '"予約受付開始" "開院"', '"予約開始" "クリニック" 電話', '"予約開始" "サロン"', '"受付開始" "開業"', '"初回予約開始"'] },
-  { type: 'staff_recruitment_start_search', label: 'スタッフ募集開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'staff_recruitment_start',
+  { type: 'staff_recruitment_start_search', label: 'スタッフ募集開始検索', group: '開業前後シグナル', mode: 'serp', defaultEnabled: true, signalType: 'staff_recruitment_start', freshness: 'month',
     queries: ['"スタッフ募集開始" "新規オープン"', '"採用開始" "新店舗"', '"新店舗スタッフ募集" 電話', '"オープニングスタッフ募集開始"', '"開業に伴いスタッフ募集"'] },
   { type: 'first_post_opening_signal_search', label: '初投稿×開業シグナル', group: '開業前後シグナル', mode: 'serp', defaultEnabled: false, signalType: 'sns_opening',
     queries: ['"初投稿" "新規オープン" 電話', '"はじめまして" "開業準備"', '"初投稿" "開店しました"', '"はじめまして" "新店舗"'] },
@@ -161,11 +176,11 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
     queries: ['"新規オープン" チラシ 地域 電話', '"折込チラシ" 新規オープン 店舗', '"オープンチラシ" 店舗'] },
 
   // --- SNS/プロフィール ---
-  { type: 'line_official_only_scan', label: 'LINE公式のみ店舗', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'line_official_only',
+  { type: 'line_official_only_scan', label: 'LINE公式のみ店舗', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'line_official_only', freshness: 'month',
     queries: ['"lin.ee" "新規オープン" 店舗', '"line.me" 予約 "新規オープン"', '"LINE予約" "オープンしました" 電話', '"公式LINE" "新規オープン" サロン'] },
-  { type: 'profile_link_only_business_scan', label: 'プロフィールリンクのみ店舗', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'profile_link_only',
+  { type: 'profile_link_only_business_scan', label: 'プロフィールリンクのみ店舗', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'profile_link_only', freshness: 'month',
     queries: ['"lit.link" "新規オープン" 店舗', '"linktr.ee" "新規オープン"', '"lit.link" サロン オープン 電話', '"linktr.ee" 開業 店舗'] },
-  { type: 'sns_profile_opening_bio_scan', label: 'SNSプロフィールOPEN検出', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'sns_opening',
+  { type: 'sns_profile_opening_bio_scan', label: 'SNSプロフィールOPEN検出', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: true, signalType: 'sns_opening', freshness: 'month',
     queries: ['site:instagram.com "近日OPEN"', 'site:instagram.com "OPEN予定"', 'site:instagram.com "開業準備中"', '"OPEN予定" instagram 店舗 電話', '"オープン準備中" instagram 住所'] },
   { type: 'tiktok_opening_web_search', label: 'TikTok新店Web検索', group: 'SNS/プロフィール', mode: 'serp', defaultEnabled: false, signalType: 'sns_opening',
     queries: ['site:tiktok.com "新規オープン"', 'site:tiktok.com "オープン予定"', 'site:tiktok.com "開業しました" 店舗'] },
@@ -219,9 +234,9 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'event_vendor_announcement_crawl', label: 'イベント出店者発表', group: 'イベント/取込', mode: 'serp', defaultEnabled: false, signalType: 'local_event_vendor',
     queries: ['"出店者発表" "マルシェ"', '"出店者一覧" "店舗" 電話', '"イベント出店者" instagram', '"ポップアップ出店" 店舗', '"キッチンカー 出店者一覧"'] },
   { type: 'manual_url_bulk_import', label: '手動URL一括インポート', group: 'イベント/取込', mode: 'foundation', defaultEnabled: true, signalType: 'manual_import', note: '複数URL貼付で候補化。単一URLの手動インポートはInstagram検索パネルで稼働中。一括版は整備後に本稼働（土台）' },
-  { type: 'screenshot_to_lead_import', label: 'スクショ取込', group: 'イベント/取込', mode: 'foundation', defaultEnabled: false, signalType: 'document_import', note: 'OCRで店名/電話/住所抽出。専用エンジン整備後に本稼働（土台）' },
-  { type: 'document_to_lead_import', label: 'PDF/Excel/CSV取込', group: 'イベント/取込', mode: 'foundation', defaultEnabled: false, signalType: 'document_import', note: '補助金/商工会/イベントリストを取込。専用エンジン整備後に本稼働（土台）' },
-  { type: 'event_vendor_list_import', label: 'イベント出店者リスト取込', group: 'イベント/取込', mode: 'foundation', defaultEnabled: false, signalType: 'document_import', note: '出店者一覧を取込。専用エンジン整備後に本稼働（土台）' },
+  { type: 'screenshot_to_lead_import', label: 'スクショ取込', group: 'イベント/取込', mode: 'foundation', defaultEnabled: false, signalType: 'document_import', note: '画像OCRは未対応。スマホ等でテキスト化→「テキスト貼り付けインポート」で代替可' },
+  { type: 'document_to_lead_import', label: 'PDF/Excel/CSV取込(テキスト貼付)', group: 'イベント/取込', mode: 'foundation', defaultEnabled: true, signalType: 'document_import', note: 'PDF/Excel/リストの内容をコピーして「テキスト貼り付けインポート」に貼るだけで候補化（本稼働）' },
+  { type: 'event_vendor_list_import', label: 'イベント出店者リスト取込', group: 'イベント/取込', mode: 'foundation', defaultEnabled: true, signalType: 'document_import', note: '出店者一覧をコピーして「テキスト貼り付けインポート」へ（本稼働）' },
 
   // --- 再評価/補完キュー ---
   { type: 'hold_reason_reprocess_queue', label: 'HOLD理由別 再補完', group: '再評価/補完', mode: 'foundation', defaultEnabled: true, signalType: 'missing_phone_rechecked', note: 'HOLDを理由別(電話なし/住所なし/店名未確定)に再補完。既存「HOLD救済(電話補完→HOT昇格)」で一部稼働（フルキューは整備後）' },
@@ -250,6 +265,7 @@ export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_pl
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
 export const ENGINE_SOURCE_TYPES = [
   'new_ssl_certificate_domain_scan', 'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
+  'document_to_lead_import', 'event_vendor_list_import',
   'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
   'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',
   'lead_exclusion_classifier', 'sales_angle_classifier', 'calling_priority_queue', 'industry_fit_score', 'ai_duplicate_merge', 'area_hotspot_expansion',
