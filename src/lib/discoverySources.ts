@@ -249,7 +249,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'lead_freshness_scoring', label: '鮮度スコアリング', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: true, signalType: 'lead_freshness', note: '根拠日の新しさをスコア化。既存の営業優先度計算(applySalesScore)に統合予定（土台）' },
   { type: 'callability_score_engine', label: '架電容易性スコア', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: true, signalType: 'lead_freshness', note: '電話/住所/実体の揃い具合をスコア化。既存の営業優先度に統合予定（土台）' },
   { type: 'multi_signal_priority_boost', label: '複数シグナル優先度加点', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: true, signalType: 'lead_freshness', note: 'lead_signalsが複数重なる候補をS/Aへ引上げ。既存applySalesScoreで一部稼働（土台）' },
-  { type: 'successful_query_expander', label: '成功クエリ学習拡張', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: true, signalType: 'lead_freshness', note: 'HOTが出たクエリを優先化・拡張。IWは優先度ローテで一部稼働（土台）' },
+  { type: 'successful_query_expander', label: '成功クエリ学習拡張', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: true, signalType: 'lead_freshness', note: '本稼働: SERP全取得元でHOTが出たクエリを自動優先（未実行/2週間未実行は再探索・0件続きは後回し）。IWも優先度ローテ稼働' },
   { type: 'lead_exclusion_classifier', label: '除外分類器', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: false, signalType: 'lead_freshness', note: '大手/公共/EC/求人のみを自動分類除外。既存の除外ゲートで一部稼働（土台）' },
   { type: 'sales_angle_classifier', label: '営業角度分類', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: false, signalType: 'lead_freshness', note: 'HP/MEO/SEO/AIO/LINE導線の提案角度を分類。専用エンジン整備後に本稼働（土台）' },
   { type: 'calling_priority_queue', label: '架電優先キュー', group: 'スコアリング/学習', mode: 'foundation', defaultEnabled: false, signalType: 'lead_freshness', note: 'S/A/B/Cで架電順に並べる。既存の営業優先度並替で一部代替（土台）' },

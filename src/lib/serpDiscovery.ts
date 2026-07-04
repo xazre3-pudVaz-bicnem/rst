@@ -12,7 +12,7 @@ import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { detectChain } from './chainFilter.js'
-import { computeQuality, detectNegative, isRealStoreAddress } from './leadQuality.js'
+import { computeQuality, detectNegative, isRealStoreAddress, phoneAddressMatch } from './leadQuality.js'
 import { addSignals, applySalesScore } from './leadSignals.js'
 import { getSourceDef, pastDates } from './discoverySources.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -164,13 +164,30 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
       /\{(date|jp|md)\}/.test(q) ? ds.map((d) => q.replace(/\{date\}/g, d.slash).replace(/\{jp\}/g, d.jp).replace(/\{md\}/g, d.md)) : [q],
     )))
   }
-  // クエリ回転: 以前は queries.slice(0, maxQ) 固定で、maxQ(既定6)より後ろのクエリが永久に実行されなかった。
-  // このsource_typeの過去実行回数でウィンドウをずらし、全クエリを順に網羅する。
+  // クエリ学習（成功クエリ優先）: 実行結果を app_config('discovery_query_stats') に蓄積し、
+  // 未実行 > 2週間未実行(再探索) > HOT率が高い順 > 実行が古い順 で選ぶ。0件続きのクエリは自然に後回しになる。
+  let qstats: Record<string, { r: number; h: number; t: number }> = {}
+  try { const { data: qsRow } = await admin.from('app_config').select('value').eq('key', 'discovery_query_stats').maybeSingle(); qstats = (qsRow?.value as any) || {} } catch { qstats = {} }
+  const qKey = (q: string) => `${sourceType}|${q}`
+  const persistQueryStats = async () => {
+    try {
+      const { data: cur } = await admin.from('app_config').select('value').eq('key', 'discovery_query_stats').maybeSingle()
+      const merged: any = (cur?.value as any) || {}
+      for (const [k, v] of Object.entries(qstats)) { if (k.startsWith(`${sourceType}|`)) merged[k] = v }  // 並行実行の他取得元の統計を消さない
+      const es = Object.entries(merged)
+      const trimmed = es.length > 1500 ? Object.fromEntries(es.sort((a: any, b: any) => ((b[1]?.t || 0) - (a[1]?.t || 0))).slice(0, 1500)) : merged
+      await admin.from('app_config').upsert({ key: 'discovery_query_stats', value: trimmed, updated_date: new Date().toISOString() }, { onConflict: 'key' })
+    } catch { /* noop */ }
+  }
   const allQ = queries
   if (allQ.length > maxQ) {
-    const { count: srcRuns } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', sourceType)
-    const start = ((srcRuns || 0) * maxQ) % allQ.length
-    queries = [...allQ.slice(start), ...allQ.slice(0, start)].slice(0, maxQ)
+    const qScore = (q: string) => {
+      const s = qstats[qKey(q)]
+      if (!s || !s.r) return 3                                        // 未実行 = 最優先（探索）
+      if (Date.now() - (s.t || 0) > 14 * 86400000) return 2           // 2週間未実行 = 再探索
+      return s.h > 0 ? 1 + Math.min(1, s.h / s.r) : 0                 // HOT実績あり = 優先 / 0件続き = 後回し
+    }
+    queries = [...allQ].sort((a, b) => (qScore(b) - qScore(a)) || ((qstats[qKey(a)]?.t ?? 0) - (qstats[qKey(b)]?.t ?? 0))).slice(0, maxQ)
   } else {
     queries = allQ.slice(0, maxQ)
   }
@@ -201,6 +218,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
       if (stopAll || remain() < 3500) { debug.stoppedEarly = true; break }
       if (counts.detailFetched >= maxDetails) break
       if (serperCap > 0 && cost.serper >= serperCap) { debug.serperCapReached = true; break }
+      const hotBefore = counts.hot
       const { results, error } = await webSearch(q, perQuery, undefined, timeOpts)
       cost.serper++; counts.serperUsed++; counts.queries++
       if (error) counts.error++
@@ -254,14 +272,13 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const chain = detectChain(name)
         const multi = detectMultiStore(`${name} ${d.name}`)
 
-        // 新規HP公開7日以内: 追加ゲート（新HP公開の根拠・公開日・公式URL・簡易Web品質）
+        // 記事/告知の公開日を全ページで抽出（新店根拠の鮮度検証・signal日付・スコアの実鮮度に使用）
         let hpEvidence = false
-        let hpPub: { iso: string | null; daysAgo: number | null } = { iso: null, daysAgo: null }
+        const hpPub: { iso: string | null; daysAgo: number | null } = extractPublishDate(html, bodyStrip, Date.now())
         let wq: ReturnType<typeof analyzeWebQuality> | null = null
         const hasOfficialUrl = !!official && /^https?:\/\//.test(official) && !/instagram\.com|facebook\.com|twitter\.com|x\.com|prtimes\.jp|tiktok\.com|threads\.net/i.test(official)
         if (isHp) {
           hpEvidence = HP_PUBLISH_RE.test(newnessText)
-          hpPub = extractPublishDate(html, bodyStrip, Date.now())
           // 簡易Web品質: 公式URLあり→着地ページ＝公式ならhtml流用、別ドメインは予算内で1回だけfetch（上限あり）
           if (hasOfficialUrl) {
             let ohtml = ''
@@ -286,33 +303,48 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const dateUnknown = isHp && recencyDays > 0 && hpPub.daysAgo == null
         const dateHardOld = isHp && hpPub.daysAgo != null && hpPub.daysAgo > 30  // 公開30日超＝明確に古い→EXCLUDED
         const officialOk = requireOfficial ? hasOfficialUrl : true
+        // 記事日付ゲート（isHp以外の全SERP共通）: 「オープンしました」記事が古い＝もう新店ではない。1年超はEXCLUDED・90日超はHOLD。
+        const pageAgeVeryOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 365
+        const pageAgeOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 90
+        // 電話×住所の地域整合: 固定電話の市外局番が住所の都道府県と不一致＝別店舗/本社番号の誤抽出の疑い（HOT禁止）
+        const pmMismatch = phoneAddressMatch(phone, address) === 'mismatch'
         let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null
         let holdReason = ''
         if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
-        else if (dateHardOld) { temperature = 'EXCLUDED'; counts.hpOldExcluded = (counts.hpOldExcluded || 0) + 1 }
-        // HOT要件: 電話+実店舗住所+日本+実店舗名確定+新店(新HP)根拠。HP取得元はさらに公式URL＋公開7日以内が必須。
-        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk) { temperature = 'HOT'; hotTier = 'B'; if (isHp) counts.hpRecent = (counts.hpRecent || 0) + 1 }
+        else if (dateHardOld || pageAgeVeryOld) { temperature = 'EXCLUDED'; counts.hpOldExcluded = (counts.hpOldExcluded || 0) + 1 }
+        // HOT要件: 電話+実店舗住所+日本+実店舗名確定+新店(新HP)根拠+記事鮮度+電話地域整合。HP取得元はさらに公式URL＋公開7日以内が必須。
+        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !pmMismatch) {
+          temperature = 'HOT'; hotTier = 'B'; if (isHp) counts.hpRecent = (counts.hpRecent || 0) + 1
+          // Places裏取り＋直近30日以内の記事（or HP7日以内）= 確度が高い → HOT-A（優先架電）
+          if (matchedPlaceId && ((hpPub.daysAgo != null && hpPub.daysAgo <= 30) || (isHp && recencyOk))) hotTier = 'A'
+        }
         else {
           temperature = 'HOLD'
           holdReason = !phoneOk ? '電話番号なし/無効'
             : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし'
+            : pmMismatch ? `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）`
+            : pageAgeOld ? `新店記事が${hpPub.daysAgo}日前（90日超=新店鮮度切れ）`
             : (requireOfficial && !hasOfficialUrl) ? '公式サイトURL未確定'
             : !newnessOk ? (isHp ? '新HP公開の根拠が本文で確認できず' : '新店根拠が本文で確認できず')
             : !shopConfirmed ? '実店舗名が未確定'
             : (recencyDays > 0 && !recencyOk) ? (dateUnknown ? `HP公開日が${recencyDays}日以内か不明` : `HP公開が${hpPub.daysAgo}日前（${recencyDays}日超）`)
             : '要確認'
           if (isHp) { if (requireOfficial && !hasOfficialUrl) counts.holdNoOfficial = (counts.holdNoOfficial || 0) + 1; if (dateUnknown) counts.holdDateUnknown = (counts.holdDateUnknown || 0) + 1 }
+          if (pmMismatch) counts.phonePrefMismatch = (counts.phonePrefMismatch || 0) + 1
+          if (pageAgeOld) counts.staleArticleHold = (counts.staleArticleHold || 0) + 1
         }
-        if (temperature === 'HOT') { counts.hot++; counts.hotB++ } else if (temperature === 'EXCLUDED') counts.excluded++; else { counts.hold++; if (!newnessOk && phoneOk && address) counts.holdNoNewness = (counts.holdNoNewness || 0) + 1 }
+        if (temperature === 'HOT') counts.hot++
+        else if (temperature === 'EXCLUDED') counts.excluded++
+        else { counts.hold++; if (!newnessOk && phoneOk && address) counts.holdNoNewness = (counts.holdNoNewness || 0) + 1 }
 
-        const hpInfo = isHp ? ` / HP公開日:${hpPub.iso || '不明'}${hpPub.daysAgo != null ? `(${hpPub.daysAgo}日前)` : ''}${wq ? ` / Web品質${wq.score}/100(${wq.type})` : ''}` : ''
+        const hpInfo = isHp ? ` / HP公開日:${hpPub.iso || '不明'}${hpPub.daysAgo != null ? `(${hpPub.daysAgo}日前)` : ''}${wq ? ` / Web品質${wq.score}/100(${wq.type})` : ''}` : (hpPub.iso ? ` / 記事日付:${hpPub.iso}(${hpPub.daysAgo}日前)` : '')
         const reason = `${def.label}: 「${rr.title || name}」${newnessOk ? (isHp ? ' / 新HP公開根拠あり' : ' / 新店根拠あり') : ''}${hpInfo}${holdReason ? `（HOLD理由: ${holdReason}）` : ''}${closed.closed ? `（${closed.reason}）` : ''}${enrich?.status ? ` / 補完[${enrich.status}]` : ''}`
         const payload: any = {
           name, address: address || null, phone_number: phone || null, website_url: official || null, official_url: official || null, instagram_url: enrich?.instagram || null,
           source: sourceType, lead_source: sourceType, discovery_source_type: sourceType, source_type: `AI自動投入(${def.label})`, source_site_name: def.label, parser_used: 'serp_discovery',
           source_detail_url: url, source_list_url: null, search_title: (rr.title || name).slice(0, 300), search_snippet: (rr.snippet || '').slice(0, 300),
-          newness_type: def.signalType, regional_media_newness_reason: reason, regional_media_detected_at: nowIso, first_discovered_at: nowIso,
-          lead_temperature: temperature, hot_tier: hotTier, recommended_status: temperature === 'HOT' ? 'HOT_B' : temperature, should_exclude_from_call_list: temperature === 'EXCLUDED',
+          newness_type: def.signalType, regional_media_newness_reason: reason, regional_media_detected_at: hpPub.iso || nowIso, first_discovered_at: nowIso,
+          lead_temperature: temperature, hot_tier: hotTier, recommended_status: temperature === 'HOT' ? (hotTier === 'A' ? 'HOT_A' : 'HOT_B') : temperature, should_exclude_from_call_list: temperature === 'EXCLUDED',
           name_unconfirmed_hot: temperature === 'HOT' && !sn.valid, phone_source: phone ? (matchedPlaceId ? 'google_places' : 'detail_page') : null,
           matched_google_place_id: matchedPlaceId, extracted_shop_name: name, extracted_address: address || null, extracted_phone: phone || null, extracted_official_url: official || null,
           owner_reachability_score: phone ? 65 : 30, auto_import_reason: temperature === 'HOT' ? reason : null, ai_comment: reason, last_seen_at: nowIso, source_run_id: runId,
@@ -326,13 +358,27 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // 重複判定（source_detail_url / 電話）
         const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases').eq('source_detail_url', url).limit(1)
         let candidateId: string | null = exC?.[0]?.id || null
-        if (!candidateId && phone) { const { data: bp } = await admin.from('lead_candidates').select('id').eq('phone_number', phone).limit(1); candidateId = bp?.[0]?.id || null; if (candidateId) counts.dup++ }
+        if (!candidateId && phone) {
+          const { data: bp } = await admin.from('lead_candidates').select('id,discovery_source_type,lead_source').eq('phone_number', phone).limit(1)
+          candidateId = bp?.[0]?.id || null
+          if (candidateId) {
+            counts.dup++
+            // クロスソース確証: 別の取得元でも同じ電話の候補が検出済み＝新店の確度が非常に高い → HOT-Aへ昇格
+            const prevSrc = bp![0].discovery_source_type || bp![0].lead_source
+            if (temperature === 'HOT' && prevSrc && prevSrc !== sourceType) {
+              hotTier = 'A'; payload.hot_tier = 'A'; payload.recommended_status = 'HOT_A'
+              payload.auto_import_reason = `${payload.auto_import_reason || reason} / 複数取得元で確証（${prevSrc}でも検出）`
+              counts.corroboratedA = (counts.corroboratedA || 0) + 1
+            }
+          }
+        }
+        if (temperature === 'HOT') { if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB++ }
         const already = !!exC?.[0]?.imported_to_cases
         if (candidateId) { await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {}) }
         else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single(); candidateId = ins?.id || null; counts.saved++ }
 
         if (candidateId) {
-          await addSignals(admin, candidateId, [{ type: def.signalType, source: def.label, url, date: isHp ? hpPub.iso : null, text: (isHp && hpEvidence ? `新HP公開根拠: ${(newnessText.match(HP_PUBLISH_RE) || [''])[0]} / ` : '') + (rr.title || '').slice(0, 180), confidence: isHp ? (hpPub.daysAgo != null && hpPub.daysAgo <= recencyDays ? 0.8 : 0.5) : 0.6 }])
+          await addSignals(admin, candidateId, [{ type: def.signalType, source: def.label, url, date: hpPub.iso, text: (isHp && hpEvidence ? `新HP公開根拠: ${(newnessText.match(HP_PUBLISH_RE) || [''])[0]} / ` : '') + (rr.title || '').slice(0, 180), confidence: (hpPub.daysAgo != null && hpPub.daysAgo <= 30) ? 0.8 : isHp ? 0.5 : 0.6 }])
           const { data: full } = await admin.from('lead_candidates').select('*').eq('id', candidateId).single()
           const { data: sigs } = await admin.from('lead_signals').select('signal_type').eq('lead_candidate_id', candidateId)
           if (full) await applySalesScore(admin, full, Array.from(new Set((sigs || []).map((s: any) => s.signal_type))))
@@ -358,7 +404,8 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
                 user_rating_count: established!.count ?? null, google_user_rating_count: established!.count ?? null,
                 oldest_review_days_ago: established!.oldestDays ?? null, auto_insert_skipped_reason: why, auto_import_reason: null,
               }).eq('id', candidateId).then(() => {}, () => {})
-              counts.hot = Math.max(0, counts.hot - 1); counts.hotB = Math.max(0, counts.hotB - 1)
+              counts.hot = Math.max(0, counts.hot - 1)
+              if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, counts.hotB - 1)
               counts.establishedSkipped = (counts.establishedSkipped || 0) + 1
               if (debug.samples.length < 12) debug.samples.push({ url, name, phone, address, temperature: 'DOWNGRADED(既存店)', why })
               continue
@@ -368,19 +415,23 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
               await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
             } else {
               const memo = (full as any)?.call_memo ? `\n\n${(full as any).call_memo}` : ''
-              const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+              const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: hotTier === 'A' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-${hotTier || 'B'}】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
               if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++; importedCases.push({ id: created.id, name, phone, address }) }
             }
           }
         }
         if (debug.samples.length < 12) debug.samples.push({ url, name, phone, address, temperature })
       }
+      // クエリ学習: このクエリのHOT実績を記録（次回の優先順位に反映。0件続きは自然に後回し）
+      { const st = qstats[qKey(q)] || { r: 0, h: 0, t: 0 }; qstats[qKey(q)] = { r: st.r + 1, h: st.h + (counts.hot - hotBefore), t: Date.now() } }
     }
     await writeCost(admin, cost)
+    await persistQueryStats()
     await admin.from('auto_lead_runs').update({ status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.queries, fetched_count: counts.detailFetched, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
     return { ok: true, runId, ...counts, importedCases, debug }
   } catch (e: any) {
     await writeCost(admin, cost)
+    await persistQueryStats()
     await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: String(e?.message || e) }).eq('id', runId).then(() => {}, () => {})
     return { ok: false, error: String(e?.message || e), ...counts, debug }
   }

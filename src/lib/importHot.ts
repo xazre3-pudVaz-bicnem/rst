@@ -6,7 +6,7 @@
 // ============================================================
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
-import { onlyDigits, looksLikeArticle, isRealStoreAddress } from './leadQuality.js'
+import { onlyDigits, looksLikeArticle, isRealStoreAddress, phoneAddressMatch } from './leadQuality.js'
 import { detectBigOrPublicStrong, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
@@ -82,7 +82,8 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
   const nowIso = new Date().toISOString()
   // 時間予算（自動巡回の60s枠を守るため）。外部ルックアップ(Places詳細/IGフォロワー)は残り時間があるときだけ実行。
   const deadline = Date.now() + Math.max(3000, opts.budgetMs ?? 600000)
-  const { data: rows, error } = await admin.from('lead_candidates').select(FIELDS).eq('lead_temperature', 'HOT').eq('imported_to_cases', false).limit(limit)
+  // 鮮度の高い順に処理（時間予算で途中打ち切りになっても「新しい候補から」投入される）
+  const { data: rows, error } = await admin.from('lead_candidates').select(FIELDS).eq('lead_temperature', 'HOT').eq('imported_to_cases', false).order('first_seen_at', { ascending: false }).limit(limit)
   if (error) return { ok: false, error: error.message }
   const list: any[] = rows || []
   let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0, reviewExcluded = 0
@@ -103,6 +104,11 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     if (isTollFreeJp(phone)) {
       await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `フリーダイヤル(${phone})は店舗直通でないため対象外` }).eq('id', c.id)
       reviewExcluded++; continue
+    }
+    // 1.2) 固定電話の市外局番と住所の都道府県が不一致 = 別店舗/本社番号の誤抽出の疑い → 投入せずHOLD（架電前に人が確認）
+    if (phoneAddressMatch(phone, address) === 'mismatch') {
+      await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）→HOLD` }).eq('id', c.id)
+      downgraded++; continue
     }
     // 1.5) 最古クチコミが30日超 = 既存店（新規ではない）→ 投入せずHOLD降格（候補が自前の最古日を持つ場合）
     if (reviewTooOld(c)) {
