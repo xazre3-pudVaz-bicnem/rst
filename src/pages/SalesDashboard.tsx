@@ -17,7 +17,7 @@ import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { cn } from '@/lib/utils'
 import type { Appointment, Case, CallLog, Recall } from '@/lib/types'
 
-export default function Home() {
+export default function SalesDashboard() {
   const navigate = useNavigate()
   const { displayName } = useAuth()
   const [cases, setCases] = useState<Case[]>([])
@@ -62,7 +62,7 @@ export default function Home() {
       ])
       setCases(c); setCallLogs(l); setRecalls(r); setAppointments(a)
     } catch (e) {
-      console.error('[Home]', e)
+      console.error('[SalesDashboard]', e)
     } finally {
       setLoading(false)
     }

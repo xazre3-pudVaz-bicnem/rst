@@ -11,6 +11,16 @@ import type {
   Recall,
   SignupRequest,
   Template,
+  Employee,
+  AttendanceRecord,
+  WorkShift,
+  LeaveBalance,
+  LeaveRequest,
+  ApprovalRequest,
+  LaborAlert,
+  LaborDocument,
+  LaborSettings,
+  LaborAuditLog,
 } from './types'
 
 /**
@@ -513,5 +523,246 @@ export const CallSessionApi = {
       .select()
       .single()
     return unwrap(data, error)
+  },
+}
+
+// ============================================================
+// 労務管理（Labor / HR）データアクセス層
+// すべて Supabase 直アクセス（Vercel Function は増やさない）。
+// テーブル未適用環境でも一覧系は空配列で握りつぶし、画面を壊さない。
+// ============================================================
+
+/** テーブル未作成でも落ちない一覧取得の共通ヘルパ */
+async function safeList<T>(table: string, orderCol: string, ascending = false, limit = 1000): Promise<T[]> {
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .order(orderCol, { ascending })
+    .limit(limit)
+  if (error) {
+    console.warn(`[Labor] ${table} list skipped:`, error.message)
+    return []
+  }
+  return (data ?? []) as T[]
+}
+
+export const EmployeeApi = {
+  list: (limit = 1000) => safeList<Employee>('employees', 'created_at', true, limit),
+  async get(id: string): Promise<Employee | null> {
+    const { data, error } = await supabase.from('employees').select('*').eq('id', id).maybeSingle()
+    if (error) { console.warn('[Employee] get', error.message); return null }
+    return (data as Employee) ?? null
+  },
+  async create(payload: Partial<Employee>): Promise<Employee> {
+    const { data, error } = await supabase.from('employees').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<Employee>): Promise<void> {
+    const { error } = await supabase.from('employees').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('employees').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const AttendanceApi = {
+  list: (limit = 1000) => safeList<AttendanceRecord>('attendance_records', 'work_date', false, limit),
+  async listByDate(date: string): Promise<AttendanceRecord[]> {
+    const { data, error } = await supabase
+      .from('attendance_records').select('*').eq('work_date', date)
+    if (error) { console.warn('[Attendance] listByDate', error.message); return [] }
+    return (data ?? []) as AttendanceRecord[]
+  },
+  async listByMonth(month: string): Promise<AttendanceRecord[]> {
+    // month = 'YYYY-MM'
+    const { data, error } = await supabase
+      .from('attendance_records').select('*')
+      .gte('work_date', `${month}-01`).lte('work_date', `${month}-31`)
+      .order('work_date', { ascending: false })
+    if (error) { console.warn('[Attendance] listByMonth', error.message); return [] }
+    return (data ?? []) as AttendanceRecord[]
+  },
+  async listByEmployee(employeeId: string, limit = 200): Promise<AttendanceRecord[]> {
+    const { data, error } = await supabase
+      .from('attendance_records').select('*').eq('employee_id', employeeId)
+      .order('work_date', { ascending: false }).limit(limit)
+    if (error) { console.warn('[Attendance] listByEmployee', error.message); return [] }
+    return (data ?? []) as AttendanceRecord[]
+  },
+  async getForDay(employeeId: string, date: string): Promise<AttendanceRecord | null> {
+    const { data, error } = await supabase
+      .from('attendance_records').select('*')
+      .eq('employee_id', employeeId).eq('work_date', date).maybeSingle()
+    if (error) { console.warn('[Attendance] getForDay', error.message); return null }
+    return (data as AttendanceRecord) ?? null
+  },
+  /** 打刻を1件 upsert（employee_id + work_date で一意） */
+  async upsert(payload: Partial<AttendanceRecord> & { employee_id: string; work_date: string }): Promise<AttendanceRecord> {
+    const { data, error } = await supabase
+      .from('attendance_records')
+      .upsert(payload, { onConflict: 'employee_id,work_date' })
+      .select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<AttendanceRecord>): Promise<void> {
+    const { error } = await supabase.from('attendance_records').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('attendance_records').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const ShiftApi = {
+  list: (limit = 1000) => safeList<WorkShift>('work_shifts', 'shift_date', false, limit),
+  async listByMonth(month: string): Promise<WorkShift[]> {
+    const { data, error } = await supabase
+      .from('work_shifts').select('*')
+      .gte('shift_date', `${month}-01`).lte('shift_date', `${month}-31`)
+      .order('shift_date', { ascending: true })
+    if (error) { console.warn('[Shift] listByMonth', error.message); return [] }
+    return (data ?? []) as WorkShift[]
+  },
+  async create(payload: Partial<WorkShift>): Promise<WorkShift> {
+    const { data, error } = await supabase.from('work_shifts').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async upsert(payload: Partial<WorkShift> & { employee_id: string; shift_date: string }): Promise<WorkShift> {
+    const { data, error } = await supabase
+      .from('work_shifts').upsert(payload, { onConflict: 'employee_id,shift_date' }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<WorkShift>): Promise<void> {
+    const { error } = await supabase.from('work_shifts').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('work_shifts').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const LeaveBalanceApi = {
+  list: (limit = 1000) => safeList<LeaveBalance>('leave_balances', 'fiscal_year', false, limit),
+  async upsert(payload: Partial<LeaveBalance> & { employee_id: string; fiscal_year: number }): Promise<LeaveBalance> {
+    const { data, error } = await supabase
+      .from('leave_balances').upsert(payload, { onConflict: 'employee_id,fiscal_year' }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<LeaveBalance>): Promise<void> {
+    const { error } = await supabase.from('leave_balances').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const LeaveRequestApi = {
+  list: (limit = 1000) => safeList<LeaveRequest>('leave_requests', 'requested_at', false, limit),
+  async create(payload: Partial<LeaveRequest>): Promise<LeaveRequest> {
+    const { data, error } = await supabase.from('leave_requests').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<LeaveRequest>): Promise<void> {
+    const { error } = await supabase.from('leave_requests').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('leave_requests').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const ApprovalApi = {
+  list: (limit = 1000) => safeList<ApprovalRequest>('approval_requests', 'requested_at', false, limit),
+  async listPending(): Promise<ApprovalRequest[]> {
+    const { data, error } = await supabase
+      .from('approval_requests').select('*').eq('status', 'pending')
+      .order('requested_at', { ascending: true })
+    if (error) { console.warn('[Approval] listPending', error.message); return [] }
+    return (data ?? []) as ApprovalRequest[]
+  },
+  async create(payload: Partial<ApprovalRequest>): Promise<ApprovalRequest> {
+    const { data, error } = await supabase.from('approval_requests').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<ApprovalRequest>): Promise<void> {
+    const { error } = await supabase.from('approval_requests').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('approval_requests').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const LaborAlertApi = {
+  list: (limit = 1000) => safeList<LaborAlert>('labor_alerts', 'created_at', false, limit),
+  async listOpen(): Promise<LaborAlert[]> {
+    const { data, error } = await supabase
+      .from('labor_alerts').select('*').eq('status', 'open')
+      .order('created_at', { ascending: false })
+    if (error) { console.warn('[Alert] listOpen', error.message); return [] }
+    return (data ?? []) as LaborAlert[]
+  },
+  async create(payload: Partial<LaborAlert>): Promise<LaborAlert> {
+    const { data, error } = await supabase.from('labor_alerts').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<LaborAlert>): Promise<void> {
+    const { error } = await supabase.from('labor_alerts').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('labor_alerts').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const LaborDocumentApi = {
+  list: (limit = 1000) => safeList<LaborDocument>('labor_documents', 'created_at', false, limit),
+  async create(payload: Partial<LaborDocument>): Promise<LaborDocument> {
+    const { data, error } = await supabase.from('labor_documents').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<LaborDocument>): Promise<void> {
+    const { error } = await supabase.from('labor_documents').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('labor_documents').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const LaborSettingsApi = {
+  /** 会社全体設定（先頭1行を運用）。無ければ null。 */
+  async get(): Promise<LaborSettings | null> {
+    const { data, error } = await supabase
+      .from('labor_settings').select('*').order('created_at', { ascending: true }).limit(1)
+    if (error) { console.warn('[LaborSettings] get', error.message); return null }
+    return data && data.length > 0 ? (data[0] as LaborSettings) : null
+  },
+  async create(payload: Partial<LaborSettings>): Promise<LaborSettings> {
+    const { data, error } = await supabase.from('labor_settings').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<LaborSettings>): Promise<void> {
+    const { error } = await supabase.from('labor_settings').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+/** 労務監査ログ（テーブルが無くても失敗させない） */
+export const LaborAuditApi = {
+  list: (limit = 300) => safeList<LaborAuditLog>('labor_audit_logs', 'created_at', false, limit),
+  async log(payload: Partial<LaborAuditLog>): Promise<void> {
+    try {
+      const { error } = await supabase.from('labor_audit_logs').insert(payload)
+      if (error) console.warn('[LaborAudit] log skipped:', error.message)
+    } catch (e) {
+      console.warn('[LaborAudit] log error:', e)
+    }
   },
 }

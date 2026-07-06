@@ -1,8 +1,13 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut, Bot } from 'lucide-react'
+import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut, Bot, Briefcase, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
 import { useAuth } from '@/context/AuthContext'
 import { roleLabel } from '@/lib/constants'
+import { LABOR_NAV } from './LaborLayout'
+import { laborPerms } from '@/lib/labor'
 import KpiBar from './KpiBar'
 import NotificationBell from './NotificationBell'
 import ThemeToggle from './ThemeToggle'
@@ -10,6 +15,13 @@ import ThemeToggle from './ThemeToggle'
 export default function TopBar() {
   const { displayName, signOut, isAdmin, role } = useAuth()
   const location = useLocation()
+  const perms = laborPerms(role)
+  const laborActive = location.pathname === '/home' || location.pathname.startsWith('/labor')
+  const laborItems = LABOR_NAV.filter((n) => {
+    if (n.adminOnly && !perms.canConfigure) return false
+    if (n.manageOnly && !perms.canManage) return false
+    return true
+  })
 
   const navItem = (to: string, label: string, icon: React.ReactNode) => {
     const active = location.pathname === to
@@ -57,7 +69,32 @@ export default function TopBar() {
               <path d="M3 3v18h18M9 17V9m4 8V5m4 12v-6" />
             </svg>,
           )}
+          {navItem('/sales-dashboard', '営業ダッシュボード', <LayoutDashboard className="h-3.5 w-3.5" />)}
           {navItem('/users', 'ユーザー', <Users className="h-3.5 w-3.5" />)}
+
+          {/* 労務管理（ドロップダウン） */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                title="労務管理"
+                className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
+                  laborActive ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-accent'
+                }`}
+              >
+                <Briefcase className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">労務管理</span>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[160px]">
+              {laborItems.map((n) => (
+                <DropdownMenuItem key={n.to} asChild>
+                  <Link to={n.to} className="w-full cursor-pointer text-xs">{n.label}</Link>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {isAdmin && navItem('/ai-scripts', 'AIトーク', <Bot className="h-3.5 w-3.5" />)}
           {isAdmin && navItem('/audit', '監査', <ScrollText className="h-3.5 w-3.5" />)}
         </nav>

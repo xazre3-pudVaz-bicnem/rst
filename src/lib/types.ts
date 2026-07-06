@@ -572,3 +572,219 @@ export interface ExtractedShop {
   source_urls?: string
   memo?: string
 }
+
+// ============================================================
+// 労務管理（Labor / HR）
+// すべて Supabase テーブルと 1:1。土台のため nullable を広めに取る。
+// ============================================================
+
+export interface Employee {
+  id: string
+  user_id?: string | null
+  employee_code?: string | null
+  name: string
+  name_kana?: string | null
+  email?: string | null
+  phone?: string | null
+  employment_type?: string | null
+  department?: string | null
+  position?: string | null
+  role?: string | null
+  hire_date?: string | null
+  resignation_date?: string | null
+  status?: string | null
+  work_style?: string | null
+  base_salary?: number | null
+  hourly_wage?: number | null
+  fixed_overtime_hours?: number | null
+  fixed_overtime_pay?: number | null
+  standard_work_start?: string | null
+  standard_work_end?: string | null
+  standard_break_minutes?: number | null
+  weekly_work_days?: number | null
+  closing_day?: number | null
+  payment_day?: number | null
+  trial_period_end_date?: string | null
+  contract_start_date?: string | null
+  contract_end_date?: string | null
+  emergency_contact_name?: string | null
+  emergency_contact_phone?: string | null
+  bank_name?: string | null
+  branch_name?: string | null
+  account_type?: string | null
+  account_number?: string | null
+  account_holder?: string | null
+  social_insurance_status?: string | null
+  employment_insurance_status?: string | null
+  memo?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AttendanceRecord {
+  id: string
+  employee_id: string
+  work_date: string
+  clock_in_at?: string | null
+  clock_out_at?: string | null
+  break_start_at?: string | null
+  break_end_at?: string | null
+  total_break_minutes?: number | null
+  work_minutes?: number | null
+  overtime_minutes?: number | null
+  late_night_minutes?: number | null
+  holiday_work_minutes?: number | null
+  status?: string | null
+  work_location_type?: string | null
+  clock_in_method?: string | null
+  clock_out_method?: string | null
+  clock_in_ip?: string | null
+  clock_out_ip?: string | null
+  clock_in_lat?: number | null
+  clock_in_lng?: number | null
+  clock_out_lat?: number | null
+  clock_out_lng?: number | null
+  is_late?: boolean | null
+  is_early_leave?: boolean | null
+  note?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface WorkShift {
+  id: string
+  employee_id: string
+  shift_date: string
+  planned_start_at?: string | null
+  planned_end_at?: string | null
+  planned_break_minutes?: number | null
+  shift_type?: string | null
+  status?: string | null
+  note?: string | null
+  created_by?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LeaveBalance {
+  id: string
+  employee_id: string
+  fiscal_year: number
+  paid_leave_granted_days?: number | null
+  paid_leave_used_days?: number | null
+  paid_leave_remaining_days?: number | null
+  paid_leave_expire_date?: string | null
+  required_5days_used?: number | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LeaveRequest {
+  id: string
+  employee_id: string
+  leave_type?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  days?: number | null
+  hours?: number | null
+  reason?: string | null
+  status?: string | null
+  requested_at?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  rejected_reason?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ApprovalRequest {
+  id: string
+  employee_id: string
+  request_type: string
+  target_table?: string | null
+  target_id?: string | null
+  title?: string | null
+  reason?: string | null
+  before_data?: unknown
+  after_data?: unknown
+  status?: string | null
+  requested_at?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  rejected_by?: string | null
+  rejected_at?: string | null
+  rejected_reason?: string | null
+  comment?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LaborAlert {
+  id: string
+  employee_id?: string | null
+  alert_type: string
+  severity?: string | null
+  title?: string | null
+  message?: string | null
+  target_date?: string | null
+  target_month?: string | null
+  status?: string | null
+  resolved_by?: string | null
+  resolved_at?: string | null
+  created_at?: string
+}
+
+export interface LaborDocument {
+  id: string
+  employee_id: string
+  document_type: string
+  title?: string | null
+  file_url?: string | null
+  status?: string | null
+  signed_at?: string | null
+  expires_at?: string | null
+  uploaded_by?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LaborSettings {
+  id: string
+  company_name?: string | null
+  standard_work_start?: string | null
+  standard_work_end?: string | null
+  standard_break_minutes?: number | null
+  scheduled_daily_minutes?: number | null
+  holiday_weekdays?: number[] | null
+  closing_day?: number | null
+  payment_day?: number | null
+  overtime_alert_monthly_hours?: number | null
+  overtime_alert_weekly_hours?: number | null
+  paid_leave_grant_rule?: string | null
+  require_approval_attendance_edit?: boolean | null
+  require_approval_leave?: boolean | null
+  gps_clock_enabled?: boolean | null
+  ip_restriction_enabled?: boolean | null
+  csv_format?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface LaborAuditLog {
+  id: string
+  actor_user_id?: string | null
+  actor_name?: string | null
+  employee_id?: string | null
+  action: string
+  target_table?: string | null
+  target_id?: string | null
+  before_data?: unknown
+  after_data?: unknown
+  ip_address?: string | null
+  user_agent?: string | null
+  created_at?: string
+}
