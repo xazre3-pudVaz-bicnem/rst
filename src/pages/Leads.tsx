@@ -787,7 +787,14 @@ export default function Leads() {
           },
         }),
       })
-      const json = await res.json().catch(() => ({}))
+      // 504等ではJSONでなくHTMLが返る。握りつぶさずHTTPステータス付きで表示（原因特定のため）
+      const rawGp = await res.text()
+      let json: any
+      try { json = JSON.parse(rawGp) } catch {
+        json = { error: res.status === 504 || res.status === 408
+          ? `処理がタイムアウトしました（HTTP ${res.status}）。取得済み分は保存されています。少し待ってから再実行すると続きから処理します。`
+          : `サーバーエラー（HTTP ${res.status}）${rawGp ? ': ' + rawGp.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150) : ''}` }
+      }
       if (!res.ok) {
         toast.error(json.error || 'Google Places実行に失敗しました')
         setGpResult({ error: json.error })

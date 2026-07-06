@@ -222,11 +222,14 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
   }
 }
 
-/** 1クエリを複数ページ取得（nextPageTokenを辿る）。重複place_idは除外。 */
-export async function searchPaged(apiKey: string, query: string, perPage: number, maxPages: number, resultLimit: number, rect?: any): Promise<{ status: number; places: any[]; error: string | null; pages: number; apiReturned: number }> {
+/** 1クエリを複数ページ取得（nextPageTokenを辿る）。重複place_idは除外。
+ *  deadlineMs必須級: ページングは1ページ最大12秒×3＋待機で約40秒かかり得るため、期限が近ければ
+ *  次ページに進まない（これが無いと呼び出し元の予算チェックを通過した直後に60秒関数上限を突破し504になる）。 */
+export async function searchPaged(apiKey: string, query: string, perPage: number, maxPages: number, resultLimit: number, rect?: any, deadlineMs?: number): Promise<{ status: number; places: any[]; error: string | null; pages: number; apiReturned: number }> {
   const seen = new Set<string>(); const out: any[] = []
   let token: string | undefined = undefined; let pages = 0; let apiReturned = 0; let status = 0; let error: string | null = null
   for (let i = 0; i < Math.max(1, maxPages); i++) {
+    if (deadlineMs && Date.now() > deadlineMs - 13000) break  // 次の1ページ(最大~13s)が期限内に収まらない → 打ち切り
     const r: { status: number; places: any[]; error: string | null; nextPageToken: string | null } = await searchLight(apiKey, query, perPage, token, rect)
     status = r.status; if (r.error) { error = r.error; break }
     pages++; apiReturned += r.places.length
@@ -391,8 +394,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   let errorMessage = ''
   // 504回避: 実行全体の時間予算（Vercel maxDuration 60s に対する安全マージン）。超過後は新規クエリ/詳細取得を打ち切り次回へ。
   const runStart = Date.now()
-  const RUN_BUDGET_MS = Math.max(20000, Number(rawSettings?.runBudgetMs) || 50000)
+  // 既定42秒: Details(最大10s)が予算ぎりぎりで開始しても60秒関数上限内に収まる余白を残す
+  const RUN_BUDGET_MS = Math.max(20000, Math.min(45000, Number(rawSettings?.runBudgetMs) || 42000))
   const overBudget = () => (Date.now() - runStart) > RUN_BUDGET_MS
+  const runDeadline = () => runStart + RUN_BUDGET_MS
   debug.runBudgetMs = RUN_BUDGET_MS
   const recordSaveError = (msg: string, ctx?: any) => {
     counts.saveError++
@@ -401,6 +406,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   }
   const addSkipReason = (k: string) => { debug.skipReasons[k] = (debug.skipReasons[k] || 0) + 1 }
 
+  // ゾンビrun掃除: 60秒上限で強制終了され status='running' のまま残った過去runをerror化（「running」表示が残り続けるのを防ぐ）
+  await admin.from('auto_lead_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: 'タイムアウト/強制終了(60s上限)の可能性' }).eq('source', 'google_places').eq('status', 'running').lt('created_date', new Date(Date.now() - 180000).toISOString()).then(() => {}, () => {})
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'google_places', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
 
@@ -432,12 +439,12 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     let qi = -1
     for (const gq of picked) {
       qi++
-      // 504回避: 時間予算を超えたら残りクエリは次回実行に回す
-      if (overBudget()) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
+      // 504回避: 予算超過 or 残りが1ページぶん(~15s)未満なら残りクエリは次回実行に回す
+      if (overBudget() || (RUN_BUDGET_MS - (Date.now() - runStart)) < 15000) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
       const query = gq.query
       const region = useGrid ? REGION_RECTANGLES[(qi + gridOffset) % REGION_RECTANGLES.length] : null
       if (region) regionsCovered.add(region.name)
-      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit, region?.rect)
+      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit, region?.rect, runDeadline())
       if (r.error) { counts.error++; errorMessage = r.error }
       counts.apiReturned += r.apiReturned; counts.pages += r.pages; counts.uniquePlaceIds += r.places.length
       // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
