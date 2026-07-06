@@ -228,3 +228,58 @@ export function downloadCsv(filename: string, csv: string) {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+/** 円表記（¥1,234,567） */
+export function fmtYen(n?: number | null): string {
+  return `¥${Math.round(n || 0).toLocaleString('ja-JP')}`
+}
+
+// ============================================================
+// 労務管理 拡張の定数
+// ============================================================
+// 給与計算
+export const PAYROLL_RUN_STATUSES = ['下書き', '計算済', '確定', '締め'] as const
+export const PAYSLIP_STATUSES = ['未確定', '確定'] as const
+
+// 年末調整
+export const YEAR_END_STATUSES = ['未着手', '書類回収中', '計算済', '完了'] as const
+
+// 社会保険手続き
+export const SOCIAL_INSURANCE_PROCEDURE_TYPES = [
+  '資格取得届', '資格喪失届', '算定基礎届', '月額変更届', '賞与支払届',
+  '被扶養者異動届', '産前産後休業関連', '育児休業関連',
+] as const
+export const SOCIAL_INSURANCE_STATUSES = ['未着手', '準備中', '提出済', '受理', '差戻し'] as const
+export const INSURERS = ['協会けんぽ', '健保組合', '年金機構', 'ハローワーク', '労働基準監督署'] as const
+
+// マイナンバー
+export const MYNUMBER_HOLDER_TYPES = ['本人', '扶養家族'] as const
+export const MYNUMBER_COLLECTION_STATUSES = ['未収集', '収集済', '確認済', '廃棄済'] as const
+
+// 電子申請
+export const EAPP_TYPES = [
+  '雇用保険資格取得', '雇用保険資格喪失', '離職票', '健康保険資格取得', '健康保険資格喪失',
+  '算定基礎届', '月額変更届', '36協定届', '就業規則届出',
+] as const
+export const EAPP_STATUSES = ['下書き', '申請準備', '送信済', '到達', '審査中', '完了', 'エラー'] as const
+export const EAPP_TARGETS = ['e-Gov', 'ハローワーク', '年金事務所', '労働基準監督署'] as const
+
+// 社労士連携
+export const SHAROSHI_SHARE_TYPES = ['勤怠データ', '給与データ', '入退社', '社会保険', '相談', 'その他'] as const
+export const SHAROSHI_STATUSES = ['依頼中', '対応中', '完了', '保留'] as const
+
+/** 汎用: 手続き系ステータスの色 */
+export function procedureStatusColor(status?: string | null): string {
+  switch (status) {
+    case '完了': case '受理': case '確認済':
+      return 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300'
+    case '提出済': case '送信済': case '到達': case '審査中': case '対応中': case '収集済': case '計算済':
+      return 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'
+    case 'エラー': case '差戻し':
+      return 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+    case '確定': case '締め':
+      return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300'
+    default: // 未着手/未収集/下書き/依頼中/準備中 等
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+  }
+}

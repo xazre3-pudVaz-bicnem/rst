@@ -32,6 +32,13 @@ const LaborDocuments = lazy(() => import('@/pages/labor/Documents'))
 const LaborAlerts = lazy(() => import('@/pages/labor/Alerts'))
 const LaborSettingsPage = lazy(() => import('@/pages/labor/LaborSettings'))
 const LaborAuditPage = lazy(() => import('@/pages/labor/LaborAudit'))
+// 労務管理 拡張（後回し項目）
+const LaborPayrollCalc = lazy(() => import('@/pages/labor/PayrollCalc'))
+const LaborYearEnd = lazy(() => import('@/pages/labor/YearEnd'))
+const LaborSocialInsurance = lazy(() => import('@/pages/labor/SocialInsurance'))
+const LaborMyNumber = lazy(() => import('@/pages/labor/MyNumber'))
+const LaborEApplications = lazy(() => import('@/pages/labor/EApplications'))
+const LaborSharoshi = lazy(() => import('@/pages/labor/Sharoshi'))
 
 function PageFallback() {
   return (
@@ -78,6 +85,13 @@ export default function App() {
                 <Route path="/labor/alerts" element={<ProtectedRoute><LaborAlerts /></ProtectedRoute>} />
                 <Route path="/labor/settings" element={<ProtectedRoute><LaborSettingsPage /></ProtectedRoute>} />
                 <Route path="/labor/audit" element={<ProtectedRoute><LaborAuditPage /></ProtectedRoute>} />
+                {/* 労務管理 拡張 */}
+                <Route path="/labor/payroll-calc" element={<ProtectedRoute><LaborPayrollCalc /></ProtectedRoute>} />
+                <Route path="/labor/year-end" element={<ProtectedRoute><LaborYearEnd /></ProtectedRoute>} />
+                <Route path="/labor/social-insurance" element={<ProtectedRoute><LaborSocialInsurance /></ProtectedRoute>} />
+                <Route path="/labor/my-number" element={<ProtectedRoute><LaborMyNumber /></ProtectedRoute>} />
+                <Route path="/labor/e-applications" element={<ProtectedRoute><LaborEApplications /></ProtectedRoute>} />
+                <Route path="/labor/sharoshi" element={<ProtectedRoute><LaborSharoshi /></ProtectedRoute>} />
               </Routes>
             </Suspense>
            </ConfirmProvider>

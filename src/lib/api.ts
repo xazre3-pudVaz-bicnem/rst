@@ -21,6 +21,13 @@ import type {
   LaborDocument,
   LaborSettings,
   LaborAuditLog,
+  PayrollRun,
+  Payslip,
+  YearEndAdjustment,
+  SocialInsuranceProcedure,
+  MyNumber,
+  EApplication,
+  SharoshiShare,
 } from './types'
 
 /**
@@ -764,5 +771,145 @@ export const LaborAuditApi = {
     } catch (e) {
       console.warn('[LaborAudit] log error:', e)
     }
+  },
+}
+
+// ============================================================
+// 労務管理 拡張（給与計算・年末調整・社会保険・マイナンバー・電子申請・社労士連携）
+// ============================================================
+
+export const PayrollRunApi = {
+  list: (limit = 200) => safeList<PayrollRun>('payroll_runs', 'target_month', false, limit),
+  async getByMonth(month: string): Promise<PayrollRun | null> {
+    const { data, error } = await supabase
+      .from('payroll_runs').select('*').eq('target_month', month).maybeSingle()
+    if (error) { console.warn('[PayrollRun] getByMonth', error.message); return null }
+    return (data as PayrollRun) ?? null
+  },
+  async upsert(payload: Partial<PayrollRun> & { target_month: string }): Promise<PayrollRun> {
+    const { data, error } = await supabase
+      .from('payroll_runs').upsert(payload, { onConflict: 'target_month' }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<PayrollRun>): Promise<void> {
+    const { error } = await supabase.from('payroll_runs').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const PayslipApi = {
+  list: (limit = 1000) => safeList<Payslip>('payslips', 'target_month', false, limit),
+  async listByMonth(month: string): Promise<Payslip[]> {
+    const { data, error } = await supabase
+      .from('payslips').select('*').eq('target_month', month)
+    if (error) { console.warn('[Payslip] listByMonth', error.message); return [] }
+    return (data ?? []) as Payslip[]
+  },
+  async listByEmployee(employeeId: string, limit = 36): Promise<Payslip[]> {
+    const { data, error } = await supabase
+      .from('payslips').select('*').eq('employee_id', employeeId)
+      .order('target_month', { ascending: false }).limit(limit)
+    if (error) { console.warn('[Payslip] listByEmployee', error.message); return [] }
+    return (data ?? []) as Payslip[]
+  },
+  async upsert(payload: Partial<Payslip> & { employee_id: string; target_month: string }): Promise<Payslip> {
+    const { data, error } = await supabase
+      .from('payslips').upsert(payload, { onConflict: 'employee_id,target_month' }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<Payslip>): Promise<void> {
+    const { error } = await supabase.from('payslips').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('payslips').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const YearEndApi = {
+  list: (limit = 1000) => safeList<YearEndAdjustment>('year_end_adjustments', 'fiscal_year', false, limit),
+  async listByYear(year: number): Promise<YearEndAdjustment[]> {
+    const { data, error } = await supabase
+      .from('year_end_adjustments').select('*').eq('fiscal_year', year)
+    if (error) { console.warn('[YearEnd] listByYear', error.message); return [] }
+    return (data ?? []) as YearEndAdjustment[]
+  },
+  async upsert(payload: Partial<YearEndAdjustment> & { employee_id: string; fiscal_year: number }): Promise<YearEndAdjustment> {
+    const { data, error } = await supabase
+      .from('year_end_adjustments').upsert(payload, { onConflict: 'employee_id,fiscal_year' }).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<YearEndAdjustment>): Promise<void> {
+    const { error } = await supabase.from('year_end_adjustments').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('year_end_adjustments').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const SocialInsuranceApi = {
+  list: (limit = 1000) => safeList<SocialInsuranceProcedure>('social_insurance_procedures', 'created_at', false, limit),
+  async create(payload: Partial<SocialInsuranceProcedure>): Promise<SocialInsuranceProcedure> {
+    const { data, error } = await supabase.from('social_insurance_procedures').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<SocialInsuranceProcedure>): Promise<void> {
+    const { error } = await supabase.from('social_insurance_procedures').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('social_insurance_procedures').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const MyNumberApi = {
+  list: (limit = 1000) => safeList<MyNumber>('my_numbers', 'created_at', false, limit),
+  async create(payload: Partial<MyNumber>): Promise<MyNumber> {
+    const { data, error } = await supabase.from('my_numbers').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<MyNumber>): Promise<void> {
+    const { error } = await supabase.from('my_numbers').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('my_numbers').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const EApplicationApi = {
+  list: (limit = 1000) => safeList<EApplication>('e_applications', 'created_at', false, limit),
+  async create(payload: Partial<EApplication>): Promise<EApplication> {
+    const { data, error } = await supabase.from('e_applications').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<EApplication>): Promise<void> {
+    const { error } = await supabase.from('e_applications').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('e_applications').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const SharoshiApi = {
+  list: (limit = 1000) => safeList<SharoshiShare>('sharoshi_shares', 'created_at', false, limit),
+  async create(payload: Partial<SharoshiShare>): Promise<SharoshiShare> {
+    const { data, error } = await supabase.from('sharoshi_shares').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<SharoshiShare>): Promise<void> {
+    const { error } = await supabase.from('sharoshi_shares').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('sharoshi_shares').delete().eq('id', id)
+    if (error) throw new Error(error.message)
   },
 }

@@ -788,3 +788,139 @@ export interface LaborAuditLog {
   user_agent?: string | null
   created_at?: string
 }
+
+// ============================================================
+// 労務管理 拡張（給与計算本体・年末調整・社会保険・マイナンバー・電子申請・社労士連携）
+// ============================================================
+
+export interface PayrollRun {
+  id: string
+  target_month: string
+  title?: string | null
+  status?: string | null
+  run_by?: string | null
+  run_at?: string | null
+  closed_at?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface Payslip {
+  id: string
+  payroll_run_id?: string | null
+  employee_id: string
+  target_month: string
+  work_days?: number | null
+  work_minutes?: number | null
+  overtime_minutes?: number | null
+  late_night_minutes?: number | null
+  holiday_work_minutes?: number | null
+  paid_leave_days?: number | null
+  absent_days?: number | null
+  base_salary?: number | null
+  overtime_pay?: number | null
+  late_night_pay?: number | null
+  holiday_pay?: number | null
+  fixed_overtime_pay?: number | null
+  commute_allowance?: number | null
+  position_allowance?: number | null
+  other_allowance?: number | null
+  gross_pay?: number | null
+  health_insurance?: number | null
+  long_term_care_insurance?: number | null
+  pension_insurance?: number | null
+  employment_insurance?: number | null
+  income_tax?: number | null
+  resident_tax?: number | null
+  other_deduction?: number | null
+  total_deduction?: number | null
+  net_pay?: number | null
+  status?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface YearEndAdjustment {
+  id: string
+  employee_id: string
+  fiscal_year: number
+  total_income?: number | null
+  total_withholding?: number | null
+  social_insurance_deduction?: number | null
+  life_insurance_deduction?: number | null
+  earthquake_insurance_deduction?: number | null
+  spouse_deduction?: number | null
+  dependent_deduction?: number | null
+  basic_deduction?: number | null
+  housing_loan_deduction?: number | null
+  taxable_income?: number | null
+  calculated_tax?: number | null
+  settlement_amount?: number | null
+  status?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SocialInsuranceProcedure {
+  id: string
+  employee_id: string
+  procedure_type: string
+  status?: string | null
+  insurer?: string | null
+  target_date?: string | null
+  submitted_at?: string | null
+  reference_number?: string | null
+  standard_monthly_wage?: number | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface MyNumber {
+  id: string
+  employee_id: string
+  holder_type?: string | null
+  holder_name?: string | null
+  masked_number?: string | null
+  collection_status?: string | null
+  purpose?: string | null
+  stored_location?: string | null
+  collected_at?: string | null
+  disposed_at?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface EApplication {
+  id: string
+  employee_id?: string | null
+  application_type: string
+  status?: string | null
+  submission_target?: string | null
+  reference_number?: string | null
+  submitted_at?: string | null
+  completed_at?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SharoshiShare {
+  id: string
+  title: string
+  share_type?: string | null
+  status?: string | null
+  target_month?: string | null
+  assigned_to?: string | null
+  message?: string | null
+  response?: string | null
+  shared_by?: string | null
+  responded_at?: string | null
+  note?: string | null
+  created_at?: string
+  updated_at?: string
+}
