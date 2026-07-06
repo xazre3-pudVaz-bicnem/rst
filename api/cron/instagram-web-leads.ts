@@ -11,6 +11,7 @@ import { authorizeAdmin } from '../../src/lib/regionalAdmin.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress, isOrgNonStore } from '../../src/lib/japanFilter.js'
 import { buildHotReject, type HotCheck } from '../../src/lib/hotReject.js'
 import { isValidJpPhone, isTollFreeJp } from '../../src/lib/regionalParsers.js'
+import { IG_FOLLOWERS_IMPORT_EXCLUDE } from '../../src/lib/targetFilter.js'
 import { classifyIndustry, normalizeIndustry } from '../../src/lib/industry.js'
 import { findCaseIdByPhone } from '../../src/lib/caseDedup.js'
 import { DEFAULT_STATUS } from '../../src/lib/constants.js'
@@ -175,6 +176,9 @@ export default async function handler(req: any, res: any) {
       const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
       // 電話が無効/フリーダイヤルなら HOT にしない（電話番号なしはHOT禁止の徹底）
       let temperature = rc.temperature === 'HOT' && !phoneOk ? 'HOLD' : rc.temperature
+      // 投入ゲート（全ソース統一）: Instagramフォロワー1000人以上=確立済み → EXCLUDED（手動インポートでも適用）
+      const igFollowers = Number(e?.profile_followers) || 0
+      if (igFollowers >= IG_FOLLOWERS_IMPORT_EXCLUDE) temperature = 'EXCLUDED'
       const hotTier = temperature === 'HOT' ? 'B' : null
       const payload: any = {
         name, address: address || null, phone_number: phone || null, extracted_phone: phone || null, extracted_address: address || null,
@@ -189,7 +193,7 @@ export default async function handler(req: any, res: any) {
         enriched_phone: e.phone || null, enriched_address: e.address || null, enriched_official_url: e.official || null, enriched_google_place_id: e.place_id || null,
         last_enriched_at: nowIso, enrichment_status: e.status || 'manual', enrichment_confidence: e.confidence ?? null,
         google_business_status: e.business_status || null, has_google_opening_date: e.has_opening || false,
-        ai_comment: `手動インポート(Instagram) / ハッシュタグ:${b.hashtags || '-'}${b.memo ? ' / ' + b.memo : ''}${e.status ? ` / 補完[${e.status}]` : ''}`.slice(0, 500),
+        ai_comment: `手動インポート(Instagram) / ハッシュタグ:${b.hashtags || '-'}${b.memo ? ' / ' + b.memo : ''}${e.status ? ` / 補完[${e.status}]` : ''}${igFollowers >= IG_FOLLOWERS_IMPORT_EXCLUDE ? ` / フォロワー${igFollowers}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため除外` : ''}`.slice(0, 500),
         auto_import_reason: temperature === 'HOT' ? '手動インポート(Instagram) HOT: 電話+住所+新店根拠あり' : null,
         owner_reachability_score: phone ? 70 : 30,
       }

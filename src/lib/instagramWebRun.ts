@@ -10,7 +10,7 @@ import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { isTollFreeJp } from './regionalParsers.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
@@ -609,7 +609,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -711,6 +711,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     const autoImportPerRun = Math.max(1, Number(s.autoImportPerRun) || 50)
     const autoImportPerDay = Math.max(1, Number(s.autoImportPerDay) || 200)
     let importedThisRun = 0
+    let importFollowerChecks = 0  // 投入直前のフォロワー確認回数（1実行あたり上限・時間予算内のみ）
 
     for (const query of picked) {
       if (Date.now() - startMs > TIME_BUDGET) { debug.stoppedEarly = true; break }
@@ -929,6 +930,20 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         // 安全ゲート: 「最終temperature=HOT」かつ「tierが投入可(HOT_A/HOT_B)」かつ「電話あり」のみ。
         // ※大型/多店舗/高フォロワー等でtemperatureをEXCLUDEDへ強制降格した候補（sc.tierはHOTのまま）は投入しない。
         if (temperature === 'HOT' && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
+          // 投入ゲート（全ソース統一）: フォロワー1000人以上=確立済みは投入しない。
+          // プロフィール取得に失敗してフォロワー数不明のままHOT化した候補が素通りしていたため、投入直前に必ず確認する。
+          let followersKnown: number | null = enrich?.profile_fetched ? (enrich?.profile_followers ?? 0) : null
+          if (followersKnown == null && goodHandle && importFollowerChecks < 10 && (Date.now() - startMs) < TIME_BUDGET - 5000) {
+            importFollowerChecks++
+            const prof = await fetchInstagramProfile(goodHandle).catch(() => null)
+            if (prof && typeof prof.followers === 'number') followersKnown = prof.followers
+          }
+          if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
+            await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)
+            counts.followerExcluded = (counts.followerExcluded || 0) + 1
+            counts.hot = Math.max(0, counts.hot - 1); counts.excluded++
+            continue
+          }
           const dupCaseId = await findCaseIdByPhone(admin, finalPhone)
           if (dupCaseId) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)

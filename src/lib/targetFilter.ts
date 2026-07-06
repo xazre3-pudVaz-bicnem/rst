@@ -55,9 +55,10 @@ export function detectMultiStore(text: string): { exclude: boolean; reason: stri
   return { exclude: false, reason: '', hit: '' }
 }
 
-// 「○○ △△店」= 地名/エリア付きの支店・チェーン店名（例: 田所商店 三田店 / 玄三 天美店 / 資さんうどん 飯塚穂波店 / ○○ 本店）。
+// 「○○ △△店」= 地名/エリア付きの支店・チェーン店名（例: 田所商店 三田店 / 玄三 天美店 / 洋麺屋五右衛門 センター北店 / ○○ 本店）。
 // 個人1店舗ではない（多店舗展開の1店）→ 営業対象外。専門店/直売店/複合語の単店は除外しない。
-const BRANCH_STORE_RE = /[\s　][一-龥ぁ-んァ-ヶ0-9０-９A-Za-z々ヶ・]{1,10}店$/
+// ※文字クラスには長音「ー」「ｰ」「〜」を必ず含める（無いと「センター北店」等の長音入り支店名がすり抜けて投入されていた）
+const BRANCH_STORE_RE = /[\s　][一-龥ぁ-んァ-ヶーｰ〜0-9０-９A-Za-z々ヶ・]{1,10}店$/
 export function looksLikeBranchStore(name?: string | null): boolean {
   const s = String(name || '').trim()
   if (!s || s === '店名未確定') return false
