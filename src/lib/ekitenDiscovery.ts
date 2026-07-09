@@ -10,6 +10,7 @@ import { isJapanPhone } from './japanFilter.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, looksLikeBranchStore } from './targetFilter.js'
 import { autoImportAllowed, type InjectMode } from './hotTier.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { computeQuality } from './leadQuality.js'
@@ -118,6 +119,9 @@ export async function runEkitenDiscovery(admin: any, mapsKey: string | null, set
           if (dupCaseId) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
           } else {
+            // 統一投入前ゲート（既存店/共有番号/地域不一致/同名同市/チェーン等の最終関門・全ソース共通）
+            const gate = await caseImportGate(admin, { name, phone, address, mapsKey, budgetEndMs: Date.now() + 12000 })
+            if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); counts.gateBlocked = (counts.gateBlocked || 0) + 1; continue }
             const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(sp.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: sp.official || null, source_urls: url, memo: `【AI自動投入 / エキテン新規掲載候補 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}\n※公開日は掲載公開日（開業日ではない）。営業前に確認推奨。`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
             if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++ }
           }

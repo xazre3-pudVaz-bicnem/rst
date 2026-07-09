@@ -12,6 +12,7 @@ import { runAllSequentialProbes } from './sequentialProbe.js'
 import { runSerpDiscovery } from './serpDiscovery.js'
 import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
 import { sweepHotToCases } from './importHot.js'
+import { runOpeningSoonQueue, runLeadScoring } from './newSourceEngines.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
@@ -178,8 +179,19 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
   let swept: any = null
-  const sweepBudget = budgetMs - (Date.now() - startMs) - 4000
-  if (sweepBudget > 4000) { try { swept = await sweepHotToCases(admin, { limit: 40, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+  const sweepBudget = Math.min(60000, budgetMs - (Date.now() - startMs) - 20000)
+  if (sweepBudget > 6000) { try { swept = await sweepHotToCases(admin, { limit: 80, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+
+  // 品質テール: 巡回のたびに 開業予定日キュー(HOT-A自動投入)→営業優先度採点(S/A/B/C)＋未知チェーン検出＋鮮度整理 を
+  // 自動実行。手動ボタンを押さなくても「常に採点済み・新鮮な架電リスト」が維持される。
+  try {
+    const r1 = budgetMs - (Date.now() - startMs)
+    if (r1 > 22000) { const os = await runOpeningSoonQueue(admin, { limit: 150, runBudgetMs: Math.min(25000, r1 - 12000) }, opts.userId || null); agg.cases_inserted_count += os?.imported || 0 }
+  } catch { /* noop */ }
+  try {
+    const r2 = budgetMs - (Date.now() - startMs)
+    if (r2 > 12000) await runLeadScoring(admin, 'lead_freshness_scoring', { limit: 1000, runBudgetMs: Math.min(30000, r2 - 5000) }, opts.userId || null)
+  } catch { /* noop */ }
 
   // 明細を保存
   if (items.length) await admin.from('auto_crawl_run_items').insert(items).then(() => {}, () => {})

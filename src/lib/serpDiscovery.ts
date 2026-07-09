@@ -19,6 +19,7 @@ import { autoImportAllowed, type InjectMode } from './hotTier.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 import { ingestExtractedStores } from './newSourceEngines.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -442,6 +443,9 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             if (dupCaseId) {
               await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
             } else {
+              // 統一投入前ゲート（共有番号/同名同市/チェーン等。既存店チェックは上で実施済みのためskip）
+              const gate = await caseImportGate(admin, { name, phone, address, text: `${rr.title || ''} ${rr.snippet || ''}`.slice(0, 300), mapsKey, skipEstablishment: true, budgetEndMs: startMs + budgetMs })
+              if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); counts.gateBlocked = (counts.gateBlocked || 0) + 1; continue }
               const memo = (full as any)?.call_memo ? `\n\n${(full as any).call_memo}` : ''
               const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: hotTier === 'A' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-${hotTier || 'B'}】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
               if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++; importedCases.push({ id: created.id, name, phone, address }) }

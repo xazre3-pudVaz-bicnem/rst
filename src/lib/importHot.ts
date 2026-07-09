@@ -110,6 +110,25 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）→HOLD` }).eq('id', c.id)
       downgraded++; continue
     }
+    // 1.25) 共有電話番号: 同じ番号が多数の候補に出現＝ポータル転送/代行/掲載用番号（店舗直通でない）→ 投入せずHOLD
+    {
+      const { count: sharedCands } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).eq('phone_number', phone)
+      if ((sharedCands || 0) >= 4) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い）→HOLD` }).eq('id', c.id)
+        downgraded++; continue
+      }
+    }
+    // 1.28) 同名×同市の既存案件 = 電話違いの同一店 → 二重投入せずリンク
+    if (c.name && c.name !== '店名未確定') {
+      const cityM = String(address).match(/[一-龥ぁ-んァ-ヶ0-9０-９]{1,8}[市区町村]/)
+      const { data: sameName } = await admin.from('cases').select('id,name,address').ilike('name', c.name).limit(3)
+      const normNm = (s: string) => String(s || '').replace(/[\s　・&＆'’\-－ー()（）【】\[\]]/g, '').toLowerCase()
+      const hitCase = (sameName || []).find((x: any) => normNm(x.name) === normNm(c.name) && (!cityM || String(x.address || '').includes(cityM[0])))
+      if (hitCase) {
+        await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: hitCase.id, auto_insert_skipped_reason: '同名同市の既存案件があるためリンク（二重投入防止）' }).eq('id', c.id)
+        linkedDup++; continue
+      }
+    }
     // 1.5) 最古クチコミが30日超 = 既存店（新規ではない）→ 投入せずHOLD降格（候補が自前の最古日を持つ場合）
     if (reviewTooOld(c)) {
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `最古クチコミ${c.oldest_review_days_ago}日前(30日超=既存店)のため新規投入対象外→HOLD` }).eq('id', c.id)

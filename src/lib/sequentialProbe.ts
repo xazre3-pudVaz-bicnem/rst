@@ -19,6 +19,7 @@ import { detectChain } from './chainFilter.js'
 import { computeQuality } from './leadQuality.js'
 import { webSearch } from './instagramWebRun.js'
 import { DEFAULT_STATUS } from './constants.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 const PROBE_TIMEOUT_MS = 8000
@@ -338,7 +339,7 @@ export interface ProbeResult {
   ok: boolean; siteName: string
   probed: number; valid: number; invalid: number; saved: number; saveError: number
   hot: number; hotA: number; hotB: number; hold: number; excluded: number; imported: number
-  alreadyImported: number; importFailed: number
+  alreadyImported: number; importFailed: number; gateBlocked?: number
   timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; parserFail: number; consecutiveNotFound: number
   startId: number; fromId: number; toId: number; nextId: number; nextIdBasis: string; probeMode: string; lastFoundId: number | null; lastValidId: number | null
   backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
@@ -596,6 +597,13 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
         createdCaseId = dupCaseId
         await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: dupCaseId, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', candidateId)
         res.alreadyImported = (res.alreadyImported || 0) + 1
+      } else if (!(await (async () => {
+        // 統一投入前ゲート（既存店/共有番号/地域不一致/同名同市/チェーン 等の最終関門・全ソース共通）
+        const gate = await caseImportGate(admin, { name: finalName, phone, address, text: bodyAll.slice(0, 300), mapsKey, budgetEndMs: Date.now() + 12000 })
+        if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); res.gateBlocked = (res.gateBlocked || 0) + 1; if (gate.action === 'link' && gate.linkCaseId) createdCaseId = gate.linkCaseId }
+        return gate.ok
+      })())) {
+        // ゲート否認: 投入せず降格/リンク済み
       } else {
       const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1

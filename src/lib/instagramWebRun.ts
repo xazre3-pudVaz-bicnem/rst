@@ -8,6 +8,7 @@ import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './google
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
@@ -609,7 +610,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0, gateBlocked: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -948,6 +949,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           if (dupCaseId) {
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
           } else {
+            // 統一投入前ゲート（既存店/共有番号/地域不一致/同名同市/チェーン 等の最終関門・全ソース共通）
+            const gate = await caseImportGate(admin, { name, phone: finalPhone, address: addressVal || '', text: `${r.title} ${r.snippet}`.slice(0, 300), mapsKey, budgetEndMs: startMs + TIME_BUDGET })
+            if (!gate.ok) {
+              await applyGateDowngrade(admin, candidateId, gate)
+              counts.gateBlocked = (counts.gateBlocked || 0) + 1
+              if (gate.action !== 'link') { counts.hot = Math.max(0, counts.hot - 1); if (gate.action === 'exclude') counts.excluded++; else counts.hold++ }
+              continue
+            }
             const memo = [`【AI自動投入 / Instagram Web(全国) / ${sc.tier}】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')
             const { data: created } = await admin.from('cases').insert({
               name, address: addressVal || '', phone1: finalPhone, industry,

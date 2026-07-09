@@ -15,6 +15,7 @@ import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { addSignals, applySalesScore } from './leadSignals.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -147,6 +148,9 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
     const dupCaseId = await findCaseIdByPhone(admin, phone)
     if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId); importedCaseId = dupCaseId }
     else {
+      // 統一投入前ゲート（共有番号/同名同市/チェーン等。既存店チェックは上で実施済みのためskip）
+      const gate = await caseImportGate(admin, { name, phone, address, text: (o.extraText || '').slice(0, 300), mapsKey, skipEstablishment: true, budgetEndMs: Date.now() + 15000 })
+      if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); return { status: 'valid', temperature: gate.action === 'exclude' ? 'EXCLUDED' : gate.action === 'link' ? 'HOT' : 'HOLD', name, phone, address, candidateId, importedCaseId: gate.linkCaseId || null, imported: false } }
       const memo = `【AI自動投入 / ${o.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}`
       const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, instagram: enrich?.instagram || null, source_urls: url, memo, created_by_id: o.userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
       if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); importedCaseId = created.id; imported = true }
@@ -270,6 +274,9 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
         await admin.from('lead_candidates').update({ lead_temperature: 'HOT', hot_tier: 'B', recommended_status: 'HOT_B', auto_import_reason: `${label}で直近公開を確認＋電話・住所あり→HOT-B`, ai_comment: `${label}: 直近${recencyDays}日以内に公開/更新を確認。電話・住所ありのため営業候補。` }).eq('id', c.id)
         counts.promotedHot++
         if (!c.imported_to_cases && phoneOk) {
+          // 統一投入前ゲート（共有番号/同名同市/チェーン/既存店等の最終関門）
+          const gate = await caseImportGate(admin, { name: c.name || '', phone, address: c.address || '', mapsKey, skipEstablishment: true, budgetEndMs: startMs + budgetMs })
+          if (!gate.ok) { await applyGateDowngrade(admin, c.id, gate); counts.promotedHot = Math.max(0, counts.promotedHot - 1); continue }
           const dupCaseId = await findCaseIdByPhone(admin, phone)
           if (!dupCaseId) {
             const { data: created } = await admin.from('cases').insert({ name: c.name || '（店名未確定）', address: c.address || '', phone1: phone, industry: classifyIndustry(c.name || '') || null, status: DEFAULT_STATUS, priority: '中', hp1: site, source_urls: site, memo: `【AI自動投入 / ${label} / HOT-B】直近公開＋電話・住所あり\n電話: ${phone}\n住所: ${c.address}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
@@ -325,6 +332,9 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
       }
       await admin.from('lead_candidates').update(u).eq('id', c.id)
       if (u.lead_temperature === 'HOT' && !c.imported_to_cases && phoneOk) {
+        // 統一投入前ゲート（既存店/共有番号/同名同市/チェーン等の最終関門）
+        const gate = await caseImportGate(admin, { name: shop, phone, address, mapsKey, budgetEndMs: startMs + budgetMs })
+        if (!gate.ok) { await applyGateDowngrade(admin, c.id, gate); counts.promotedHot = Math.max(0, counts.promotedHot - 1); continue }
         const dupCaseId = await findCaseIdByPhone(admin, phone)
         if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: dupCaseId }).eq('id', c.id)
         else { const { data: created } = await admin.from('cases').insert({ name: shop, address, phone1: phone, industry: classifyIndustry(shop) || normalizeIndustry(c.extracted_industry) || null, status: DEFAULT_STATUS, priority: '中', hp1: c.official_url || e.official || null, source_urls: c.official_url || 'HOLD再補完', memo: `【AI自動投入 / HOLD再補完 / HOT-B】\n電話: ${phone}\n住所: ${address}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null })); if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: created.id }).eq('id', c.id); counts.imported++ } }
@@ -420,6 +430,14 @@ export async function ingestExtractedStores(admin: any, mapsKey: string | null, 
     if (temperature === 'HOT' && candidateId) {
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+      else if (!(await (async () => {
+        // 統一投入前ゲート（共有番号/同名同市/チェーン等。既存店チェックは上で実施済みのためskip）
+        const gate = await caseImportGate(admin, { name, phone, address, text: (st.snippet || '').slice(0, 300), mapsKey, skipEstablishment: true, budgetEndMs: endMs })
+        if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); out.hot = Math.max(0, out.hot - 1); out.hotB = Math.max(0, out.hotB - 1); if (gate.action === 'exclude') out.excluded++; else if (gate.action !== 'link') out.hold++ }
+        return gate.ok
+      })())) {
+        // ゲート否認: 投入せず降格/リンク済み
+      }
       else {
         const memo = `【AI自動投入 / ${o.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\n掲載元: ${o.sourceUrl}`
         const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: e?.official || null, source_urls: o.sourceUrl, memo, created_by_id: o.userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
@@ -513,6 +531,9 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
         : `開業${Math.abs(c.days_since_opening ?? 0)}日目`
       await admin.from('lead_candidates').update({ lead_temperature: 'HOT', hot_tier: 'A', recommended_status: 'HOT_A', auto_import_reason: `開業予定日キュー: ${why}（Google openingDate裏取り済み）`, ai_comment: `開業予定日キュー: ${why}。開業前後はMEO/HP提案の最適期。` }).eq('id', c.id)
       counts.promotedHot++
+      // 統一投入前ゲート（共有番号/同名同市等。openingDateはGoogle裏取り済みのため既存店チェックはskip）
+      const gate = await caseImportGate(admin, { name, phone, address, mapsKey: null, skipEstablishment: true, budgetEndMs: startMs + budgetMs })
+      if (!gate.ok) { await applyGateDowngrade(admin, c.id, gate); counts.promotedHot = Math.max(0, counts.promotedHot - 1); counts.skipped++; continue }
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       const nowIso = new Date().toISOString()
       if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', c.id); continue }
@@ -608,6 +629,14 @@ export async function runTextImport(admin: any, mapsKey: string | null, text: st
     if (temperature === 'HOT' && phoneOk && candidateId && !alreadyImported) {
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
+      else if (!(await (async () => {
+        // 統一投入前ゲート（既存店/共有番号/同名同市/チェーン等の最終関門）
+        const gate = await caseImportGate(admin, { name, phone, address, text: block.slice(0, 300), mapsKey, budgetEndMs: startMs + budgetMs })
+        if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); counts.hot = Math.max(0, counts.hot - 1); if (gate.action === 'exclude') counts.excluded++; else if (gate.action !== 'link') counts.hold++ }
+        return gate.ok
+      })())) {
+        // ゲート否認: 投入せず降格/リンク済み
+      }
       else {
         const memo = `【AI自動投入 / テキスト貼り付け取込 / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\n---\n${block.slice(0, 300)}`
         const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '中', hp1: e?.official || null, source_urls: 'テキスト貼り付け取込', memo, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
@@ -642,11 +671,34 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
       const { data: sg } = await admin.from('lead_signals').select('lead_candidate_id').in('lead_candidate_id', chunk)
       for (const s of (sg || [])) sigCount.set(s.lead_candidate_id, (sigCount.get(s.lead_candidate_id) || 0) + 1)
     }
+    // 同名多地域＝未知チェーンの自動検出: 完全一致の店名が3件以上かつ2都道府県以上に出現＝多店舗展開の可能性が高い。
+    // 辞書に無いチェーン（例: 洋麺屋五右衛門）を名寄せで発見し、HOTをHOLDへ降格して手動確認に回す。
+    const normNm = (s: string) => String(s || '').replace(/[\s　・&＆'’\-－ー()（）【】\[\]]/g, '').toLowerCase()
+    const prefOf = (a: string) => (String(a || '').match(/(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/) || [])[1] || ''
+    const nameGroups = new Map<string, Set<string>>()
+    for (const c of list) { const nm = normNm(c.name); if (!nm || c.name === '店名未確定' || nm.length < 3) continue; if (!nameGroups.has(nm)) nameGroups.set(nm, new Set()); const p = prefOf(c.address); if (p) nameGroups.get(nm)!.add(p) }
+    const nameCount = new Map<string, number>()
+    for (const c of list) { const nm = normNm(c.name); if (nm) nameCount.set(nm, (nameCount.get(nm) || 0) + 1) }
+
     for (const c of list) {
       if (remain() < 4000) break
       const phone = c.phone_number || ''
       const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
       const hasAddr = !!c.address && isRealStoreAddress(c.address)
+      // 未知チェーン疑い: 同名3件以上×2都道府県以上 → HOT降格（手動確認）
+      const nm = normNm(c.name)
+      if (nm && c.name !== '店名未確定' && (nameCount.get(nm) || 0) >= 3 && (nameGroups.get(nm)?.size || 0) >= 2 && c.lead_temperature === 'HOT' && !c.imported_to_cases) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `同名店舗が${nameCount.get(nm)}件・${nameGroups.get(nm)!.size}都道府県に存在（未知チェーンの疑い）→手動確認` }).eq('id', c.id).then(() => {}, () => {})
+        counts.chainSuspect = (counts.chainSuspect || 0) + 1
+        continue
+      }
+      // HOLD鮮度切れの自動整理: 60日以上前の未投入HOLDはEXCLUDEDへ（リストを常に新鮮に保つ）
+      const firstSeen = Date.parse(c.first_seen_at || '') || 0
+      if (c.lead_temperature === 'HOLD' && !c.imported_to_cases && firstSeen > 0 && (nowMs - firstSeen) > 60 * 86400000) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: '60日以上前のHOLD候補（鮮度切れの自動整理）' }).eq('id', c.id).then(() => {}, () => {})
+        counts.staleCleaned = (counts.staleCleaned || 0) + 1
+        continue
+      }
       // 鮮度
       const ev = Date.parse(c.regional_media_detected_at || c.first_seen_at || '') || 0
       const ageDays = ev ? (nowMs - ev) / 86400000 : 999

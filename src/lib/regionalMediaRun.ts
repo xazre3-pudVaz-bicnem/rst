@@ -19,6 +19,7 @@ import { looksLikeArticle as looksLikeArticleText, isRealStoreAddress } from './
 import { enrichCandidate } from './instagramWebRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
+import { caseImportGate, applyGateDowngrade } from './importGate.js'
 
 // サイトのタイプを正規化（記事型 / 店舗ディレクトリ型 / ハイブリッド）
 export function siteTypeOf(site: any): 'local_directory_new_listing' | 'openclose_article' | 'hybrid' {
@@ -351,14 +352,20 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       else if (importedCount >= autoImportPerDay) { skip = '手動投入待ち（1日上限）'; counts.manualPending++ }
       else if (importedThisRun >= autoImportPerRun) { skip = '手動投入待ち（1回上限）'; counts.manualPending++ }
       else {
-        // 別経路からの同一店舗（電話重複）は二重作成しない
-        const dupCaseId = await findCaseIdByPhone(admin, o.phone)
-        if (dupCaseId) { skip = '既存案件と電話重複のためリンク'; caseId = dupCaseId; counts.alreadyImported++ }
+        // 統一投入前ゲート（チェーン/支店/大手/既存店/共有番号/地域不一致/同名同市 の最終関門・全ソース共通）
+        const gate = await caseImportGate(admin, { name: o.caseData?.name || '', phone: o.phone, address: o.caseData?.address || '', text: `${o.caseData?.memo || ''}`, mapsKey, budgetEndMs: Date.now() + 15000 })
+        if (!gate.ok && gate.action === 'link' && gate.linkCaseId) { skip = gate.reason; caseId = gate.linkCaseId; counts.alreadyImported++ }
+        else if (!gate.ok) { skip = gate.reason; counts.manualPending++; await applyGateDowngrade(admin, o.candidateId, gate) }
         else {
-          attempted = true
-          const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
-          if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
-          else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
+          // 別経路からの同一店舗（電話重複）は二重作成しない
+          const dupCaseId = await findCaseIdByPhone(admin, o.phone)
+          if (dupCaseId) { skip = '既存案件と電話重複のためリンク'; caseId = dupCaseId; counts.alreadyImported++ }
+          else {
+            attempted = true
+            const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
+            if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
+            else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
+          }
         }
       }
       if (o.candidateId) {
