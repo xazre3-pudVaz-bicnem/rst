@@ -155,68 +155,57 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
                   <div
                     key={r.id}
                     className={cn(
-                      'border-b px-2 py-1.5',
+                      'flex items-center gap-1.5 border-b px-2',
+                      editing ? 'py-1' : 'h-[30px]',  // 非編集時は案件一覧の行高(30px)に統一
                       sec.tone === 'danger' && 'bg-red-50 dark:bg-red-500/10',
                     )}
                   >
                     {editing ? (
-                      <div className="flex items-center gap-1">
-                        <DateTime15Input
-                          value={editValue}
-                          onChange={setEditValue}
-                          className="h-7"
-                        />
+                      <>
+                        <DateTime15Input value={editValue} onChange={setEditValue} className="h-7" />
                         <button className="rounded p-1 text-green-600 hover:bg-green-100" onClick={() => saveEdit(r.id)}>
                           <Check className="h-4 w-4" />
                         </button>
                         <button className="rounded p-1 text-muted-foreground hover:bg-accent" onClick={() => setEditingId(null)}>
                           <X className="h-4 w-4" />
                         </button>
-                      </div>
+                      </>
                     ) : (
-                      <div className="flex items-start gap-1">
-                        <button className="min-w-0 flex-1 text-left" onClick={() => onSelectCase(r.case_id)}>
-                          <div className="flex items-center gap-1.5">
-                            <span className={cn('text-2xs font-bold', sec.tone === 'danger' ? 'text-red-600' : 'text-foreground')}>
-                              {moment(r.target_at).format('MM/DD HH:mm')}
-                            </span>
-                            {c && (
-                              <span className={cn('rounded-sm px-1 text-[9px]', statusColor(c.status))}>{c.status}</span>
-                            )}
-                          </div>
-                          <div className="truncate text-sm font-medium">{r.case_name}</div>
-                          <div className="flex items-center gap-2">
-                            {c?.phone1 && (
-                              <a
-                                href={`tel:${c.phone1}`}
-                                className="inline-flex items-center gap-0.5 text-2xs text-muted-foreground hover:underline"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <Phone className="h-2.5 w-2.5" />{c.phone1}
-                              </a>
-                            )}
-                            {c?.sales_rep && <span className="text-2xs text-primary">担当:{c.sales_rep}</span>}
-                          </div>
-                          {r.memo && <div className="truncate text-2xs text-muted-foreground">{r.memo}</div>}
+                      <>
+                        <button
+                          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                          onClick={() => onSelectCase(r.case_id)}
+                          title={`${r.case_name}\n${c?.phone1 ?? ''}${c?.sales_rep ? ` / 担当:${c.sales_rep}` : ''}${r.memo ? `\n${r.memo}` : ''}`}
+                        >
+                          <span className={cn('shrink-0 text-2xs font-bold tabular-nums', sec.tone === 'danger' ? 'text-red-600' : 'text-foreground')}>
+                            {moment(r.target_at).format('MM/DD HH:mm')}
+                          </span>
+                          {c && <span className={cn('shrink-0 rounded-sm px-1 text-[9px]', statusColor(c.status))}>{c.status}</span>}
+                          <span className="truncate text-xs font-medium">{r.case_name}</span>
+                          {c?.phone1 && (
+                            <a
+                              href={`tel:${c.phone1}`}
+                              className="hidden shrink-0 items-center gap-0.5 text-2xs text-muted-foreground hover:underline sm:inline-flex"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Phone className="h-2.5 w-2.5" />{c.phone1}
+                            </a>
+                          )}
                         </button>
                         {canWrite && (
-                          <div className="flex shrink-0 flex-col items-end gap-0.5">
-                            <div className="flex gap-0.5">
-                              <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snooze(r, 1, 'hours')} title="1時間後に延期">+1h</button>
-                              <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snoozeTomorrow(r)} title="明日の朝9時に延期">明日</button>
-                              <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snooze(r, 3, 'days')} title="3日後に延期">+3d</button>
-                            </div>
-                            <div className="flex gap-0.5">
-                              <button className="rounded p-1 text-green-600 hover:bg-green-100" onClick={() => complete(r)} title="完了">
-                                <CheckCircle2 className="h-4 w-4" />
-                              </button>
-                              <button className="rounded p-1 text-muted-foreground hover:bg-accent" onClick={() => startEdit(r)} title="日時を編集">
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snooze(r, 1, 'hours')} title="1時間後に延期">+1h</button>
+                            <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snoozeTomorrow(r)} title="明日の朝9時に延期">明日</button>
+                            <button className="rounded border px-1 text-[9px] text-muted-foreground hover:bg-accent" onClick={() => snooze(r, 3, 'days')} title="3日後に延期">+3d</button>
+                            <button className="rounded p-0.5 text-green-600 hover:bg-green-100" onClick={() => complete(r)} title="完了">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button className="rounded p-0.5 text-muted-foreground hover:bg-accent" onClick={() => startEdit(r)} title="日時を編集">
+                              <Pencil className="h-3 w-3" />
+                            </button>
                           </div>
                         )}
-                      </div>
+                      </>
                     )}
                   </div>
                 )
