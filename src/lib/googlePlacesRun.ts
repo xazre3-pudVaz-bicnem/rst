@@ -494,6 +494,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           logItem({ placeId, name, address, country: jpLight.country || '—', isJapanPlace: false, result: 'SKIPPED', skip: '日本国外の候補のため除外', exclusion: '日本国外の候補のため除外', saved: false }); continue
         }
 
+        // 店名に「ニュー/New/新店/新規」を含むだけの新規オープン系クエリ一致は店名誤ヒット（NewDays/ニューヤマザキ/
+        // ○○ニュータウンSS等）。openingDate/FUTURE_OPENING/口コミ僅少の実根拠が無ければ保存もしない（リストを汚さない）。
+        if (gq.isNewOpen && /(ニュー|ＮＥＷ|new|新店|新規)/i.test(name) && !lp.openingDate && businessStatusLight !== 'FUTURE_OPENING' && !(reviewCount !== null && reviewCount <= opts.hotMaxReviews)) {
+          counts.skipped++; qstat.skipped++; qReason('店名にニュー/New（クエリ誤ヒット・新店根拠なし）')
+          logItem({ placeId, name, address, userRatingCount: reviewCount, result: 'SKIPPED', skip: '店名ニュー/New誤ヒット（openingDate等の根拠なし）', saved: false }); continue
+        }
+
         // 既存(place_id)を先に確認（クエリ冒頭で一括取得済みのMapから参照＝DB往復なし）
         const existing: any = placeId ? (existingByPlaceId.get(placeId) || null) : null
         if (existing) counts.existingPlaceIds++

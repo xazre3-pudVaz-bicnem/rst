@@ -178,7 +178,10 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   // ---- 新規性シグナル ----
   const hasWebsite = !!normalizeUrl(raw.website_url)
   const firstSeenDays = typeof raw.first_seen_days === 'number' ? raw.first_seen_days : 0
-  const fromNewOpenQuery = !!raw.from_new_open_query
+  // 店名に「ニュー/New/新店/新規」を含む場合、新規オープン系クエリへの一致は店名一致の誤ヒットが大半
+  // （NewDays/ニューヤマザキ/ニュータウンSS等）。クエリ一致を新店根拠として加点しない。
+  const nameHasNewWord = /(ニュー|ＮＥＷ|new|新店|新規)/i.test(name)
+  const fromNewOpenQuery = !!raw.from_new_open_query && !nameHasNewWord
 
   // 開業日が現在±90日以内（未来＝開業予定も含む。口コミより強い新店シグナル）
   const openingWithin90 = (() => {
