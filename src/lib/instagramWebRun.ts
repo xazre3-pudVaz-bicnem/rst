@@ -176,7 +176,7 @@ function isFreePatternError(msg: string): boolean {
   return /not allowed for free|pattern not allowed|free account/i.test(String(msg || ''))
 }
 
-interface WebResult { title: string; url: string; snippet: string }
+interface WebResult { title: string; url: string; snippet: string; date?: string }
 
 export async function webSearch(query: string, num: number, preferProvider?: 'serper' | 'bing', opts?: { tbs?: string; freshness?: string }): Promise<{ results: WebResult[]; error: string | null; usedQuery?: string; fallbackFrom?: string; provider?: string }> {
   // preferProvider のキーがあればそれを使う。無ければ既定（Serper優先）
@@ -200,7 +200,7 @@ export async function webSearch(query: string, num: number, preferProvider?: 'se
         const j: any = await res.json().catch(() => ({}))
         if (!res.ok) return { results: [], error: String(j?.message || `HTTP ${res.status}`).slice(0, 200) }
         const organic = Array.isArray(j.organic) ? j.organic : []
-        return { results: organic.map((o: any) => ({ title: o.title || '', url: o.link || '', snippet: o.snippet || '' })), error: null }
+        return { results: organic.map((o: any) => ({ title: o.title || '', url: o.link || '', snippet: o.snippet || '', date: o.date || '' })), error: null }
       }
       if (prov === 'bing') {
         const u = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${Math.min(20, num)}&mkt=ja-JP${opts?.freshness ? `&freshness=${encodeURIComponent(opts.freshness)}` : ''}`
@@ -279,7 +279,8 @@ function classifyUrls(text: string): { line: string; reservation: string; offici
 function extractContacts(text: string) {
   const phone = extractPhone(text)
   const am = text.match(ADDR_RE)
-  const address = am ? am[0].trim().slice(0, 60) : ''
+  // 末尾に紛れ込む英字ハンドル/英文（例: 「1-16-1F. cornucopia_oshama's p」）を除去
+  const address = am ? am[0].trim().replace(/[.。]?s+[A-Za-z@'’_][A-Za-z@'’._-s]*$/, '').slice(0, 60) : ''
   const region = extractRegion(text)
   const u = classifyUrls(text)
   return { phone, address, prefecture: region.prefecture, city: region.city, line: u.line, reservation: u.reservation, official: u.official, instagram: u.instagram }
@@ -288,6 +289,27 @@ export function usernameFromUrl(url: string): string {
   const m = url.match(/instagram\.com\/([A-Za-z0-9_.]+)/i)
   const u = m ? m[1] : ''
   return /^(p|reel|explore|stories|tv)$/i.test(u) ? '' : u
+}
+/** タイトル/スニペットから @ハンドル を抽出（/p/ /reel/ のURLではユーザー名が取れないためのフォールバック。
+ *  これが無いとリール投稿由来の候補はフォロワー確認・プロフィール補完が一切できず素通りしていた）。 */
+export function handleFromText(text: string): string {
+  const m = String(text || '').match(/@([A-Za-z0-9_.]{3,30})/)
+  const h = m ? m[1].replace(/\.+$/, '') : ''
+  return /^(p|reel|reels|explore|tv|stories|accounts)$/i.test(h) ? '' : h
+}
+/** 検索結果の投稿日を推定（Serperのdate欄=相対表記対応→本文の日付表記）。経過日数を返す（不明はnull）。 */
+function postDaysAgo(r: { title: string; snippet: string; date?: string }): number | null {
+  const now = Date.now()
+  const rel = String(r.date || '').match(/(\d+)\s*(hour|day|week|month|year)s?\s*ago/i)
+  if (rel) {
+    const n = Number(rel[1]); const unit = rel[2].toLowerCase()
+    return unit === 'hour' ? 0 : unit === 'day' ? n : unit === 'week' ? n * 7 : unit === 'month' ? n * 30 : n * 365
+  }
+  const tryParse = (s: string) => { const t = Date.parse(s); if (Number.isNaN(t)) return null; const d = Math.floor((now - t) / 86400000); return (d >= -1 && d < 1500) ? d : null }
+  if (r.date) { const d = tryParse(String(r.date)); if (d != null) return d }
+  const m = `${r.title} ${r.snippet}`.match(/(20\d{2})[年./\-]\s?(\d{1,2})[月./\-]\s?(\d{1,2})/)
+  if (m) { const d = tryParse(`${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`); if (d != null) return d }
+  return null
 }
 function nameMatch(a: string, b: string): boolean {
   const n = (s: string) => (s || '').replace(/[\s　・,.。、（）()【】\[\]『』「」'’]/g, '').toLowerCase()
@@ -610,7 +632,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const counts = {
     queries: 0, results: 0, igUrls: 0, rulePassed: 0, preExcluded: 0, noOpenWord: 0,
     judged: 0, heuristicUsed: 0, placeMatched: 0, phoneYes: 0,
-    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0, gateBlocked: 0,
+    hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0, gateBlocked: 0, oldPostHold: 0, followerUnknownHold: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
     openingDateCount: 0, futureOpeningCount: 0,
@@ -721,7 +743,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       const q: any = { query, results: 0, igUrls: 0, rulePassed: 0, judged: 0, heuristic: 0, hot: 0, hold: 0, excluded: 0, areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0, error: null }
       // both: site:クエリはBing優先（無料Serperはsite:不可）、それ以外はSerper。単一プロバイダ時は preferProvider 指定で env 既定に従う
       const preferProvider: ('serper' | 'bing' | undefined) = iwProvider === 'both' ? (/site:/i.test(query) ? 'bing' : 'serper') : (iwProvider === 'bing' ? 'bing' : iwProvider === 'serper' ? 'serper' : undefined)
-      const { results, error, usedQuery, fallbackFrom, provider: usedProvider } = await webSearch(query, perQuery, preferProvider)
+      const { results, error, usedQuery, fallbackFrom, provider: usedProvider } = await webSearch(query, perQuery, preferProvider, { tbs: 'qdr:m', freshness: 'Month' })  // 直近1ヶ月の投稿/ページに限定
       if (error) { if (usedProvider === 'bing') counts.bingError = (counts.bingError || 0) + 1; else counts.serperError = (counts.serperError || 0) + 1 }
       // 簡易クエリへ自動フォールバックした場合は記録（失敗ではない）
       if (fallbackFrom) {
@@ -759,7 +781,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         // ベース抽出（無料）で店名/username/地域を得る
         const base = heuristicJudge(r)
-        const username = usernameFromUrl(r.url)
+        const username = usernameFromUrl(r.url) || handleFromText(`${r.title} ${r.snippet}`)
         const baseRegion = extractRegion(`${r.title} ${r.snippet}`)
         const shop = base.shop_name || ''
         const industry0 = base.industry || extractIndustry(`${r.title} ${r.snippet}`) || ''
@@ -837,6 +859,9 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (bigIW.exclude || bigEstablishedIW) { temperature = 'EXCLUDED'; hotTier = null }  // 道の駅/大型/公共/大手/フォロワー数万/多店舗 → EXCLUDED
         // 設定: 電話必須/Places必須が有効なら未充足はHOLDに戻す
         if (temperature === 'HOT' && ((s.iwRequirePhone && !finalPhone) || (s.iwPlacesRequired && !placeMatched))) temperature = 'HOLD'
+        // 投稿日ゲート: 検索はqdr:mで直近1ヶ月に限定済みだが、日付が読めて35日超の投稿はHOTにしない（古いオープン投稿の再拾い防止）
+        const postAge = postDaysAgo(r)
+        if (temperature === 'HOT' && postAge != null && postAge > 35) { temperature = 'HOLD'; hotTier = null; counts.oldPostHold = (counts.oldPostHold || 0) + 1 }
         if (temperature === 'HOT') { counts.hot++; q.hot++; if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }
         else if (temperature === 'EXCLUDED') { counts.excluded++; q.excluded++ }
         else { counts.hold++; q.hold++ }
@@ -848,7 +873,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         const PREF_ONLY_RE = /^(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\s]{0,8}(都|道|府|県|市|区|町|村)?$/
         const isBad = (s?: string) => { const t = (s || '').trim(); return !t || POST_TITLE_RE.test(t) || t.length > 28 || BAD_NAME_RE.test(t) || PREF_ONLY_RE.test(t) }
         // Instagramハンドル（プロフィール/公式URLから）。店名が取れない時の暫定名に使う（@handle）。
-        const handle = usernameFromUrl(enrich?.instagram || j.instagram_url || r.url || '')
+        const handle = usernameFromUrl(enrich?.instagram || j.instagram_url || r.url || '') || handleFromText(`${r.title} ${r.snippet}`)
         const goodHandle = handle && handle.length >= 3 && !/^(p|reel|reels|explore|tv|stories|accounts)$/i.test(handle) ? handle : ''
         // 店名: プロフィール表示名 > AI抽出店名 > ヒューリスティック > @ハンドル。取れなければ『店名未確定』（地名/Instagram等は使わない）
         const name = (enrich?.profile_name && !isBad(enrich.profile_name)) ? enrich.profile_name
@@ -934,10 +959,17 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           // 投入ゲート（全ソース統一）: フォロワー1000人以上=確立済みは投入しない。
           // プロフィール取得に失敗してフォロワー数不明のままHOT化した候補が素通りしていたため、投入直前に必ず確認する。
           let followersKnown: number | null = enrich?.profile_fetched ? (enrich?.profile_followers ?? 0) : null
-          if (followersKnown == null && goodHandle && importFollowerChecks < 10 && (Date.now() - startMs) < TIME_BUDGET - 5000) {
+          if (followersKnown == null && goodHandle && importFollowerChecks < 25 && (Date.now() - startMs) < TIME_BUDGET - 5000) {
             importFollowerChecks++
             const prof = await fetchInstagramProfile(goodHandle).catch(() => null)
             if (prof && typeof prof.followers === 'number') followersKnown = prof.followers
+          }
+          if (followersKnown == null) {
+            // フォロワー数が確認できない（ログイン壁/ハンドル不明）候補は投入しない＝1000人以上のすり抜けを根絶
+            await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', candidateId)
+            counts.followerUnknownHold = (counts.followerUnknownHold || 0) + 1
+            counts.hot = Math.max(0, counts.hot - 1); counts.hold++
+            continue
           }
           if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
             await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)

@@ -167,9 +167,30 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       await admin.from('lead_candidates').update({ lead_temperature: excludeHard ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: excludeHard, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }
-    // 1.7) Instagramフォロワー1000人以上 = 確立済み → 投入しない。IGリンクがある候補のみ確認（ログイン壁で取れない場合はスキップ）。
-    const igUser = igUsername(c.instagram_url)
-    if (igUser && igLookups < MAX_IG && Date.now() < deadline - 3500) {
+    // 1.7) Instagramフォロワー1000人以上 = 確立済み → 投入しない。
+    //   Instagram由来の候補は「フォロワー数を確認できるまで投入しない」（/p//reel/でユーザー名が取れない・
+    //   ログイン壁で不明のまま高フォロワー店がすり抜けていたため）。他ソースはIGリンクがある場合のみ任意確認。
+    const isIgSource = /instagram/i.test(String(c.source_type || ''))
+    let igUser = igUsername(c.instagram_url)
+    if (!igUser && isIgSource) igUser = (String(c.search_snippet || '').match(/@([A-Za-z0-9_.]{3,30})/)?.[1] || '').replace(/\.+$/, '')
+    if (isIgSource) {
+      if (!igUser) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramユーザー名が特定できずフォロワー確認不可→手動確認' }).eq('id', c.id)
+        downgraded++; continue
+      }
+      if (igLookups >= MAX_IG || Date.now() >= deadline - 3500) { skipped++; continue }  // 予算切れ: 次回のフォロワー確認へ持ち越し
+      igLookups++
+      const prof = await fetchInstagramProfile(igUser).catch(() => null)
+      const followers = prof && typeof prof.followers === 'number' ? prof.followers : null
+      if (followers == null) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', c.id)
+        downgraded++; continue
+      }
+      if (followers >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followers}人(1000人以上=確立済み)のため投入対象外` }).eq('id', c.id)
+        reviewExcluded++; continue
+      }
+    } else if (igUser && igLookups < MAX_IG && Date.now() < deadline - 3500) {
       igLookups++
       const prof = await fetchInstagramProfile(igUser).catch(() => null)
       const followers = prof?.followers || 0
