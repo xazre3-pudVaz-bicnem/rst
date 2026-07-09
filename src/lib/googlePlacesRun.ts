@@ -11,6 +11,7 @@ import { buildLeadQueries } from './leadQueries.js'
 import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
+import { getHotCities } from './hotspots.js'
 
 const SEARCH_ENDPOINT = 'https://places.googleapis.com/v1/places:searchText'
 const DETAILS_ENDPOINT = 'https://places.googleapis.com/v1/places/'
@@ -358,6 +359,12 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   if (nationwide && !testFixed) {
     const inds = industries.length ? industries : getDefaultSettings().industries
     const mixPerRun = Math.max(0, Math.min(40, Number(rawSettings?.placesMixPerRun ?? 22)))
+    // ホットスポット増幅: 直近2週間でHOT投入が出た市区×業種を毎回先頭に混ぜる（勝ちエリアへ自動で倍賭け）
+    try {
+      const hotCities = await getHotCities(admin, { days: 14, max: 8 })
+      const { count: rc0 } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
+      hotCities.forEach((city, i) => mixQueries.push({ query: `${city} ${inds[((rc0 || 0) + i) % inds.length]}`, isNewOpen: false, area: city, industry: inds[((rc0 || 0) + i) % inds.length] }))
+    } catch { /* noop */ }
     const totalCombos = MIX_CITIES.length * inds.length
     const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
     gpRunCntForMix = rc || 0

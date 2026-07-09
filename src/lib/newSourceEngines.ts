@@ -16,6 +16,7 @@ import { addSignals, applySalesScore } from './leadSignals.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
+import { getHotCities } from './hotspots.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -500,6 +501,8 @@ export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts:
     // 実行ごとに4クエリずつローテーション（12クエリ×直近7日をカバー）
     const dayIdx = Math.floor(Date.now() / 86400000)
     const picked = [0, 1, 2, 3].map((i) => NEWS_QUERIES[(dayIdx * 4 + i) % NEWS_QUERIES.length])
+    // ホットスポット増幅: 勝ちエリアの新店ニュースも直近7日で検索（キー不要・コストゼロ）
+    try { const hc = await getHotCities(admin, { days: 14, max: 3 }); for (const c of hc) picked.push(`新規オープン ${c}`) } catch { /* noop */ }
     for (const q of picked) {
       if (remain() < 30000) break
       counts.queries++

@@ -77,7 +77,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
     queries: ['site:kaiten-heiten.com オープン', 'site:kaiten-heiten.com 開店 予定', '"開店閉店" "オープン予定" 店舗', '"開店情報" オープン 電話番号', '"開店予定" 店舗 住所 電話'] },
   // グルメ/美容ポータルの「ニューオープン」ページ（詳細ページに電話・住所が載る）
   { type: 'portal_newopen_page_scan', label: 'グルメ/美容ポータル新店ページ', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'portal_new_listing', freshness: 'month',
-    queries: ['site:tabelog.com "ニューオープン"', 'site:tabelog.com "オープンしました"', 'site:beauty.hotpepper.jp "ニューオープン"', 'site:beauty.hotpepper.jp "NEW OPEN"', 'site:hotpepper.jp "ニューオープン"', 'site:ekiten.jp "新規オープン"'] },
+    queries: ['site:tabelog.com "ニューオープン"', 'site:tabelog.com "オープンしました"', 'site:beauty.hotpepper.jp "ニューオープン"', 'site:beauty.hotpepper.jp "NEW OPEN"', 'site:hotpepper.jp "ニューオープン"', 'site:ekiten.jp "新規オープン"', 'site:r.gnavi.co.jp "ニューオープン"', 'site:retty.me "ニューオープン"', 'site:retty.me "オープンしました"', 'site:epark.jp "新規オープン"', 'site:beauty.epark.jp "NEW OPEN"', 'site:restaurant.ikyu.com "ニューオープン"', 'site:ozmall.co.jp "ニューオープン"'] },
   // 個人開業ブログ（アメブロ=個人サロン系が非常に多い / note=開業エッセイ）。店名から Places で電話・住所補完
   { type: 'blog_opening_search', label: '個人開業ブログ(アメブロ/note)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'sns_opening', freshness: 'month',
     queries: ['site:ameblo.jp "オープンしました" サロン', 'site:ameblo.jp "新規オープン" 電話', 'site:ameblo.jp "開業しました"', 'site:ameblo.jp "オープン予定" 店舗', 'site:note.com "開業しました" 店舗', 'site:note.com "オープンします" 店舗'] },

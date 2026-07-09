@@ -14,6 +14,7 @@ import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
 import { sweepHotToCases } from './importHot.js'
 import { runOpeningSoonQueue, runLeadScoring, runReprocessQueue, runEngineSource } from './newSourceEngines.js'
 import { runEkitenDiscovery } from './ekitenDiscovery.js'
+import { runSiteDiscovery } from './siteDiscovery.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
@@ -196,6 +197,19 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
 
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
+  // 取得元の自己増殖: 地域メディアの巡回サイト自動発見を1日1回だけ自動実行（新店情報サイトが勝手に増えていく）
+  try {
+    const rS = budgetMs - (Date.now() - startMs)
+    if (rS > 60000) {
+      const { data: sdCfg } = await admin.from('app_config').select('value').eq('key', 'site_discovery_last').maybeSingle()
+      const lastSd = Date.parse((sdCfg?.value as any)?.at || '') || 0
+      if (Date.now() - lastSd > 22 * 3600 * 1000) {
+        await runSiteDiscovery(admin, { userId: opts.userId || null, maxQueries: 8, perQuery: 8, maxTests: 15, maxAutoRegister: 5 })
+        await admin.from('app_config').upsert({ key: 'site_discovery_last', value: { at: new Date().toISOString() }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
+      }
+    }
+  } catch { /* noop */ }
+
   // openingDate再判定: 既存のGoogle Places候補を再評価し、開業日が入った/口コミが動いた候補をHOT化（直後のsweepが投入）
   try {
     const rJ = budgetMs - (Date.now() - startMs)

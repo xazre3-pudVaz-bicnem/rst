@@ -9,6 +9,7 @@ import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from '.
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
+import { getHotCities } from './hotspots.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
@@ -732,6 +733,12 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       const lastRun = new Map<string, number>((qlog || []).map((r: any) => [String(r.query), Date.parse(r.last_run_at || '') || 0]))
       ordered = [...querySet].sort((a, b) => effAge(a, lastRun) - effAge(b, lastRun))
     }
+    // ホットスポット増幅: 勝ちエリア×新店ワードを先頭に追加（qstats未登録=未実行扱いで最優先になる）
+    try {
+      const hotCities = await getHotCities(admin, { days: 14, max: 4 })
+      const cityQs = hotCities.flatMap((c) => [`Instagram 新規オープン ${c}`, `Instagram オープンしました ${c}`])
+      ordered = [...cityQs.filter((q) => !ordered.includes(q)), ...ordered]
+    } catch { /* noop */ }
     const notSkipped = ordered.filter((q) => !recent.has(q))
     let picked = notSkipped.slice(0, runQueryLimit)
     if (picked.length === 0 && runQueryLimit > 0) picked = ordered.slice(0, runQueryLimit)
