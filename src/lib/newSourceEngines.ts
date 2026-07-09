@@ -490,22 +490,22 @@ export async function ingestExtractedStores(admin: any, mapsKey: string | null, 
 // ============================================================
 // 4.3) Googleニュース RSS 新店取込（キー不要・Serper消費ゼロ・直近7日のニュースだけ）
 // ============================================================
-const NEWS_QUERIES = ['新規オープン 店舗', 'グランドオープン', 'ニューオープン', '開院 クリニック', '新規開業 店', 'オープン予定 店舗']
+const NEWS_QUERIES = ['新規オープン 店舗', 'グランドオープン', 'ニューオープン', '開院 クリニック', '新規開業 店', 'オープン予定 店舗', '開院 歯科', '美容室 オープン', '整体院 オープン', 'カフェ 新規オープン', 'サロン 開業', '飲食店 開店']
 export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts: { runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
   const startMs = Date.now(); const budgetMs = Math.max(20000, Math.min(280000, opts.runBudgetMs || 150000)); const remain = () => budgetMs - (Date.now() - startMs)
   const counts: any = { sourceType: 'google_news_rss_opening', label: 'Googleニュース新店(RSS)', queries: 0, items: 0, fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, seenSkipped: 0 }
   const runId = await startRun(admin, 'google_news_rss_opening', userId)
   const importedCases: any[] = []
   try {
-    // 日替わりで2クエリずつローテーション
+    // 実行ごとに4クエリずつローテーション（12クエリ×直近7日をカバー）
     const dayIdx = Math.floor(Date.now() / 86400000)
-    const picked = [NEWS_QUERIES[dayIdx % NEWS_QUERIES.length], NEWS_QUERIES[(dayIdx + 1) % NEWS_QUERIES.length]]
+    const picked = [0, 1, 2, 3].map((i) => NEWS_QUERIES[(dayIdx * 4 + i) % NEWS_QUERIES.length])
     for (const q of picked) {
       if (remain() < 30000) break
       counts.queries++
       const rss = await fetchText(`https://news.google.com/rss/search?q=${encodeURIComponent(`${q} when:7d`)}&hl=ja&gl=JP&ceid=JP:ja`, 8000, 'application/rss+xml')
       if (!rss.ok || !rss.text) continue
-      const items = Array.from(rss.text.matchAll(/<item>([\s\S]*?)<\/item>/g)).map((m) => m[1]).slice(0, 10)
+      const items = Array.from(rss.text.matchAll(/<item>([\s\S]*?)<\/item>/g)).map((m) => m[1]).slice(0, 20)
       for (const it of items) {
         // 1件あたり最悪 ~28s（fetch8+enrich12+既存店8）。残り30s未満なら次回へ（60秒枠死守）
         if (remain() < 30000) break

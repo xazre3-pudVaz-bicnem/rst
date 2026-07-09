@@ -5,14 +5,15 @@
 // 各取得元は時間予算内でできるだけ処理し、残りは各自のカーソル(last_crawled_at / current_probe_id /
 // place_id 30日スキップ)で次回継続。1取得元が失敗しても全体は止めない。二重実行はロックで防止。
 // ============================================================
-import { runGooglePlaces, getDefaultSettings } from './googlePlacesRun.js'
+import { runGooglePlaces, getDefaultSettings, rejudgeExistingPlaces } from './googlePlacesRun.js'
 import { runRegionalMedia, getDefaultRegionalSettings } from './regionalMediaRun.js'
 import { runInstagramWeb, getDefaultIwSettings } from './instagramWebRun.js'
 import { runAllSequentialProbes } from './sequentialProbe.js'
 import { runSerpDiscovery } from './serpDiscovery.js'
 import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
 import { sweepHotToCases } from './importHot.js'
-import { runOpeningSoonQueue, runLeadScoring, runReprocessQueue } from './newSourceEngines.js'
+import { runOpeningSoonQueue, runLeadScoring, runReprocessQueue, runEngineSource } from './newSourceEngines.js'
+import { runEkitenDiscovery } from './ekitenDiscovery.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
@@ -126,11 +127,28 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     for (const r of (last || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }
     enabled.sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))
     const agg: any = { hot: 0, hotB: 0, hold: 0, excluded: 0, saved: 0, imported: 0, detailFetched: 0, ran: [] as string[] }
-    // 並行実行内で古い順にSERP取得元を回す（最大4件・各自の内部予算＋全体予算で打ち切り）。残りは次回ローテ。
+    // 並行実行内で古い順にSERP取得元を回す（最大10件・各自の内部予算＋全体予算で打ち切り）。残りは次回ローテ。
     for (const st of enabled.slice(0, 10)) {
       if (Date.now() - startMs > budgetMs - 12000) break
       const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 5, perQuery: 6, maxDetails: 20, runBudgetMs: 22000, serperDailyCap: master.serperDailyCap ?? 400, aiInjectMode: 'standard' }, opts.userId || null)
       if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hotB += r.hotB || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.saved += r.saved || 0; agg.imported += r.imported || 0; agg.detailFetched += r.detailFetched || 0; agg.ran.push(st) }
+    }
+    // 本稼働エンジン系（Googleニュース RSS/エキテン公開日/WordPress初回投稿/sitemap直近更新/SSL新規発行）も
+    // 自動巡回でローテーション実行（これまで手動実行のみで、自動では一度も回っていなかった）。古い順に2件/回。
+    const engineTypes = ['google_news_rss_opening', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
+      .filter((t) => toggles[t] !== false)
+    const { data: lastE } = await admin.from('auto_lead_runs').select('source,created_date').in('source', engineTypes).order('created_date', { ascending: false }).limit(100)
+    const lastByE = new Map<string, number>()
+    for (const r of (lastE || []) as any[]) { if (!lastByE.has(r.source)) lastByE.set(r.source, Date.parse(r.created_date || 0)) }
+    engineTypes.sort((a, b) => (lastByE.get(a) ?? 0) - (lastByE.get(b) ?? 0))
+    for (const et of engineTypes.slice(0, 2)) {
+      if (Date.now() - startMs > budgetMs - 35000) break
+      try {
+        const r = et === 'portal_published_date_search'
+          ? await runEkitenDiscovery(admin, mapsKey, { aiInjectMode: 'standard' }, opts.userId || null)
+          : await runEngineSource(admin, mapsKey, et, { runBudgetMs: 30000 }, opts.userId || null)
+        if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.imported += r.imported || 0; agg.detailFetched += r.fetched || r.detailFetched || 0; agg.ran.push(et) }
+      } catch { /* 1エンジンの失敗は他を止めない */ }
     }
     return agg
   } })
@@ -178,6 +196,11 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
 
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
+  // openingDate再判定: 既存のGoogle Places候補を再評価し、開業日が入った/口コミが動いた候補をHOT化（直後のsweepが投入）
+  try {
+    const rJ = budgetMs - (Date.now() - startMs)
+    if (mapsKey && rJ > 45000) await rejudgeExistingPlaces(admin, mapsKey, { limit: 30, nowIso: new Date().toISOString() })
+  } catch { /* noop */ }
   let swept: any = null
   const sweepBudget = Math.min(60000, budgetMs - (Date.now() - startMs) - 20000)
   if (sweepBudget > 6000) { try { swept = await sweepHotToCases(admin, { limit: 80, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
