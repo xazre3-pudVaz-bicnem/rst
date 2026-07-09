@@ -673,7 +673,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
   const startMs = Date.now()
   // Vercel関数の実処理は60秒上限（vercel.json functions.maxDuration）。末尾の補完1件が
   // 数十秒かかっても上限を超えないよう、本体ループは40秒で打ち切って余裕を残す。
-  const TIME_BUDGET = 240_000
+  const TIME_BUDGET = 200_000
   const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
 
   if (!searchProvider()) {
@@ -795,6 +795,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
       }
 
       for (const r of results) {
+        // 【504対策】1件ごとに時間予算を確認（AI判定+補完で1件数十秒かかるため、クエリ間チェックだけでは300秒を突破する）
+        if (Date.now() - startMs > TIME_BUDGET) { debug.stoppedEarly = true; break }
         q.results++; counts.results++
         if (!/instagram\.com/i.test(r.url)) continue
         q.igUrls++; counts.igUrls++

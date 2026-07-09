@@ -349,9 +349,28 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     useRotation = false
   }
 
-  // 全国モード: 地域名・業種名を含めない新店系ワードのみ。旧モード: エリア×業種
+  // 全国モード: ①新店系ワード（openingDate/FUTURE_OPENING狙い）＋②業種×主要都市の大量スキャン（主砲）。
+  // ②の狙い: 「新規オープン」等のワード検索はGoogleが既存店ばかり返すため（口コミ数十件・openingDateほぼ無し）、
+  // 業種×都市で広く取得し「口コミ0〜5件（＋最古口コミ30日以内）」の開店ほやほや店を判定機に流し込む。
+  const MIX_CITIES = ['札幌', '仙台', '郡山', '宇都宮', '高崎', 'さいたま', '川口', '千葉', '船橋', '柏', '新宿', '渋谷', '池袋', '北千住', '吉祥寺', '町田', '八王子', '横浜', '川崎', '藤沢', '新潟', '金沢', '富山', '長野', '静岡', '浜松', '名古屋', '岐阜', '四日市', '京都', '大阪', '梅田', '難波', '堺', '豊中', '神戸', '姫路', '奈良', '和歌山', '岡山', '倉敷', '広島', '福山', '高松', '松山', '徳島', '高知', '福岡', '博多', '小倉', '久留米', '佐賀', '長崎', '熊本', '大分', '宮崎', '鹿児島', '那覇']
+  let mixQueries: { query: string; isNewOpen: boolean; area: string; industry: string }[] = []
+  let gpRunCntForMix = 0
+  if (nationwide && !testFixed) {
+    const inds = industries.length ? industries : getDefaultSettings().industries
+    const mixPerRun = Math.max(0, Math.min(40, Number(rawSettings?.placesMixPerRun ?? 22)))
+    const totalCombos = MIX_CITIES.length * inds.length
+    const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
+    gpRunCntForMix = rc || 0
+    const start = (gpRunCntForMix * mixPerRun) % Math.max(1, totalCombos)
+    for (let i = 0; i < mixPerRun; i++) {
+      const idx = (start + i) % totalCombos
+      const city = MIX_CITIES[Math.floor(idx / inds.length)]
+      const ind = inds[idx % inds.length]
+      mixQueries.push({ query: `${city} ${ind}`, isNewOpen: false, area: city, industry: ind })
+    }
+  }
   const allQueries = nationwide
-    ? NATIONAL_PLACES_QUERIES.map((w) => ({ query: w, isNewOpen: true, area: '', industry: '' }))
+    ? [...NATIONAL_PLACES_QUERIES.map((w) => ({ query: w, isNewOpen: true, area: '', industry: '' })), ...mixQueries]
     : buildLeadQueries(areas, testFixed ? ['整体'] : industries)
 
   // ローテーション: 7日以内に実行済みのクエリはスキップ、未実行/古いものから dayCap 件
@@ -361,8 +380,13 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
     const { data } = await admin.from('lead_query_log').select('query').gte('last_run_at', since).limit(5000)
     recentSet = new Set((data || []).map((r: any) => r.query))
   }
-  let picked = allQueries.filter((q) => !recentSet.has(q.query)).slice(0, dayCap)
-  if (picked.length === 0) picked = allQueries.slice(0, dayCap) // 全部最近実行済みなら先頭から
+  // 真の日次上限: 今日実行済みクエリ数を数え、残り枠だけ実行（以前はdayCapが1回あたり上限として働き、
+  // 2時間おき巡回×回数で上限が実質無効＝コスト暴走の恐れがあった）
+  const startTodayQ = new Date(); startTodayQ.setHours(0, 0, 0, 0)
+  const { count: ranTodayQ } = await admin.from('lead_query_log').select('query', { count: 'exact', head: true }).gte('last_run_at', startTodayQ.toISOString())
+  const remainingToday = Math.max(0, dayCap - (ranTodayQ || 0))
+  let picked = allQueries.filter((q) => !recentSet.has(q.query)).slice(0, remainingToday)
+  if (picked.length === 0 && remainingToday > 0) picked = allQueries.slice(0, remainingToday) // 全部最近実行済みなら先頭から
 
   const counts = {
     fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
@@ -443,9 +467,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       // 504回避: 予算超過 or 残りが1ページぶん(~15s)未満なら残りクエリは次回実行に回す
       if (overBudget() || (RUN_BUDGET_MS - (Date.now() - runStart)) < 15000) { debug.stoppedEarly = true; debug.deferredQueries = (debug.deferredQueries || 0) + 1; continue }
       const query = gq.query
-      const region = useGrid ? REGION_RECTANGLES[(qi + gridOffset) % REGION_RECTANGLES.length] : null
+      // 地域ブロックは新店系ワードのみ適用（業種×都市クエリは都市名で場所が決まるためブロック制限すると矛盾する）。
+      // 業種×都市クエリは1ページ（20件）のみ＝コスト抑制（新店は上位に出るためページングの価値が低い）。
+      const region = (useGrid && gq.isNewOpen) ? REGION_RECTANGLES[(qi + gridOffset) % REGION_RECTANGLES.length] : null
       if (region) regionsCovered.add(region.name)
-      const r = await searchPaged(apiKey, query, perQuery, pagesPerQuery, resultsPerQueryLimit, region?.rect, runDeadline())
+      const r = await searchPaged(apiKey, query, perQuery, gq.isNewOpen ? pagesPerQuery : 1, resultsPerQueryLimit, region?.rect, runDeadline())
       if (r.error) { counts.error++; errorMessage = r.error }
       counts.apiReturned += r.apiReturned; counts.pages += r.pages; counts.uniquePlaceIds += r.places.length
       // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
