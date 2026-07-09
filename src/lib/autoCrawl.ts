@@ -19,12 +19,12 @@ const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : 
 export type CrawlOnly = 'all' | 'places' | 'regional' | 'instagram' | 'sequential' | 'discovery' | 'failed'
 export interface CrawlOpts { trigger?: 'cron' | 'manual'; only?: CrawlOnly; userId?: string | null; budgetMs?: number }
 
-/** ロック取得。実行中(未失効かつ開始から100秒以内)なら false。古い/失効ロックは上書き（自己修復）。 */
+/** ロック取得。実行中(未失効かつ開始から310秒以内)なら false。古い/失効ロックは上書き（自己修復）。 */
 async function acquireLock(admin: any, ttlMs: number, runId: string | null): Promise<boolean> {
   const nowMs = Date.now()
   const { data: cur } = await admin.from('auto_crawl_lock').select('*').eq('lock_key', LOCK_KEY).maybeSingle()
-  // 実行中でも、失効済み or 開始から100秒超（=60s上限で強制終了された残骸）は奪取可能
-  const stillFresh = cur && cur.status === 'running' && cur.expires_at && Date.parse(cur.expires_at) > nowMs && cur.started_at && (nowMs - Date.parse(cur.started_at)) < 100000
+  // 実行中でも、失効済み or 開始から310秒超（=300s上限で強制終了された残骸）は奪取可能
+  const stillFresh = cur && cur.status === 'running' && cur.expires_at && Date.parse(cur.expires_at) > nowMs && cur.started_at && (nowMs - Date.parse(cur.started_at)) < 310000
   if (stillFresh) return false
   const row = { lock_key: LOCK_KEY, started_at: new Date(nowMs).toISOString(), expires_at: new Date(nowMs + ttlMs).toISOString(), status: 'running', run_id: runId }
   const { error } = await admin.from('auto_crawl_lock').upsert(row, { onConflict: 'lock_key' })
@@ -56,13 +56,13 @@ function mapCounts(r: any) {
 export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: CrawlOpts = {}): Promise<any> {
   const only = opts.only || 'all'
   const trigger = opts.trigger || 'cron'
-  // Vercel maxDuration=60s。取得元は並行実行するため各自の内部予算を大きめに取り、全体は52sで打ち切る（sweep余白込み）。
-  const budgetMs = Math.max(20000, Math.min(54000, opts.budgetMs || 50000))
+  // Vercel Pro: maxDuration=300s。取得元は並行実行。全体260sで打ち切り（sweep余白込み）。
+  const budgetMs = Math.max(20000, Math.min(280000, opts.budgetMs || 260000))
   const startMs = Date.now()
   const mapsKey = env.GOOGLE_MAPS_API_KEY || null
 
   // ゾンビrun掃除（60s上限で強制終了され status='running' のまま残った過去runをerror化）
-  await admin.from('auto_crawl_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: 'タイムアウト/強制終了(60s上限)の可能性' }).eq('status', 'running').lt('started_at', new Date(startMs - 150000).toISOString()).then(() => {}, () => {})
+  await admin.from('auto_crawl_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: 'タイムアウト/強制終了(300s上限)の可能性' }).eq('status', 'running').lt('started_at', new Date(startMs - 330000).toISOString()).then(() => {}, () => {})
 
   // マスタ設定（ON/OFF＋取得元別の上限）
   const master = await readCfg(admin, 'auto_crawl')
@@ -75,7 +75,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   const runId: string | null = runRow?.id ?? null
 
   // 二重実行防止（TTL=110秒。60s上限で強制終了されても約2分で自己解放）
-  const locked = await acquireLock(admin, 110 * 1000, runId)
+  const locked = await acquireLock(admin, 320 * 1000, runId)
   if (!locked) {
     await admin.from('auto_crawl_runs').update({ status: 'skipped', finished_at: new Date().toISOString(), error_message: 'ロック中のためスキップ（別の巡回が実行中）' }).eq('id', runId).then(() => {}, () => {})
     return { ok: true, skipped: true, reason: 'ロック中のためスキップ（別の巡回が実行中）', runId }
@@ -96,13 +96,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'lead_auto')
     if (cfg.autoFetch === false) return { skipped: true }
     // 全取得元巡回では10s/5クエリに制限し他フェーズへ譲る。Places単独実行(only=places)は42s/設定値で本格実行。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(34000, 42000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 12 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(220000, 240000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 30 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 50 : 28, maxSitesPerDay: focused ? 50 : 28, runBudgetMs: pb(34000, 40000), maxDetailFetchesPerRun: pb(22, 25) }, opts.userId || null)
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 60, maxSitesPerDay: focused ? 80 : 60, runBudgetMs: pb(220000, 240000), maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
   if (wantType('instagram')) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
@@ -113,7 +113,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'sequential_auto')
     if (cfg.sequentialEnabled === false) return { skipped: true }
     // 全巡回時は forwardCount/cap を小さく（~10s）。連番単独実行時は設定値で本格実行（バウンドは設定より優先）
-    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 300) : 150, ...(focused ? {} : { forwardCount: 25 }) }, opts.userId || null)
+    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 500) : 400, ...(focused ? {} : { forwardCount: 40 }) }, opts.userId || null)
   } })
   if (wantType('discovery')) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
     const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }
@@ -126,9 +126,9 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     enabled.sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))
     const agg: any = { hot: 0, hotB: 0, hold: 0, excluded: 0, saved: 0, imported: 0, detailFetched: 0, ran: [] as string[] }
     // 並行実行内で古い順にSERP取得元を回す（最大4件・各自の内部予算＋全体予算で打ち切り）。残りは次回ローテ。
-    for (const st of enabled.slice(0, 4)) {
+    for (const st of enabled.slice(0, 10)) {
       if (Date.now() - startMs > budgetMs - 12000) break
-      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 3, perQuery: 6, maxDetails: 10, runBudgetMs: 12000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
+      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 5, perQuery: 6, maxDetails: 20, runBudgetMs: 22000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
       if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hotB += r.hotB || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.saved += r.saved || 0; agg.imported += r.imported || 0; agg.detailFetched += r.detailFetched || 0; agg.ran.push(st) }
     }
     return agg
@@ -149,7 +149,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 全取得元を「並行実行」する（以前は順次＋1回3取得元までで、遅い取得元がタイムアウトし残りがdeferred＝
   // 何も投入されない問題があった）。並行なら壁時計は最も遅い1取得元の時間で済み、全取得元が毎回カバーされる。
   // 各取得元は自前の内部予算＋ここのハード上限で二重に打ち切り、60s関数上限を死守する。
-  const sourceHardMs = Math.max(15000, budgetMs - 12000) // sweep用に余白を残す。並行なのでwall-clock≒これ。
+  const sourceHardMs = Math.max(15000, budgetMs - 40000) // sweep用に余白を残す。並行なのでwall-clock≒これ。
   await Promise.allSettled(types.map(async (t) => {
     const itemStart = new Date().toISOString()
     try {

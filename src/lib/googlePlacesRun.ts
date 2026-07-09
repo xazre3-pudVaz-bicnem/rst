@@ -395,8 +395,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   let errorMessage = ''
   // 504回避: 実行全体の時間予算（Vercel maxDuration 60s に対する安全マージン）。超過後は新規クエリ/詳細取得を打ち切り次回へ。
   const runStart = Date.now()
-  // 既定42秒: Details(最大10s)が予算ぎりぎりで開始しても60秒関数上限内に収まる余白を残す
-  const RUN_BUDGET_MS = Math.max(20000, Math.min(45000, Number(rawSettings?.runBudgetMs) || 42000))
+  // 既定150秒(Vercel Pro・maxDuration300s): Detailsが終盤に走っても上限内に収まる余白を残す
+  const RUN_BUDGET_MS = Math.max(20000, Math.min(280000, Number(rawSettings?.runBudgetMs) || 150000))
   const overBudget = () => (Date.now() - runStart) > RUN_BUDGET_MS
   const runDeadline = () => runStart + RUN_BUDGET_MS
   debug.runBudgetMs = RUN_BUDGET_MS

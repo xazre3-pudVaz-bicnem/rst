@@ -1102,21 +1102,18 @@ export default function Leads() {
     if (!token) { toast.error('ログインが必要です'); return }
     setBoostBusy(true)
     const t0 = { imported: 0, hotA: 0, hotB: 0 }
-    const crawlOnce = async (round: number) => {
-      setBoostStep(`巡回 ${round}/2`)
+    const crawlOnce = async () => {
+      setBoostStep('全取得元を巡回中（最大4分）')
       const res = await fetch('/api/cron/auto-lead-crawl', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ only: 'all' }) })
       const j = await res.json().catch(() => null)
       if (j?.ok) { t0.imported += j.cases_inserted_count || 0; t0.hotA += j.hot_a_count || 0; t0.hotB += j.hot_b_count || 0 }
       return j
     }
     try {
-      toast.info('🚀 ブースト投入を開始: 全取得元巡回→HOT一括投入→HOLD救済→優先度再計算（2〜3分）')
-      const r1 = await crawlOnce(1)
-      if (r1?.skipped) toast.info(`巡回1: ${r1.reason || 'スキップ'}`)
-      // ロック解放（TTL）を待ってから2周目（カーソル続行・SERPローテ続き）
-      setBoostStep('待機中…')
-      await new Promise((rs) => setTimeout(rs, 8000))
-      await crawlOnce(2)
+      toast.info('🚀 ブースト投入を開始: 全取得元巡回→HOLD救済→HOT一括投入→優先度再計算（4〜6分）')
+      // Vercel Pro: 1回の巡回が最大約4分で全取得元を並行カバーするため1周で十分
+      const r1 = await crawlOnce()
+      if (r1?.skipped) toast.info(`巡回: ${r1.reason || 'スキップ'}`)
       // HOLD救済はHOT昇格まで（投入はしない）→ 先に救済し、後のHOT一括投入で昇格分もまとめて案件化する
       setBoostStep('HOLD救済')
       const rh = await regionalApi({ rescueHolds: { limit: 80 } })
@@ -1816,13 +1813,13 @@ export default function Leads() {
           <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold">🔁 自動巡回（毎朝8時に自動＋手動でいつでも・全取得元）</span>
+                <span className="text-sm font-bold">🔁 自動巡回（8〜18時に2時間おき自動＋手動でいつでも・全取得元）</span>
                 <button onClick={toggleAutoCrawl} className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-bold', autoCrawlOn ? 'bg-green-500 text-white' : 'bg-zinc-300 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300')}>
                   自動巡回: {autoCrawlOn ? 'ON' : 'OFF'}
                 </button>
                 <button onClick={loadAutoCrawl} className="text-[10px] text-primary hover:underline">再読込</button>
               </div>
-              <div className="text-[10px] text-muted-foreground">自動: JST 08:00（1日1回・Vercel Cron）／ 日中は下のボタンで手動巡回</div>
+              <div className="text-[10px] text-muted-foreground">自動: JST 8/10/12/14/16/18時（2時間おき・Vercel Cron）／ 手動は下のボタンでいつでも</div>
             </div>
 
             {/* 本日サマリー */}
@@ -1870,7 +1867,7 @@ export default function Leads() {
                 </ul>
               </details>
             )}
-            <div className="mt-1.5 text-[10px] text-muted-foreground">※現在Hobbyプランのため自動巡回は1日1回（毎朝8時）です。日中の補充は上の手動ボタンで実行してください。2時間おきの全自動化はVercel Pro、または外部スケジューラ(cron-job.org等)から /api/cron/auto-lead-crawl?secret=CRON_SECRET を叩けば可能です。</div>
+            <div className="mt-1.5 text-[10px] text-muted-foreground">※Vercel Proのため自動巡回は2時間おき（JST 8〜18時）・1回最大約4分で全取得元を並行処理します。手動巡回・ブーストはいつでも実行できます。</div>
           </div>
 
           {/* ===== 新規取得元レジストリ（27 source_type） ===== */}

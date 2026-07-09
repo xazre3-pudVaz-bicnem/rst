@@ -147,7 +147,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   const perQuery = Math.max(1, Math.min(15, opts.perQuery || 8))
   const maxQ = Math.max(1, Math.min(20, opts.maxQueriesPerRun || 6))
   const maxDetails = Math.max(1, Math.min(40, opts.maxDetails || 14))
-  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 45000))
+  const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
   const serperCap = Math.max(0, opts.serperDailyCap ?? 50)
   const autoImportPerRun = Math.max(0, opts.autoImportPerRun ?? 30)
   const mode: InjectMode = (opts.aiInjectMode === 'strict' || opts.aiInjectMode === 'aggressive') ? opts.aiInjectMode : 'standard'
@@ -201,14 +201,14 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   const importedCases: { id: string; name: string; phone: string; address: string }[] = []
   let importedThisRun = 0
   let establishmentLookups = 0
-  const MAX_ESTABLISHMENT_LOOKUPS = 12 // 既存店ガードのPlaces確認は1実行あたり上限（60秒枠を守る）
+  const MAX_ESTABLISHMENT_LOOKUPS = 40 // 既存店ガードのPlaces確認は1実行あたり上限（60秒枠を守る）
   // 取得元別ゲート
   const isHp = !!def.hpPublish
   const recencyDays = Number(def.recencyDays) || 0
   const requireOfficial = !!def.requireOfficialUrl
   const timeOpts = def.freshness ? { tbs: def.freshness === 'week' ? 'qdr:w' : 'qdr:m', freshness: def.freshness === 'week' ? 'Week' : 'Month' } : undefined
   let qualityChecks = 0
-  const MAX_QUALITY = 12 // 公式サイトの簡易品質チェック（別ドメインfetch）の上限
+  const MAX_QUALITY = 30 // 公式サイトの簡易品質チェック（別ドメインfetch）の上限
   if (isHp) { counts.hpRecent = 0; counts.hpOldExcluded = 0; counts.holdNoOfficial = 0; counts.holdDateUnknown = 0 }
   // 残り時間（ms）。1回の詳細/補完fetchは最大~8-9秒かかるため、残りが少なければ新規fetchを打ち切って60秒枠を死守する。
   const remain = () => budgetMs - (Date.now() - startMs)

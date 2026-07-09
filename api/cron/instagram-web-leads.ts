@@ -46,7 +46,7 @@ function recomputeIwHot(cand: any, opts: { phone?: string | null; address?: stri
   return { temperature, hr }
 }
 
-export const config = { maxDuration: 60 }
+export const config = { maxDuration: 300 }
 
 function keyDiag(v: string | undefined) {
   const k = v || ''

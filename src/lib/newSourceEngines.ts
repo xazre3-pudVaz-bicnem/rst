@@ -171,7 +171,7 @@ async function finishRun(admin: any, runId: string | null, counts: any, status =
 const BIZ_DOMAIN_HINT = /(clinic|dental|salon|hair|nail|beauty|esthe|seitai|cafe|kitchen|dining|ramen|gym|fitness|pet|trimming|school|juku|reform|cleaning|studio|shop|store|tenpo|inc|co\.jp)/i
 export async function runSslCertScan(admin: any, mapsKey: string | null, opts: { maxDomains?: number; runBudgetMs?: number; recencyDays?: number } = {}, userId: string | null): Promise<any> {
   const startMs = Date.now()
-  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 48000))
+  const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
   const remain = () => budgetMs - (Date.now() - startMs)
   const maxDomains = Math.max(1, Math.min(40, opts.maxDomains || 20))
   // 1件あたり最悪 fetch(8)+enrich(12)+既存店確認(8)+DB(3)=31s。残り32s未満なら新規着手しない（60秒枠死守）。
@@ -217,7 +217,7 @@ function originOf(u: string): string { try { const x = new URL(u); return `${x.p
 
 export async function runDomainSignalScan(admin: any, mapsKey: string | null, mode: 'wordpress' | 'sitemap' | 'rdap', opts: { limit?: number; runBudgetMs?: number; recencyDays?: number } = {}, userId: string | null): Promise<any> {
   const startMs = Date.now()
-  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000))
+  const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
   const remain = () => budgetMs - (Date.now() - startMs)
   const limit = Math.max(1, Math.min(60, opts.limit || 30))
   const recencyDays = Math.max(1, opts.recencyDays || (mode === 'rdap' ? 30 : 7))
@@ -288,7 +288,7 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
 // ============================================================
 export async function runReprocessQueue(admin: any, mapsKey: string | null, type: string, opts: { limit?: number; runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
   const startMs = Date.now()
-  const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000))
+  const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
   const remain = () => budgetMs - (Date.now() - startMs)
   const limit = Math.max(1, Math.min(100, opts.limit || 60))
   const counts: any = { sourceType: type, label: '再評価/補完', scanned: 0, enriched: 0, phoneFound: 0, addressFound: 0, promotedHot: 0, imported: 0 }
@@ -339,7 +339,7 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
 // 4) 手動URL一括インポート
 // ============================================================
 export async function runBulkUrlImport(admin: any, mapsKey: string | null, urls: string[], meta: { memo?: string; sourceType?: string }, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = 48000; const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = 240000; const remain = () => budgetMs - (Date.now() - startMs)
   const clean = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter((u) => /^https?:\/\//.test(u)))).slice(0, 40)
   const counts: any = { sourceType: 'manual_url_bulk_import', label: '手動URL一括インポート', total: clean.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0 }
   const runId = await startRun(admin, 'manual_url_bulk_import', userId)
@@ -435,7 +435,7 @@ export async function ingestExtractedStores(admin: any, mapsKey: string | null, 
 // ============================================================
 const NEWS_QUERIES = ['新規オープン 店舗', 'グランドオープン', 'ニューオープン', '開院 クリニック', '新規開業 店', 'オープン予定 店舗']
 export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts: { runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = Math.max(20000, Math.min(50000, opts.runBudgetMs || 48000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = Math.max(20000, Math.min(280000, opts.runBudgetMs || 150000)); const remain = () => budgetMs - (Date.now() - startMs)
   const counts: any = { sourceType: 'google_news_rss_opening', label: 'Googleニュース新店(RSS)', queries: 0, items: 0, fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, seenSkipped: 0 }
   const runId = await startRun(admin, 'google_news_rss_opening', userId)
   const importedCases: any[] = []
@@ -480,7 +480,7 @@ export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts:
 //   （開業前〜直後がMEO/HP営業の黄金期。openingDateはGoogle裏取り済みの最強シグナル）
 // ============================================================
 export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000)); const remain = () => budgetMs - (Date.now() - startMs)
   const limit = Math.max(1, Math.min(300, opts.limit || 150))
   const counts: any = { sourceType: 'opening_soon_promotion', label: '開業予定日キュー', scanned: 0, promotedHot: 0, imported: 0, skipped: 0 }
   const runId = await startRun(admin, 'opening_soon_promotion', userId)
@@ -530,7 +530,7 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
 //   空行区切りのブロック（無ければ1行=1件）から 店名/電話/住所 を抽出→Places補完→検証→HOT判定→保存→HOT投入。
 // ============================================================
 export async function runTextImport(admin: any, mapsKey: string | null, text: string, meta: { memo?: string }, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = 48000; const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = 240000; const remain = () => budgetMs - (Date.now() - startMs)
   const nowIso = new Date().toISOString()
   // ブロック分割: 空行区切り。空行が無い場合は「電話番号を含む行が2行以上＝1行1店舗のリスト」のときだけ行分割し、
   // 電話が0〜1個なら全体を1店舗として扱う（店名/電話/住所を3行で貼った1店舗レコードを3件に分解しない）。
@@ -626,7 +626,7 @@ export async function runTextImport(admin: any, mapsKey: string | null, text: st
 // ============================================================
 const MEO_FIT_RE = /(整体|整骨|接骨|鍼灸|美容|理容|ヘア|ネイル|まつ|エステ|脱毛|リラク|マッサージ|ジム|ピラティス|ヨガ|歯科|クリニック|内科|皮膚|動物病院|ペット|トリミング|カフェ|居酒屋|飲食|レストラン|ラーメン|焼肉|バー|塾|教室|スクール|サロン|リフォーム|クリーニング|不用品|写真)/
 export async function runLeadScoring(admin: any, mode: string, opts: { limit?: number; runBudgetMs?: number } = {}, userId: string | null): Promise<any> {
-  const startMs = Date.now(); const budgetMs = Math.max(15000, Math.min(50000, opts.runBudgetMs || 40000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const startMs = Date.now(); const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000)); const remain = () => budgetMs - (Date.now() - startMs)
   const limit = Math.max(1, Math.min(2000, opts.limit || 1000))
   const counts: any = { sourceType: mode, scored: 0, s: 0, a: 0, b: 0, c: 0, excluded: 0, merged: 0 }
   const runId = await startRun(admin, mode, userId)

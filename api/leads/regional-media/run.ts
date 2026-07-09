@@ -47,7 +47,7 @@ function recomputeRmHot(cand: any, opts: { phone?: string | null; address?: stri
   return { temperature, hr }
 }
 
-export const config = { maxDuration: 60 }
+export const config = { maxDuration: 300 }
 
 export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
@@ -306,7 +306,7 @@ export default async function handler(req: any, res: any) {
     try {
       if (!def) return res.status(200).json({ ok: false, error: `未知の取得元: ${st}` })
       // 専用エンジン（SSL/ドメイン/WordPress/sitemap/再評価キュー/スコアリング）。対応外はnull→通常routingへ。
-      const eng = await runEngineSource(admin, mapsKey, st, { runBudgetMs: 40000, limit: Number(body.settings?.reprocessLimit) || undefined }, userData.user.id)
+      const eng = await runEngineSource(admin, mapsKey, st, { runBudgetMs: 150000, limit: Number(body.settings?.reprocessLimit) || undefined }, userData.user.id)
       if (eng) return res.status(200).json({ ...eng, sourceType: st, label: def.label, newUrls: (eng as any).fetched ?? (eng as any).scanned ?? 0, detailFetched: (eng as any).fetched ?? (eng as any).scanned ?? 0, hotB: (eng as any).hot ?? (eng as any).promotedHot ?? 0, imported: (eng as any).imported ?? 0 })
       // existing: エキテン公開日7日以内（専用エンジン）
       if (def.mode === 'existing') {
@@ -318,14 +318,14 @@ export default async function handler(req: any, res: any) {
       //   「実行に失敗しました」になっていた。45秒で打ち切り、取得済み分は保存して返す。
       if (def.mode === 'places') {
         if (!mapsKey) return res.status(200).json({ ok: true, skipped: true, sourceType: st, label: def.label, reason: `${def.label} は Google Places 由来ですが GOOGLE_MAPS_API_KEY が未設定のため実行できません` })
-        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 35000, placesDetailsLimitPerRun: 30, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
+        const out = await runGooglePlaces(admin, mapsKey, { ...(body.settings || {}), placesSignalFocus: st, runBudgetMs: 150000, placesDetailsLimitPerRun: 100, placesMaxQueriesPerDay: Number(body.settings?.placesMaxQueriesPerDay) || 30 }, userData.user.id)
         return res.status(200).json({ ...out, sourceType: st, label: def.label, newUrls: (out as any).fetched ?? 0, detailFetched: (out as any).fetched ?? 0, hotB: (out as any).hot ?? 0 })
       }
       // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は40秒で打ち切り、
       // 取得済み分は保存して返す（内部で残り時間ガードあり＝60秒関数上限を超えない）。
       const out = await runSerpDiscovery(admin, st, mapsKey, {
         ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
-        runBudgetMs: 40000, maxQueriesPerRun: 8, maxDetails: 14, perQuery: 6,
+        runBudgetMs: 150000, maxQueriesPerRun: 15, maxDetails: 40, perQuery: 8,
       }, userData.user.id)
       return res.status(200).json(out)
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
@@ -371,7 +371,7 @@ export default async function handler(req: any, res: any) {
   // 未投入HOTの一括投入スイープ（電話/住所なしHOTはHOLD降格・適格HOTはcases投入・重複はリンク）
   // budgetMs必須: 未指定だと内部デフォルト10分でVercel 60秒上限を超え504（=投入ボタンが無言で失敗）になっていた。
   if (body?.sweepHot) {
-    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null, budgetMs: 45000 }); return res.status(200).json(out) }
+    try { const out = await sweepHotToCases(admin, { limit: body.sweepHot.limit || 200, userId: userData.user.id, mapsKey: process.env.GOOGLE_MAPS_API_KEY || null, budgetMs: 240000 }); return res.status(200).json(out) }
     catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }
   // 営業優先度/Web弱点/架電前メモの一括再計算
@@ -430,7 +430,7 @@ export default async function handler(req: any, res: any) {
       .limit(limit)
     let scanned = 0, enriched = 0, phoneFound = 0, promotedHot = 0
     // 時間予算: 補完1件は数秒〜十数秒かかるため、45秒で打ち切って60秒関数上限を死守（残りは次回実行で継続）
-    const rescueDeadline = Date.now() + 45000
+    const rescueDeadline = Date.now() + 200000
     for (const cand of (rows || [])) {
       if (Date.now() > rescueDeadline - 12000) break
       scanned++

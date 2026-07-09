@@ -88,7 +88,7 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
   const list: any[] = rows || []
   let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0, reviewExcluded = 0
   let placesLookups = 0, igLookups = 0, timedOut = false
-  const MAX_PLACES = 50, MAX_IG = 40
+  const MAX_PLACES = 150, MAX_IG = 100
   for (const c of list) {
     // 予算切れ: 残りは今回スキップ（EXCLUDEDを誤投入しないため、判定不能でも投入はしない＝次回に持ち越し）
     if (Date.now() > deadline) { timedOut = true; break }
