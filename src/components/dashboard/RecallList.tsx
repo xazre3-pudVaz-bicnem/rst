@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import moment from 'moment'
-import { Plus, Pencil, Check, X, CheckCircle2, Phone, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, Pencil, Check, X, CheckCircle2, Phone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DateTime15Input } from '@/components/ui/datetime15-input'
 import { RecallApi, CallLogApi, AuditApi } from '@/lib/api'
@@ -26,14 +26,8 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
   const toast = useToast()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
-  const [showDone, setShowDone] = useState(false)
 
   const caseById = useMemo(() => new Map(cases.map((c) => [c.id, c])), [cases])
-
-  const doneRecalls = useMemo(
-    () => recalls.filter((r) => r.done).sort((a, b) => b.target_at.localeCompare(a.target_at)).slice(0, 30),
-    [recalls],
-  )
 
   const sections = useMemo<Section[]>(() => {
     const now = moment()
@@ -214,29 +208,6 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
           ),
         )}
 
-        {/* 完了済み */}
-        {doneRecalls.length > 0 && (
-          <div>
-            <button
-              className="flex w-full items-center gap-1 bg-muted px-2 py-0.5 text-2xs font-bold text-muted-foreground"
-              onClick={() => setShowDone((v) => !v)}
-            >
-              {showDone ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              完了済み（{doneRecalls.length}）
-            </button>
-            {showDone &&
-              doneRecalls.map((r) => (
-                <button
-                  key={r.id}
-                  className="block w-full border-b px-2 py-1 text-left text-muted-foreground hover:bg-accent"
-                  onClick={() => onSelectCase(r.case_id)}
-                >
-                  <span className="text-2xs line-through">{moment(r.target_at).format('MM/DD HH:mm')}</span>
-                  <span className="ml-1 truncate text-xs">{r.case_name}</span>
-                </button>
-              ))}
-          </div>
-        )}
       </div>
     </div>
   )
