@@ -203,8 +203,9 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
       locationRestriction: { rectangle: rect || JAPAN_RECTANGLE },
     }
     if (pageToken) body.pageToken = pageToken
-    // タイムアウト必須: Places APIが応答しないと関数が60秒上限で504（FUNCTION_INVOCATION_TIMEOUT）になる。12秒で打ち切る。
-    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000)
+    // タイムアウト必須: Places APIが応答しないと関数が60秒上限で504になる。通常は1〜2秒で返るため8秒で打ち切り、
+    // 1回の実行により多くのクエリを回す（=HOT発見数を増やす）。
+    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 8000)
     const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': LIGHT_FIELDS },
@@ -229,7 +230,7 @@ export async function searchPaged(apiKey: string, query: string, perPage: number
   const seen = new Set<string>(); const out: any[] = []
   let token: string | undefined = undefined; let pages = 0; let apiReturned = 0; let status = 0; let error: string | null = null
   for (let i = 0; i < Math.max(1, maxPages); i++) {
-    if (deadlineMs && Date.now() > deadlineMs - 13000) break  // 次の1ページ(最大~13s)が期限内に収まらない → 打ち切り
+    if (deadlineMs && Date.now() > deadlineMs - 10000) break  // 次の1ページ(最大~10s)が期限内に収まらない → 打ち切り
     const r: { status: number; places: any[]; error: string | null; nextPageToken: string | null } = await searchLight(apiKey, query, perPage, token, rect)
     status = r.status; if (r.error) { error = r.error; break }
     pages++; apiReturned += r.places.length
@@ -456,7 +457,18 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       const qReason = (k: string) => { qstat.reasons[k] = (qstat.reasons[k] || 0) + 1; addSkipReason(k) }
       const logItem = (it: any) => { if (qstat.items.length < 30) qstat.items.push(it) }
 
+      // 既存(place_id)チェックをクエリ単位で一括取得（以前は1件ずつSELECTしており、予算切れ後も
+      // 残り数十件×DB往復で60秒関数上限を突破→504の原因になっていた。60回→1回で高速化）
+      const lpIds = r.places.map((p: any) => p.id).filter(Boolean)
+      const existingByPlaceId = new Map<string, any>()
+      if (lpIds.length) {
+        const { data: exRows } = await admin.from('lead_candidates').select('*').in('google_place_id', lpIds)
+        for (const row of (exRows || [])) if (row.google_place_id) existingByPlaceId.set(row.google_place_id, row)
+      }
+
       for (const lp of r.places) {
+        // 強制打ち切り: 予算+5秒を超えたら保存もせず即終了（60秒関数上限の死守。残りは次回実行で継続）
+        if ((Date.now() - runStart) > RUN_BUDGET_MS + 5000) { debug.hardStopped = true; break }
         counts.fetched++
         const placeId: string = lp.id || ''
         const name: string = lp.displayName?.text || ''
@@ -482,12 +494,8 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           logItem({ placeId, name, address, country: jpLight.country || '—', isJapanPlace: false, result: 'SKIPPED', skip: '日本国外の候補のため除外', exclusion: '日本国外の候補のため除外', saved: false }); continue
         }
 
-        // 既存(place_id)を先に確認
-        let existing: any = null
-        if (placeId) {
-          const { data } = await admin.from('lead_candidates').select('*').eq('google_place_id', placeId).limit(1)
-          existing = data && data[0] ? data[0] : null
-        }
+        // 既存(place_id)を先に確認（クエリ冒頭で一括取得済みのMapから参照＝DB往復なし）
+        const existing: any = placeId ? (existingByPlaceId.get(placeId) || null) : null
         if (existing) counts.existingPlaceIds++
         // === 30日スキップは「最新ロジックで完全評価済み」のときだけ。openingDate/Details未取得は再評価する（item6）===
         const fullyEvaluated = !!existing
