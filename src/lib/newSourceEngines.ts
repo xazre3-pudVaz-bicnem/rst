@@ -578,10 +578,26 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
       if (!gate.ok) { await applyGateDowngrade(admin, c.id, gate); counts.promotedHot = Math.max(0, counts.promotedHot - 1); counts.skipped++; continue }
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       const nowIso = new Date().toISOString()
-      if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', c.id); continue }
-      const memo = `【AI自動投入 / 開業予定日キュー / HOT-A】${why}（Google裏取り済み）\n電話: ${phone}\n住所: ${address}\n開業前後はGBP整備・HP・MEOの提案最適期。`
-      const { data: created } = await admin.from('cases').insert({ name, address, phone1: phone, industry: classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '高', hp1: c.official_url || c.website_url || null, instagram: c.instagram_url || null, source_urls: '開業予定日キュー', memo, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
-      if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', c.id); counts.imported++; importedCases.push({ id: created.id, name, phone, address }) }
+      let caseIdForRecall: string | null = null
+      if (dupCaseId) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', c.id); caseIdForRecall = dupCaseId }
+      else {
+        const memo = `【AI自動投入 / 開業予定日キュー / HOT-A】${why}（Google裏取り済み）\n電話: ${phone}\n住所: ${address}\n開業前後はGBP整備・HP・MEOの提案最適期。`
+        const { data: created } = await admin.from('cases').insert({ name, address, phone1: phone, industry: classifyIndustry(name) || null, status: DEFAULT_STATUS, priority: '高', hp1: c.official_url || c.website_url || null, instagram: c.instagram_url || null, source_urls: '開業予定日キュー', memo, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+        if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', c.id); counts.imported++; importedCases.push({ id: created.id, name, phone, address }) }
+        caseIdForRecall = created?.id || null
+      }
+      // 開業日ドリブンの自動再コール: 開業が4日以上先なら「開業3日前の10:00」に再コール予定を自動登録。
+      // 早期発見を「まだ開いてない店への空振り架電」で終わらせず、完璧なタイミングの架電に変換する。
+      if (caseIdForRecall && duo != null && duo >= 4) {
+        try {
+          const { data: exR } = await admin.from('recalls').select('id').eq('case_id', caseIdForRecall).eq('done', false).limit(1)
+          if (!exR?.[0]) {
+            const target = new Date(Date.now() + (duo - 3) * 86400000); target.setHours(10, 0, 0, 0)
+            await admin.from('recalls').insert({ case_id: caseIdForRecall, case_name: name, target_at: target.toISOString(), done: false, memo: `開業${duo}日前に検出（自動）。開業3日前アプローチ: GBP整備・HP・MEOは開業前が最適。`, created_by_id: userId })
+            counts.recallScheduled = (counts.recallScheduled || 0) + 1
+          }
+        } catch { /* noop */ }
+      }
     }
     await finishRun(admin, runId, { ...counts, hot: counts.promotedHot })
     return { ok: true, ...counts, importedCases }
