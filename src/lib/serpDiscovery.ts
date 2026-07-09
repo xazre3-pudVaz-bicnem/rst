@@ -149,7 +149,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   const maxQ = Math.max(1, Math.min(20, opts.maxQueriesPerRun || 6))
   const maxDetails = Math.max(1, Math.min(40, opts.maxDetails || 14))
   const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
-  const serperCap = Math.max(0, opts.serperDailyCap ?? 50)
+  const serperCap = Math.max(0, opts.serperDailyCap ?? 400)
   const autoImportPerRun = Math.max(0, opts.autoImportPerRun ?? 30)
   const mode: InjectMode = (opts.aiInjectMode === 'strict' || opts.aiInjectMode === 'aggressive') ? opts.aiInjectMode : 'standard'
   const nowIso = new Date().toISOString()

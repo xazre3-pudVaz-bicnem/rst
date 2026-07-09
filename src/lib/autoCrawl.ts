@@ -129,7 +129,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 並行実行内で古い順にSERP取得元を回す（最大4件・各自の内部予算＋全体予算で打ち切り）。残りは次回ローテ。
     for (const st of enabled.slice(0, 10)) {
       if (Date.now() - startMs > budgetMs - 12000) break
-      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 5, perQuery: 6, maxDetails: 20, runBudgetMs: 22000, serperDailyCap: master.serperDailyCap ?? 50, aiInjectMode: 'standard' }, opts.userId || null)
+      const r = await runSerpDiscovery(admin, st, mapsKey, { maxQueriesPerRun: 5, perQuery: 6, maxDetails: 20, runBudgetMs: 22000, serperDailyCap: master.serperDailyCap ?? 400, aiInjectMode: 'standard' }, opts.userId || null)
       if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hotB += r.hotB || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.saved += r.saved || 0; agg.imported += r.imported || 0; agg.detailFetched += r.detailFetched || 0; agg.ran.push(st) }
     }
     return agg

@@ -1152,7 +1152,7 @@ export default function Leads() {
   async function runDiscoveryOne(type: string, label: string) {
     addBusy(type)
     try {
-      const j = await regionalApi({ runDiscovery: { sourceType: type }, settings: { aiInjectMode: settings.aiInjectMode, serperDailyCap: (settings as any).serperDailyCap ?? 50 } })
+      const j = await regionalApi({ runDiscovery: { sourceType: type }, settings: { aiInjectMode: settings.aiInjectMode, serperDailyCap: (settings as any).serperDailyCap ?? 400 } })
       if (j?.skipped) toast.info(`${label}: ${j.reason || '未実装（土台）のためスキップ'}`)
       else if (j?.ok) {
         const imp = j.imported ?? 0, hotB = j.hotB ?? j.hot ?? 0, det = j.detailFetched ?? j.newUrls ?? 0
@@ -1876,7 +1876,7 @@ export default function Leads() {
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-bold">🧭 新規取得元（{discovery.sources.length}種）— 質の高い新規リスト自動作成</span>
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                  {discovery.cost && <span>本日Serper {discovery.cost.serper ?? 0}/{(settings as any).serperDailyCap ?? 50}クエリ</span>}
+                  {discovery.cost && <span>本日Serper {discovery.cost.serper ?? 0}/{(settings as any).serperDailyCap ?? 400}クエリ</span>}
                   <Button size="sm" variant="outline" onClick={runAllEnabledDiscovery} disabled={discoveryBusy.has('__all__')} title="ONの取得元をまとめて並行実行（最大4件ずつ）">{discoveryBusy.has('__all__') ? `一括実行中(${discoveryBusy.size - 1})` : 'ON取得元を一括巡回'}</Button>
                   <Button size="sm" variant="outline" onClick={recomputeSales} disabled={discoveryBusy.has('sales')}>{discoveryBusy.has('sales') ? '計算中...' : '営業優先度を再計算'}</Button>
                 </div>

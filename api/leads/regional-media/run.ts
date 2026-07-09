@@ -324,7 +324,7 @@ export default async function handler(req: any, res: any) {
       // serp / foundation（foundationは runSerpDiscovery内で「土台のみ」skippedを返す）。単独実行は40秒で打ち切り、
       // 取得済み分は保存して返す（内部で残り時間ガードあり＝60秒関数上限を超えない）。
       const out = await runSerpDiscovery(admin, st, mapsKey, {
-        ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 50,
+        ...(body.runDiscovery.opts || {}), aiInjectMode: body.settings?.aiInjectMode, serperDailyCap: body.settings?.serperDailyCap ?? 400,
         runBudgetMs: 150000, maxQueriesPerRun: 15, maxDetails: 40, perQuery: 8,
       }, userData.user.id)
       return res.status(200).json(out)
