@@ -14,6 +14,40 @@ import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { fetchInstagramProfile } from './enrichProfile.js'
 import { DEFAULT_STATUS } from './constants.js'
 
+// Web検索スニペットからフォロワー数＋bioを取得（IGログイン壁対策。instagramWebRunと同等のローカル実装＝循環import回避）
+async function followersViaSerper(username: string): Promise<{ followers: number | null; bio: string }> {
+  const key = process.env.SERPER_API_KEY
+  if (!key || !username) return { followers: null, bio: '' }
+  try {
+    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 7000)
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: `instagram.com/${username} followers`, gl: 'jp', hl: 'ja', num: 4 }),
+    })
+    const j: any = await res.json().catch(() => ({})); clearTimeout(to)
+    const profRe = new RegExp(`instagram\\.com/${username.replace(/\./g, '\\.')}/?(\\?|$)`, 'i')
+    for (const o of (Array.isArray(j.organic) ? j.organic : [])) {
+      const text = `${o.title || ''} ${o.snippet || ''}`
+      if (!profRe.test(String(o.link || '').split('#')[0]) && !new RegExp(`\\(@${username}\\)`, 'i').test(o.title || '')) continue
+      let followers: number | null = null
+      const m = text.match(/([\d,，]+(?:\.\d+)?)\s*([KkMm万])?\+?\s*(?:人)?\s*(?:Followers|followers|フォロワー)/) || text.match(/フォロワー\s*([\d,，]+(?:\.\d+)?)\s*([KkMm万])?/)
+      if (m) {
+        let n = Number(String(m[1]).replace(/[,，]/g, ''))
+        const unit = (m[2] || '').toLowerCase()
+        if (Number.isFinite(n)) {
+          if (unit === 'k') n *= 1000
+          else if (unit === 'm') n *= 1000000
+          else if (m[2] === '万') n *= 10000
+          if (n >= 0 && n < 100000000) followers = Math.round(n)
+        }
+      }
+      return { followers, bio: String(o.snippet || '').slice(0, 400) }
+    }
+  } catch { /* noop */ }
+  return { followers: null, bio: '' }
+}
+
 // Instagram URL から username を抽出（p/reel/explore等の非プロフィールは除外）
 function igUsername(url?: string | null): string {
   const m = String(url || '').match(/instagram\.com\/([A-Za-z0-9_.]+)/i)
@@ -113,7 +147,7 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     // 1.25) 共有電話番号: 同じ番号が多数の候補に出現＝ポータル転送/代行/掲載用番号（店舗直通でない）→ 投入せずHOLD
     {
       const { count: sharedCands } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).eq('phone_number', phone)
-      if ((sharedCands || 0) >= 4) {
+      if ((sharedCands || 0) >= 8) {
         await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い）→HOLD` }).eq('id', c.id)
         downgraded++; continue
       }
@@ -181,7 +215,16 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       if (igLookups >= MAX_IG || Date.now() >= deadline - 3500) { skipped++; continue }  // 予算切れ: 次回のフォロワー確認へ持ち越し
       igLookups++
       const prof = await fetchInstagramProfile(igUser).catch(() => null)
-      const followers = prof && typeof prof.followers === 'number' ? prof.followers : null
+      let followers = prof && typeof prof.followers === 'number' ? prof.followers : null
+      if (followers == null) {
+        const web = await followersViaSerper(igUser)  // Webスニペットfallback
+        followers = web.followers
+        // bioに多店舗/大手語（グループ公式/◯店舗を展開等）→ フォロワー数が読めなくても除外
+        if (web.bio && (detectMultiStore(web.bio).exclude || detectBigOrPublicStrong(web.bio).exclude)) {
+          await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: 'Instagramプロフィールに多店舗/大手語のため投入対象外' }).eq('id', c.id)
+          reviewExcluded++; continue
+        }
+      }
       if (followers == null) {
         await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', c.id)
         downgraded++; continue

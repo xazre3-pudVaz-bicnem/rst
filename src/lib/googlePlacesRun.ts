@@ -102,7 +102,7 @@ export function getDefaultSettings() {
     placesEnabled: true,
     // 全国・新店系ワード検索（エリア/業種で絞らない）
     placesNationwide: true,
-    placesMaxQueriesPerDay: 30,
+    placesMaxQueriesPerDay: 60,
     placesPerQuery: 20,
     placesMaxDetailsPerDay: 300,
     areaPreset: 'ittokensanken',

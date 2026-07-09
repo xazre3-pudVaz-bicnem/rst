@@ -4,7 +4,7 @@
 // 外部の有料サービス(OCR/Meta API)を要するもの(スクショ/PDF/CSV/IGコメント)は対象外（run.tsでfoundation継続）。
 // すべて残り時間ガード＋fetchタイムアウトで60秒関数上限を死守する。
 // ============================================================
-import { enrichCandidate } from './instagramWebRun.js'
+import { enrichCandidate, fetchFollowersViaWebSearch } from './instagramWebRun.js'
 import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
@@ -302,9 +302,11 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
   const runId = await startRun(admin, type, userId)
   try {
     // 対象: HOLD かつ 店名が確定（未確定はノイズが多い）
-    let q = admin.from('lead_candidates').select('id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url').eq('lead_temperature', 'HOLD').not('name', 'is', null).limit(300)
+    let q = admin.from('lead_candidates').select('id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url,auto_insert_skipped_reason,instagram_url,search_snippet').eq('lead_temperature', 'HOLD').not('name', 'is', null).limit(300)
     if (type === 'missing_phone_recheck_queue') q = q.is('phone_number', null).not('address', 'is', null)
     else if (type === 'phone_to_address_enrichment_queue') q = q.not('phone_number', 'is', null).is('address', null)
+    // 汎用キューは「一時要因」の理由だけを対象（記事/まとめ・チェーン等の品質理由をHOTへ誤復活させない）
+    else q = q.or('auto_insert_skipped_reason.ilike.%電話番号なし%,auto_insert_skipped_reason.ilike.%住所なし%,auto_insert_skipped_reason.ilike.%フォロワー数を確認できず%,auto_insert_skipped_reason.ilike.%ユーザー名が特定できず%')
     const { data: rows } = await q
     const list = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id).slice(0, limit)
     for (const c of list) {
@@ -312,6 +314,43 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
       const shop = c.extracted_shop_name || c.name || ''
       if (!shop || shop === '店名未確定') continue
       counts.scanned++
+      // フォロワー未確認HOLDの復活: Webスニペットで確認し、1000人未満ならHOT復帰→投入（電話・住所は既にある）
+      const reason0 = String(c.auto_insert_skipped_reason || '')
+      if (/フォロワー|ユーザー名が特定できず/.test(reason0)) {
+        let igu = (String(c.instagram_url || '').match(/instagram\.com\/([A-Za-z0-9_.]+)/i)?.[1] || '')
+        if (/^(p|reel|reels|explore|tv|stories)$/i.test(igu)) igu = ''
+        if (!igu) igu = (String(c.search_snippet || '').match(/@([A-Za-z0-9_.]{3,30})/)?.[1] || '').replace(/\.+$/, '')
+        if (!igu) continue
+        const web = await withTimeout(fetchFollowersViaWebSearch(igu), 9000, { followers: null, bio: '' } as any)
+        counts.followerChecked = (counts.followerChecked || 0) + 1
+        // bioに多店舗/大手語 → 除外
+        if (web.bio && (detectMultiStore(web.bio).exclude || detectBigOrPublic(web.bio).exclude)) {
+          await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: 'Instagramプロフィールに多店舗/大手語のため投入対象外' }).eq('id', c.id)
+          counts.followerExcluded = (counts.followerExcluded || 0) + 1
+          continue
+        }
+        const f = web.followers
+        if (f == null) continue
+        if (f >= 1000) {
+          await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${f}人(1000人以上=確立済み)のため投入対象外` }).eq('id', c.id)
+          counts.followerExcluded = (counts.followerExcluded || 0) + 1
+          continue
+        }
+        const fp = c.phone_number || ''
+        const fOk = !!fp && isJapanPhone(fp) && isValidJpPhone(fp) && !isTollFreeJp(fp)
+        if (!fOk || !c.address || !isRealStoreAddress(c.address)) continue
+        const gateF = await caseImportGate(admin, { name: shop, phone: fp, address: c.address, mapsKey, budgetEndMs: startMs + budgetMs })
+        if (!gateF.ok) { await applyGateDowngrade(admin, c.id, gateF); continue }
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOT', hot_tier: 'B', recommended_status: 'HOT_B', auto_insert_skipped_reason: null, ai_comment: `フォロワー${f}人をWeb確認→HOT復帰（1000人未満）` }).eq('id', c.id)
+        counts.promotedHot++
+        const dupF = await findCaseIdByPhone(admin, fp)
+        if (dupF) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: dupF }).eq('id', c.id); continue }
+        const { data: cr } = await admin.from('cases').insert({ name: shop, address: c.address, phone1: fp, industry: classifyIndustry(shop) || null, status: DEFAULT_STATUS, priority: '中', instagram: c.instagram_url || null, hp1: c.official_url || null, source_urls: c.instagram_url || 'フォロワー確認復活', memo: `【AI自動投入 / HOLD復活(フォロワー${f}人確認) / HOT-B】
+電話: ${fp}
+住所: ${c.address}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+        if (cr?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: cr.id }).eq('id', c.id); counts.imported++ }
+        continue
+      }
       const e = await withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null)
       if (!e) continue
       counts.enriched++

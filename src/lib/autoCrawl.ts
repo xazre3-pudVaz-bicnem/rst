@@ -12,7 +12,7 @@ import { runAllSequentialProbes } from './sequentialProbe.js'
 import { runSerpDiscovery } from './serpDiscovery.js'
 import { DISCOVERY_SOURCES, defaultSourceToggles } from './discoverySources.js'
 import { sweepHotToCases } from './importHot.js'
-import { runOpeningSoonQueue, runLeadScoring } from './newSourceEngines.js'
+import { runOpeningSoonQueue, runLeadScoring, runReprocessQueue } from './newSourceEngines.js'
 
 const LOCK_KEY = 'auto_lead_crawl'
 const num = (v: any, d = 0) => (typeof v === 'number' && !Number.isNaN(v) ? v : d)
@@ -97,7 +97,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'lead_auto')
     if (cfg.autoFetch === false) return { skipped: true }
     // 全取得元巡回では10s/5クエリに制限し他フェーズへ譲る。Places単独実行(only=places)は42s/設定値で本格実行。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(220000, 240000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 30) : 30 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(220000, 240000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 60) : 60 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
@@ -187,6 +187,11 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   try {
     const r1 = budgetMs - (Date.now() - startMs)
     if (r1 > 22000) { const os = await runOpeningSoonQueue(admin, { limit: 150, runBudgetMs: Math.min(25000, r1 - 12000) }, opts.userId || null); agg.cases_inserted_count += os?.imported || 0 }
+  } catch { /* noop */ }
+  try {
+    // HOLD復活: 「電話なし/住所なし/フォロワー未確認」など一時要因のHOLDを再検証してHOT復帰→投入（安全な理由のみ対象）
+    const rH = budgetMs - (Date.now() - startMs)
+    if (rH > 25000) { const rq = await runReprocessQueue(admin, mapsKey, 'hold_reason_reprocess_queue', { limit: 60, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null); agg.cases_inserted_count += rq?.imported || 0 }
   } catch { /* noop */ }
   try {
     const r2 = budgetMs - (Date.now() - startMs)

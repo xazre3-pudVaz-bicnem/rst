@@ -11,7 +11,7 @@ import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, re
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, BIG_IG_FOLLOWERS, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { isTollFreeJp } from './regionalParsers.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
@@ -24,12 +24,12 @@ export function getDefaultIwSettings() {
     iwRequirePhone: false,      // 電話番号必須（初期OFF）
     iwPlacesRequired: false,    // Google Places照合必須（初期OFF）
     iwAnthropic: true,          // Anthropic判定（初期ON）
-    iwMaxRunsPerDay: 4,         // 1日最大実行回数
+    iwMaxRunsPerDay: 8,         // 1日最大実行回数（2時間おき巡回+手動に対応）
     iwPerRun: 40,               // 1回最大クエリ数（後方互換）
     iwMaxQueriesPerRun: 40,     // 1回最大クエリ数（30〜50推奨）
-    iwMaxQueriesPerDay: 150,    // 1日最大クエリ数
+    iwMaxQueriesPerDay: 240,    // 1日最大クエリ数
     iwPerQuery: 10,             // 1クエリ取得件数
-    iwAnthropicDailyCap: 100,   // 1日最大AI判定件数
+    iwAnthropicDailyCap: 300,   // 1日最大AI判定件数
     iwProvider: 'serper',       // 検索プロバイダ: serper / bing / both
     iwSameQuerySkipDays: 0,     // 同一クエリのスキップ日数（0=毎日同じクエリOK・Instagramは新着が増えるため）
     iwSameUrlSkipDays: 7,       // 同一URLのスキップ日数（重複保存防止）
@@ -37,7 +37,7 @@ export function getDefaultIwSettings() {
     iwEnrichEnabled: true,
     iwEnrichMaxQueries: 3,      // 1候補あたり追加検索の最大クエリ数
     iwEnrichPerQuery: 5,        // 補完1クエリの取得件数
-    iwEnrichDailyCap: 100,      // 1日最大補完候補数
+    iwEnrichDailyCap: 200,      // 1日最大補完候補数
     // 検索モード: serper_free=簡易クエリのみ / bing_advanced=site:検索 / serper_paid=高度検索
     iwSearchMode: 'serper_free',
     iwAllowNoPhone: false,      // 電話番号なしでもHOT許可（既定OFF）
@@ -257,6 +257,37 @@ function extractRegion(text: string): { prefecture: string; city: string; area: 
 }
 
 function extractIndustry(text: string): string { return classifyIndustry(text) }
+
+/** Web検索スニペットからInstagramプロフィール情報を取得（IGログイン壁対策のfallback）。
+ *  site:instagram.com <user> はプロフィールが確実に上位ヒットし、スニペットに bio が載る。
+ *  followers: 「5.9K+ followers」「611K followers」「1,234 Followers」「フォロワー1.2万人」等を解釈（取れなければnull）。
+ *  bio: プロフィール本文（「グループ公式」「4店舗を展開」等の多店舗検出に使える）。 */
+export async function fetchFollowersViaWebSearch(username: string): Promise<{ followers: number | null; bio: string }> {
+  if (!username) return { followers: null, bio: '' }
+  try {
+    const { results } = await webSearch(`site:instagram.com ${username}`, 5)
+    const profRe = new RegExp(`instagram\\.com/${username.replace(/\./g, '\\.')}/?(\\?|$)`, 'i')
+    for (const r of results) {
+      if (!profRe.test(String(r.url || '').split('#')[0]) && !new RegExp(`\\(@${username}\\)`, 'i').test(r.title || '')) continue
+      const text = `${r.title} ${r.snippet}`
+      let followers: number | null = null
+      const m = text.match(/([\d,，]+(?:\.\d+)?)\s*([KkMm万])?\+?\s*(?:人)?\s*(?:Followers|followers|フォロワー)/)
+        || text.match(/フォロワー\s*([\d,，]+(?:\.\d+)?)\s*([KkMm万])?/)
+      if (m) {
+        let n = Number(String(m[1]).replace(/[,，]/g, ''))
+        const unit = (m[2] || '').toLowerCase()
+        if (Number.isFinite(n)) {
+          if (unit === 'k') n *= 1000
+          else if (unit === 'm') n *= 1000000
+          else if (m[2] === '万') n *= 10000
+          if (n >= 0 && n < 100000000) followers = Math.round(n)
+        }
+      }
+      return { followers, bio: String(r.snippet || '').slice(0, 400) }
+    }
+  } catch { /* noop */ }
+  return { followers: null, bio: '' }
+}
 
 // ---- 電話/住所/連絡先URL 抽出（外部サイトのスニペットから） ----
 const ADDR_RE = new RegExp(`(${PREFECTURES.join('|')})[^\\n。、）)｜|]{2,40}`)
@@ -963,6 +994,22 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
             importFollowerChecks++
             const prof = await fetchInstagramProfile(goodHandle).catch(() => null)
             if (prof && typeof prof.followers === 'number') followersKnown = prof.followers
+            // IGログイン壁で読めない場合はWeb検索スニペットから確認（未確認HOLDを減らし投入量を維持）
+            if (followersKnown == null) {
+              const web = await fetchFollowersViaWebSearch(goodHandle)
+              followersKnown = web.followers
+              // bio に多店舗/大手語（グループ公式/◯店舗を展開 等）があれば即除外（フォロワー数が読めなくても止まる）
+              if (web.bio) {
+                const bioMulti = detectMultiStore(web.bio)
+                const bioBig = detectBigOrPublicStrong(web.bio)
+                if (bioMulti.exclude || bioBig.exclude) {
+                  await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramプロフィールに多店舗/大手語（${bioMulti.hit || bioBig.hit}）のため投入対象外` }).eq('id', candidateId)
+                  counts.followerExcluded = (counts.followerExcluded || 0) + 1
+                  counts.hot = Math.max(0, counts.hot - 1); counts.excluded++
+                  continue
+                }
+              }
+            }
           }
           if (followersKnown == null) {
             // フォロワー数が確認できない（ログイン壁/ハンドル不明）候補は投入しない＝1000人以上のすり抜けを根絶

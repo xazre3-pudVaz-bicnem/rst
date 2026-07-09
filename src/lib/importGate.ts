@@ -62,7 +62,7 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   const digits = onlyDigits(phone)
   try {
     const { count: sharedCands } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).eq('phone_number', phone)
-    if ((sharedCands || 0) >= 4) return hold(`同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い・投入ゲート）`)
+    if ((sharedCands || 0) >= 8) return hold(`同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い・投入ゲート）`)
   } catch { /* noop */ }
   // 既に2件以上の案件で同じ番号が使われている場合も共有番号の疑い（1件なら呼び出し元がリンク処理する）
   try {
