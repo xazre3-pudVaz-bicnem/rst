@@ -250,6 +250,8 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const bodyStrip = strip(html)
         const closed = detectNegative(bodyStrip.slice(0, 3000))
         const d = extractDetail(html)
+        // プレスリリース/記事タイトルの断片が店名に紛れるのを防ぐ: 「◯◯店が2026年8月25日（火）…」→「◯◯店」
+        d.name = d.name.replace(/(?:が|は|を|、)?s*20d{2}年.*$/, '').replace(/（[月火水木金土日祝・]{1,3}）.*$/, '').trim()
         // 新店根拠: 着地ページ本文＋タイトル＋スニペットに新規性の文脈があるか（クエリ由来だけを信用しない）。
         // 新店ワード＋開業日＋新HP公開＋取得元別シグナル（新入会員/制作実績/施工中 等）を広くカバーし、
         // 各取得元が正当な根拠でHOTになれるようにする（狭すぎると全部HOLDで投入ゼロになる）。
@@ -295,7 +297,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // SERPはノイズが多いため、HOTは「実店舗名が確定 or Google Places一致」を要件に追加（店名未確定だけのノイズはHOLD）。
         const noiseText = `${name} ${rr.title || ''} ${rr.snippet || ''}`
         const portalNoise = closed.portal || /ツール|まとめ記事|ランキング|比較サイト|一覧表|収集|代行業者|料金表|求人サイト|ポータル|事業者様|業者向け|toB|BtoB|システム|アプリ/.test(noiseText)
-        const genericName = !sn.valid || /^(店舗|お店|新規オープン|ショップ|サロン|クリニック|会社|お知らせ|ニュース)$/.test(name)
+        const genericName = !sn.valid || /^(店舗|お店|新規オープン|ショップ|サロン|クリニック|会社|お知らせ|ニュース)$/.test(name) || /20d{2}年|d{1,2}月d{1,2}日/.test(name)
         const shopConfirmed = (sn.valid && !genericName) || !!matchedPlaceId
         // 共通ハード除外（フリーダイヤル/○○店支店/大手量販モール/2店舗以上FC/大手チェーン/記事まとめ）を全ソース一貫適用
         const hardEx = hardExcludeReason({ name, phone, text: `${d.name} ${rr.title || ''} ${rr.snippet || ''}` })
@@ -310,6 +312,8 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const pageAgeOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 90
         // 電話×住所の地域整合: 固定電話の市外局番が住所の都道府県と不一致＝別店舗/本社番号の誤抽出の疑い（HOT禁止）
         const pmMismatch = phoneAddressMatch(phone, address) === 'mismatch'
+        // プレスリリース配信サイトは掲載住所/電話が「発行元(本社)」であることが多い → Google Places裏取りが無ければHOTにしない
+        const prSource = /prtimes.jp|atpress.ne.jp|value-press.com|dreamnews.jp|kyodonewsprwire/i.test(url)
 
         // ===== 新店まとめ記事の一括展開 =====
         // 「◯月オープンの新店10選」等のまとめ記事は従来EXCLUDEDで捨てていたが、1ページに複数の新店
@@ -342,7 +346,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
         else if (dateHardOld || pageAgeVeryOld) { temperature = 'EXCLUDED'; counts.hpOldExcluded = (counts.hpOldExcluded || 0) + 1 }
         // HOT要件: 電話+実店舗住所+日本+実店舗名確定+新店(新HP)根拠+記事鮮度+電話地域整合。HP取得元はさらに公式URL＋公開7日以内が必須。
-        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !pmMismatch) {
+        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !pmMismatch && (!prSource || matchedPlaceId)) {
           temperature = 'HOT'; hotTier = 'B'; if (isHp) counts.hpRecent = (counts.hpRecent || 0) + 1
           // Places裏取り＋直近30日以内の記事（or HP7日以内）= 確度が高い → HOT-A（優先架電）
           if (matchedPlaceId && ((hpPub.daysAgo != null && hpPub.daysAgo <= 30) || (isHp && recencyOk))) hotTier = 'A'
@@ -353,6 +357,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし'
             : pmMismatch ? `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）`
             : pageAgeOld ? `新店記事が${hpPub.daysAgo}日前（90日超=新店鮮度切れ）`
+            : (prSource && !matchedPlaceId) ? 'プレスリリース由来はGoogle Places裏取り必須（掲載住所/電話が発行元の可能性）'
             : (requireOfficial && !hasOfficialUrl) ? '公式サイトURL未確定'
             : !newnessOk ? (isHp ? '新HP公開の根拠が本文で確認できず' : '新店根拠が本文で確認できず')
             : !shopConfirmed ? '実店舗名が未確定'
