@@ -747,7 +747,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const multiM = detectMultiStore(gateText)
           const chM = detectChain(dName || titleName || '', cand.blockText || '')
           const bigStrongM = detectBigOrPublicStrong(gateText)
-          const isArticleM = looksLikeArticleText(`${dName} ${titleName} ${cand.blockText || ''}`)
+          // 記事見出し判定は「候補の店名」のみで行う（blockTextを含めると、見出しが常に【市名】…形式の
+          // 号外NET等で、正式店名＋電話＋住所が揃った正当なHOT-Aまで全て記事扱いでEXCLUDEDになっていた）
+          const isArticleM = looksLikeArticleText(dName || titleName || '')
           if (multiM.exclude || chM.definite || bigStrongM.exclude || isArticleM || looksLikeBranchStore(dName) || !isRealStoreAddress(address)) {
             temperature = 'EXCLUDED'; dHotTier = null
           }
