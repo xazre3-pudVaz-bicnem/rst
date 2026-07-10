@@ -26,10 +26,11 @@ const pass: GateResult = { ok: true, action: 'import', reason: '' }
 const hold = (reason: string): GateResult => ({ ok: false, action: 'hold', reason })
 const exclude = (reason: string): GateResult => ({ ok: false, action: 'exclude', reason })
 
-// 住所から市区町村トークンを抽出（同名同市の重複案件検出用）
+// 住所から市区町村トークンを抽出（同名同市の重複案件検出用）。
+// 都道府県を先に消費してから市区を取る（『東京都千代田区』を返すと県なし住所の案件とマッチしなくなる）。
 function cityOf(address: string): string {
-  const m = String(address || '').match(/[一-龥ぁ-んァ-ヶ0-9０-９]{1,8}[市区町村]/)
-  return m ? m[0] : ''
+  const m = String(address || '').match(/(?:北海道|東京都|(?:京都|大阪)府|[一-龥]{2,3}県)?([一-龥ぁ-んァ-ヶ0-9０-９]{1,8}?[市区町村])/)
+  return m ? m[1] : ''
 }
 const normName = (s: string) => String(s || '').replace(/[\s　・&＆'’\-－ー()（）【】\[\]]/g, '').toLowerCase()
 
@@ -65,10 +66,14 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     if ((sharedCands || 0) >= 8) return hold(`同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い・投入ゲート）`)
   } catch { /* noop */ }
   // 既に2件以上の案件で同じ番号が使われている場合も共有番号の疑い（1件なら呼び出し元がリンク処理する）
+  // ※phone1はハイフン付き保存が多く連続10桁のilikeでは一致しない → 末尾4桁で粗く引いて数字正規化で厳密照合
   try {
     if (digits.length >= 10) {
-      const { count: sharedCases } = await admin.from('cases').select('id', { count: 'exact', head: true }).ilike('phone1', `%${digits.slice(-10)}%`)
-      if ((sharedCases || 0) >= 2) return hold(`同一電話番号が既存案件${sharedCases}件に存在（共有番号の疑い・投入ゲート）`)
+      const dial = digits.slice(-10)
+      // 末尾アンカー（%last4）: 中間4桁への誤ヒットで候補がlimitを超え、真の共有番号がページ外に落ちるのを防ぐ
+      const { data: rough } = await admin.from('cases').select('id,phone1').ilike('phone1', `%${digits.slice(-4)}`).limit(80)
+      const sharedCases = (rough || []).filter((c: any) => onlyDigits(String(c.phone1 || '')).endsWith(dial)).length
+      if (sharedCases >= 2) return hold(`同一電話番号が既存案件${sharedCases}件に存在（共有番号の疑い・投入ゲート）`)
     }
   } catch { /* noop */ }
 

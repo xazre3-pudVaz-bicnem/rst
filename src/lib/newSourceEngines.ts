@@ -179,8 +179,10 @@ export async function runSslCertScan(admin: any, mapsKey: string | null, opts: {
   const budgetMs = Math.max(15000, Math.min(280000, opts.runBudgetMs || 90000))
   const remain = () => budgetMs - (Date.now() - startMs)
   const maxDomains = Math.max(1, Math.min(40, opts.maxDomains || 20))
-  // 1件あたり最悪 fetch(8)+enrich(12)+既存店確認(8)+DB(3)=31s。残り32s未満なら新規着手しない（60秒枠死守）。
-  const PER_ITEM_MS = 32000
+  // 1件あたり典型 ~10s（最悪 fetch8+enrich12+既存店8+DB3=31s）。
+  // 【不変条件】敷居は必ず予算より小さく保つ（予算連動）。敷居>=予算だと1件も処理されないまま
+  // success記録される「恒久0件」バグになる（runBudgetMs=30sで実際に発生した）。
+  const PER_ITEM_MS = Math.min(15000, Math.floor(budgetMs / 3))
   const counts: any = { sourceType: 'new_ssl_certificate_domain_scan', label: 'SSL新規発行ドメイン監視', fetched: 0, candidates: 0, hot: 0, hold: 0, excluded: 0, imported: 0, skipped: 0 }
   const runId = await startRun(admin, 'new_ssl_certificate_domain_scan', userId)
   try {
@@ -311,7 +313,8 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     const { data: rows } = await q
     const list = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id).slice(0, limit)
     for (const c of list) {
-      if (remain() < 17000) break // enrich(≤12s)＋case投入の余白を確保して60秒枠を死守
+      // enrich(≤12s)＋case投入の余白。【不変条件】敷居は必ず予算より小さく保つ（予算連動・恒久0件バグの再発防止）
+      if (remain() < Math.min(10000, Math.floor(budgetMs / 3))) break
       const shop = c.extracted_shop_name || c.name || ''
       if (!shop || shop === '店名未確定') continue
       counts.scanned++
@@ -390,12 +393,18 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
 // ============================================================
 export async function runBulkUrlImport(admin: any, mapsKey: string | null, urls: string[], meta: { memo?: string; sourceType?: string }, userId: string | null): Promise<any> {
   const startMs = Date.now(); const budgetMs = 240000; const remain = () => budgetMs - (Date.now() - startMs)
-  const clean = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter((u) => /^https?:\/\//.test(u)))).slice(0, 40)
-  const counts: any = { sourceType: 'manual_url_bulk_import', label: '手動URL一括インポート', total: clean.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0 }
+  const cleanAll = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter((u) => /^https?:\/\//.test(u))))
+  const clean = cleanAll.slice(0, 40)
+  const counts: any = { sourceType: 'manual_url_bulk_import', label: '手動URL一括インポート', total: cleanAll.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0 }
+  // 40件上限の超過分は黙って捨てず通知（UI側で貼り直しできるようにremainingで返す）
+  if (cleanAll.length > 40) { counts.stoppedEarly = true; counts.remaining = cleanAll.slice(40).join('\n') }
   const runId = await startRun(admin, 'manual_url_bulk_import', userId)
   const results: any[] = []
+  let ui = -1
   for (const url of clean) {
-    if (remain() < 32000) { counts.stoppedEarly = true; break } // 1件最悪31s。残り32s未満なら次回へ（60秒枠死守）
+    ui++
+    // 1件最悪31s。残り32s未満なら打ち切り、未処理URL（上限超過分も含む）をremainingで返してUIに残す
+    if (remain() < 32000) { counts.stoppedEarly = true; counts.remaining = [...clean.slice(ui), ...cleanAll.slice(40)].join('\n'); break }
     const r = await ingestFromUrl(admin, mapsKey, { url, sourceType: 'manual_url_bulk_import', label: '手動URL一括', signalType: 'manual_import', extraText: meta.memo || '', userId, runId, saveAlways: true })
     counts.processed++
     if (r.temperature === 'HOT') { counts.hot++; if (r.imported) counts.imported++ } else if (r.temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
@@ -413,14 +422,16 @@ export interface ExtractedStore { name: string; phone: string; address?: string;
 export async function ingestExtractedStores(admin: any, mapsKey: string | null, stores: ExtractedStore[], o: {
   sourceType: string; label: string; signalType: string; sourceUrl: string; evidenceIso?: string | null
   userId: string | null; runId?: string | null; budgetEndMs?: number
+  maxImports?: number  // 呼び出し元の投入上限（autoImportPerRun）の残り枠。超えたら候補保存のみで投入しない
 }): Promise<any> {
   const endMs = o.budgetEndMs || (Date.now() + 40000)
   const remain = () => endMs - Date.now()
   const nowIso = new Date().toISOString()
-  const out: any = { processed: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, importedCases: [] as any[] }
+  // processedAll: 予算切れで途中終了したらfalse（呼び出し元が既読URLを取り消して次回再展開できるように）
+  const out: any = { processed: 0, hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, importedCases: [] as any[], processedAll: true }
   let estabLookups = 0
   for (const st of stores) {
-    if (remain() < 16000) break
+    if (remain() < 16000) { out.processedAll = false; break }
     const phone = (st.phone || '').trim()
     const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
     if (!phoneOk) continue
@@ -467,7 +478,9 @@ export async function ingestExtractedStores(admin: any, mapsKey: string | null, 
     if (candidateId) await admin.from('lead_candidates').update(payload).eq('id', candidateId).then(() => {}, () => {})
     else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: o.userId }).select('id').single(); candidateId = ins?.id || null; if (candidateId) out.saved++ }
     if (candidateId) await addSignals(admin, candidateId, [{ type: o.signalType, source: o.label, url: o.sourceUrl, date: o.evidenceIso || null, text: name.slice(0, 180), confidence: 0.7 }])
-    if (temperature === 'HOT' && candidateId) {
+    if (temperature === 'HOT' && candidateId && out.imported >= (o.maxImports ?? Infinity)) {
+      // 投入上限到達: 候補はHOT保存済みなので次のスイープが投入する（上限バイパス防止）
+    } else if (temperature === 'HOT' && candidateId) {
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       if (dupCaseId) await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
       else if (!(await (async () => {
@@ -503,15 +516,18 @@ export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts:
     const picked = [0, 1, 2, 3].map((i) => NEWS_QUERIES[(dayIdx * 4 + i) % NEWS_QUERIES.length])
     // ホットスポット増幅: 勝ちエリアの新店ニュースも直近7日で検索（キー不要・コストゼロ）
     try { const hc = await getHotCities(admin, { days: 14, max: 3 }); for (const c of hc) picked.push(`新規オープン ${c}`) } catch { /* noop */ }
+    // 【不変条件】敷居は必ず予算より小さく保つ（予算連動）。敷居>=予算だと1クエリも走らず恒久0件になる（実績あり）。
+    // クエリ敷居はアイテム敷居+RSS取得8sより大きく（フィードだけ取ってアイテムを全スキップする無駄fetchを防ぐ）。
+    const perItemMs = Math.min(15000, Math.floor(budgetMs / 3))
     for (const q of picked) {
-      if (remain() < 30000) break
+      if (remain() < perItemMs + 8000) break
       counts.queries++
       const rss = await fetchText(`https://news.google.com/rss/search?q=${encodeURIComponent(`${q} when:7d`)}&hl=ja&gl=JP&ceid=JP:ja`, 8000, 'application/rss+xml')
       if (!rss.ok || !rss.text) continue
       const items = Array.from(rss.text.matchAll(/<item>([\s\S]*?)<\/item>/g)).map((m) => m[1]).slice(0, 20)
       for (const it of items) {
-        // 1件あたり最悪 ~28s（fetch8+enrich12+既存店8）。残り30s未満なら次回へ（60秒枠死守）
-        if (remain() < 30000) break
+        // 1件あたり典型 ~10s（既読skipは1s未満・最悪28s）
+        if (remain() < perItemMs) break
         const link = (it.match(/<link>([^<]+)<\/link>/)?.[1] || '').trim()
         const title = (it.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1] || '').trim()
         const pub = Date.parse(it.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1] || '')
@@ -592,7 +608,10 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
         try {
           const { data: exR } = await admin.from('recalls').select('id').eq('case_id', caseIdForRecall).eq('done', false).limit(1)
           if (!exR?.[0]) {
-            const target = new Date(Date.now() + (duo - 3) * 86400000); target.setHours(10, 0, 0, 0)
+            // VercelはUTC実行のためsetHours(10)だと19:00 JSTかつJST深夜帯は日付が1日ズレる。
+            // JSTの暦日で(duo-3)日後を求め、01:00 UTC(=10:00 JST)を指す時刻を作る。
+            const jstBase = new Date(Date.now() + 9 * 3600000 + (duo - 3) * 86400000)
+            const target = new Date(Date.UTC(jstBase.getUTCFullYear(), jstBase.getUTCMonth(), jstBase.getUTCDate(), 1, 0, 0))
             await admin.from('recalls').insert({ case_id: caseIdForRecall, case_name: name, target_at: target.toISOString(), done: false, memo: `開業${duo}日前に検出（自動）。開業3日前アプローチ: GBP整備・HP・MEOは開業前が最適。`, created_by_id: userId })
             counts.recallScheduled = (counts.recallScheduled || 0) + 1
           }
@@ -619,15 +638,18 @@ export async function runTextImport(admin: any, mapsKey: string | null, text: st
     const phoneLines = lines.filter((l) => !!extractJpPhone(l)).length
     blocks = phoneLines >= 2 ? lines : [String(text || '').trim()].filter(Boolean)
   }
+  // 1回30ブロック上限。超過分は黙って捨てず remaining として返す（UIがテキストエリアに残して続き実行できる）
+  const overflow = blocks.slice(30)
   blocks = blocks.slice(0, 30)
-  const counts: any = { sourceType: 'document_to_lead_import', label: 'テキスト貼り付け取込', total: blocks.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0, skipped: 0, alreadyImported: 0 }
+  const counts: any = { sourceType: 'document_to_lead_import', label: 'テキスト貼り付け取込', total: blocks.length + overflow.length, processed: 0, hot: 0, hold: 0, excluded: 0, imported: 0, skipped: 0, alreadyImported: 0 }
+  if (overflow.length) { counts.stoppedEarly = true; counts.remaining = overflow.join('\n\n') }
   const runId = await startRun(admin, 'document_to_lead_import', userId)
   const results: any[] = []
   let bi = -1
   for (const block of blocks) {
     bi++
     // 時間切れ: 未処理ブロックを remaining として返し、UI側でテキストエリアに残す（続きは再実行で処理できる）
-    if (remain() < 20000) { counts.stoppedEarly = true; counts.remaining = blocks.slice(bi).join('\n\n'); break }
+    if (remain() < 20000) { counts.stoppedEarly = true; counts.remaining = [...blocks.slice(bi), ...overflow].join('\n\n'); break }
     const phone0 = extractJpPhone(block)
     const address0 = (block.match(PREF_RE)?.[0] || '').slice(0, 70)
     // 再実行の高速スキップ: 同一電話の候補が既に案件投入済みなら補完せず即スキップ（続き処理へ時間を回す）

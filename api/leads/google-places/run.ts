@@ -53,7 +53,8 @@ export default async function handler(req: any, res: any) {
   // 既存Google Places候補の openingDate 再判定（item9）
   if (body?.rejudge) {
     try {
-      const out = await rejudgeExistingPlaces(admin, apiKey, { limit: Number(body.rejudge.limit) || 100, nowIso: new Date().toISOString() })
+      // deadline明示: 未指定だと既定90sで打ち切られ、UIの「100件再判定」が黙って15件程度で終わる
+      const out = await rejudgeExistingPlaces(admin, apiKey, { limit: Number(body.rejudge.limit) || 100, nowIso: new Date().toISOString(), deadlineMs: Date.now() + 270000 })
       return res.status(200).json({ ok: true, ...out })
     } catch (e: any) { return res.status(500).json({ ok: false, error: String(e?.message || e) }) }
   }

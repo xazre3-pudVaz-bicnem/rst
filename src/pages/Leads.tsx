@@ -568,8 +568,10 @@ export default function Leads() {
     try {
       const j = await regionalApi({ bulkImport: { urls, memo: '' } })
       if (!j?.ok) { toast.error(j?.error || '一括インポートに失敗しました'); return }
-      toast.success(`一括インポート: 処理${j.processed}/${j.total} ｜ HOT${j.hot} 投入${j.imported} HOLD${j.hold} 除外${j.excluded}${j.stoppedEarly ? '（時間上限で一部次回）' : ''}`)
-      setBulkUrls(''); load(); loadRecentImported()
+      toast.success(`一括インポート: 処理${j.processed}/${j.total} ｜ HOT${j.hot} 投入${j.imported} HOLD${j.hold} 除外${j.excluded}${j.stoppedEarly ? '（上限超過分を入力欄に残しました。もう一度実行してください）' : ''}`)
+      // 40件上限の超過分は入力欄に残す（消すと41件目以降が黙って失われる）
+      setBulkUrls(j.stoppedEarly && j.remaining ? j.remaining : '')
+      load(); loadRecentImported()
     } catch (e) { toast.error('一括インポートに失敗しました: ' + jpError(e)) } finally { setBulkImporting(false) }
   }
 

@@ -143,11 +143,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     for (const r of (lastE || []) as any[]) { if (!lastByE.has(r.source)) lastByE.set(r.source, Date.parse(r.created_date || 0)) }
     engineTypes.sort((a, b) => (lastByE.get(a) ?? 0) - (lastByE.get(b) ?? 0))
     for (const et of engineTypes.slice(0, 2)) {
-      if (Date.now() - startMs > budgetMs - 35000) break
+      if (Date.now() - startMs > budgetMs - 60000) break
       try {
+        // runBudgetMs はエンジン内部の per-item 敷居（12〜15s）より十分大きくすること。
+        // 30sで呼ぶと敷居と同値になり1件も処理されないまま success 記録＝恒久0件バグになる（実績あり）。
         const r = et === 'portal_published_date_search'
           ? await runEkitenDiscovery(admin, mapsKey, { aiInjectMode: 'standard' }, opts.userId || null)
-          : await runEngineSource(admin, mapsKey, et, { runBudgetMs: 30000 }, opts.userId || null)
+          : await runEngineSource(admin, mapsKey, et, { runBudgetMs: 45000 }, opts.userId || null)
         if (r?.ok && !r.skipped) { agg.hot += r.hot || 0; agg.hold += r.hold || 0; agg.excluded += r.excluded || 0; agg.imported += r.imported || 0; agg.detailFetched += r.fetched || r.detailFetched || 0; agg.ran.push(et) }
       } catch { /* 1エンジンの失敗は他を止めない */ }
     }
@@ -199,21 +201,24 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
   // 取得元の自己増殖: 地域メディアの巡回サイト自動発見を1日1回だけ自動実行（新店情報サイトが勝手に増えていく）
   try {
+    // 敷居110s: 60sだとdeadlineが+10s級になり、0クエリ0テストのまま22hスタンプだけ押す「実行したフリ」になる
     const rS = budgetMs - (Date.now() - startMs)
-    if (rS > 60000) {
+    if (rS > 110000) {
       const { data: sdCfg } = await admin.from('app_config').select('value').eq('key', 'site_discovery_last').maybeSingle()
       const lastSd = Date.parse((sdCfg?.value as any)?.at || '') || 0
       if (Date.now() - lastSd > 22 * 3600 * 1000) {
-        await runSiteDiscovery(admin, { userId: opts.userId || null, maxQueries: 8, perQuery: 8, maxTests: 15, maxAutoRegister: 5 })
+        // deadline必須: 無制限だと最悪200秒級（8クエリ+15テスト×robots/fetch）で関数300秒上限を突破し、後続のsweep/明細保存が全部飛ぶ
+        await runSiteDiscovery(admin, { userId: opts.userId || null, maxQueries: 8, perQuery: 8, maxTests: 15, maxAutoRegister: 5, deadlineMs: Date.now() + Math.min(90000, rS - 50000) })
         await admin.from('app_config').upsert({ key: 'site_discovery_last', value: { at: new Date().toISOString() }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
       }
     }
   } catch { /* noop */ }
 
   // openingDate再判定: 既存のGoogle Places候補を再評価し、開業日が入った/口コミが動いた候補をHOT化（直後のsweepが投入）
+  // 敷居75s: sweep（投入の本丸）の枠を先に確保する。45sだと「rejudgeが走った回に限りsweepの残り予算が尽きる」逆転が起きる。
   try {
     const rJ = budgetMs - (Date.now() - startMs)
-    if (mapsKey && rJ > 45000) await rejudgeExistingPlaces(admin, mapsKey, { limit: 30, nowIso: new Date().toISOString() })
+    if (mapsKey && rJ > 75000) await rejudgeExistingPlaces(admin, mapsKey, { limit: 30, nowIso: new Date().toISOString(), deadlineMs: Date.now() + Math.min(60000, rJ - 40000) })
   } catch { /* noop */ }
   let swept: any = null
   const sweepBudget = Math.min(60000, budgetMs - (Date.now() - startMs) - 20000)

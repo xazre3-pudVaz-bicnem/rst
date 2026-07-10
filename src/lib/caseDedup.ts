@@ -19,12 +19,15 @@ export async function findCaseIdByPhone(admin: any, phone?: string | null): Prom
   const digits = digitsOf(phone)
   if (digits.length < 10) return null
   const dial = digits.slice(-10)
-  // 候補をゆるく取得（保存形式が数字のみ/ハイフン有りの両方に当たるよう eq と ilike を併用）
+  const last4 = digits.slice(-4)
+  // 候補をゆるく取得: eq(そのままの形式) ＋ 連続10桁ilike（数字のみ保存向け）＋ 末尾4桁ilike。
+  // ※『03-1234-5678』等ハイフン付き保存は連続10桁のilikeに一致しない（重複を見逃して二重案件を作っていた）ため、
+  //   ハイフンを跨がない末尾4桁の後方一致で粗く引き、下の数字正規化で厳密照合する。
   const { data } = await admin
     .from('cases')
     .select('id,phone1,phone2,phone3')
-    .or(`phone1.eq.${phone},phone2.eq.${phone},phone3.eq.${phone},phone1.ilike.%${dial}%,phone2.ilike.%${dial}%,phone3.ilike.%${dial}%`)
-    .limit(30)
+    .or(`phone1.eq.${phone},phone2.eq.${phone},phone3.eq.${phone},phone1.ilike.%${dial}%,phone1.ilike.%${last4},phone2.ilike.%${last4},phone3.ilike.%${last4}`)
+    .limit(60)
   // 最終判定は数字末尾10桁の一致で確実に行う
   const hit = (data || []).find((c: any) =>
     [c.phone1, c.phone2, c.phone3].some((p) => digitsOf(p).slice(-10) === dial),

@@ -72,12 +72,14 @@ const MEDIA_FAMILY_HINT: { re: RegExp; fam: string }[] = [
 export interface DiscoveryStats { queries: number; urls: number; tested: number; saved: number; autoRegistered: number; review: number; ignore: number; alreadyRegistered: number; items: any[] }
 
 /** 自動発見の実行 */
-export async function runSiteDiscovery(admin: any, opts: { userId: string | null; maxQueries?: number; perQuery?: number; maxTests?: number; maxAutoRegister?: number }): Promise<DiscoveryStats> {
+export async function runSiteDiscovery(admin: any, opts: { userId: string | null; maxQueries?: number; perQuery?: number; maxTests?: number; maxAutoRegister?: number; deadlineMs?: number }): Promise<DiscoveryStats> {
   const stats: DiscoveryStats = { queries: 0, urls: 0, tested: 0, saved: 0, autoRegistered: 0, review: 0, ignore: 0, alreadyRegistered: 0, items: [] }
   const maxQueries = Math.min(20, Math.max(1, opts.maxQueries || 20))
   const perQuery = Math.min(10, Math.max(1, opts.perQuery || 10))
   const maxTests = Math.min(50, Math.max(1, opts.maxTests || 50))
   const maxAuto = Math.max(0, opts.maxAutoRegister ?? 10)
+  // 時間上限（自動巡回のテールから呼ばれる際、無制限だと1回で最悪200秒級＝関数の300秒上限を突破する）
+  const deadline = opts.deadlineMs || (Date.now() + 240000)
 
   // 既存サイトのドメイン集合
   const { data: sites } = await admin.from('source_sites').select('base_url,list_url').limit(2000)
@@ -88,6 +90,7 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
   // URL収集
   const urlSet = new Map<string, { url: string; title: string; snippet: string; query: string }>()
   for (const q of DISCOVERY_QUERIES.slice(0, maxQueries)) {
+    if (Date.now() > deadline - 10000) break
     stats.queries++
     const { results } = await webSearch(q, perQuery)
     for (const r of results) {
@@ -102,6 +105,7 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
   stats.urls = urlSet.size
 
   for (const cand of Array.from(urlSet.values()).slice(0, maxTests)) {
+    if (Date.now() > deadline - 16000) break  // 1件最悪 robots6s+fetch8s+DB → 残り16s未満は次回へ
     const normalized = normalizeUrl(cand.url)
     const domain = domainOf(cand.url)
     // 既存サイトと重複（normalized_url単位。同一ドメインでもパス/サブドメインが違えば別ソース）

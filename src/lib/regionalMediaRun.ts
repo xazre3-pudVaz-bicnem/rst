@@ -371,7 +371,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       if (o.candidateId) {
         await admin.from('lead_candidates').update({
           auto_insert_attempted: attempted, auto_insert_success: success, auto_insert_skipped_reason: skip || null, auto_insert_error: errMsg || null,
-          imported_case_id: caseId, ...(success ? { imported_to_cases: true, imported_at: nowIso } : {}),
+          // caseIdがnullの回（既に投入済/手動待ち等）で既存のimported_case_idをnull上書きしない（再巡回のたびにリンクが剥がれていた）
+          ...(caseId ? { imported_case_id: caseId } : {}),
+          // 既存案件へのリンク（gateの同名同市/電話重複）も投入済み扱いにする。放置するとHOT×未投入のまま毎回のsweep/ゲートを永遠に再通過する
+          ...(caseId ? { imported_to_cases: true, imported_at: nowIso } : {}),
         }).eq('id', o.candidateId).then(() => {}, () => {})
       }
       return success ? '今回投入済' : o.alreadyImported ? '既に投入済' : skip || (errMsg ? '投入失敗' : '手動投入待ち')

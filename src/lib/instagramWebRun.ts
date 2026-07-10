@@ -268,8 +268,10 @@ export async function fetchFollowersViaWebSearch(username: string): Promise<{ fo
   try {
     const { results } = await webSearch(`site:instagram.com ${username}`, 5)
     const profRe = new RegExp(`instagram\\.com/${username.replace(/\./g, '\\.')}/?(\\?|$)`, 'i')
+    // 最初のマッチで即returnしない: 1件目がフォロワー数なしのリール/バリアント結果でも後続結果に数が載ることがある
+    let matchedBio = ''
     for (const r of results) {
-      if (!profRe.test(String(r.url || '').split('#')[0]) && !new RegExp(`\\(@${username}\\)`, 'i').test(r.title || '')) continue
+      if (!profRe.test(String(r.url || '').split('#')[0]) && !new RegExp(`\\(@${username.replace(/\./g, '\\.')}\\)`, 'i').test(r.title || '')) continue
       const text = `${r.title} ${r.snippet}`
       let followers: number | null = null
       const m = text.match(/([\d,，]+(?:\.\d+)?)\s*([KkMm万])?\+?\s*(?:人)?\s*(?:Followers|followers|フォロワー)/)
@@ -281,11 +283,14 @@ export async function fetchFollowersViaWebSearch(username: string): Promise<{ fo
           if (unit === 'k') n *= 1000
           else if (unit === 'm') n *= 1000000
           else if (m[2] === '万') n *= 10000
-          if (n >= 0 && n < 100000000) followers = Math.round(n)
+          // 0はプレースホルダ/古いバリアントページの可能性があるため「既知の0」とは扱わない（未確認=null）
+          if (n > 0 && n < 100000000) followers = Math.round(n)
         }
       }
-      return { followers, bio: String(r.snippet || '').slice(0, 400) }
+      if (!matchedBio) matchedBio = String(r.snippet || '').slice(0, 400)
+      if (followers != null) return { followers, bio: matchedBio }
     }
+    return { followers: null, bio: matchedBio }
   } catch { /* noop */ }
   return { followers: null, bio: '' }
 }
@@ -590,11 +595,15 @@ JSONのみ:`
 export async function anthropicJudge(r: WebResult, enrich?: EnrichResult, username?: string): Promise<any | null> {
   const key = process.env.ANTHROPIC_API_KEY
   if (!key) return null
+  // タイムアウト必須: このfetchだけ無制限だと1件のAI判定詰まりで関数全体が300秒超過する。
+  // clearTimeoutはボディ読了後（ヘッダ到達時に解除するとres.json()のストリーム停滞が無制限になる）。
+  const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 25000)
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 600, messages: [{ role: 'user', content: buildJudgePrompt(r, enrich, username) }] }),
+      signal: ctrl.signal,
     })
     const j: any = await res.json().catch(() => ({}))
     if (!res.ok) return null
@@ -602,7 +611,7 @@ export async function anthropicJudge(r: WebResult, enrich?: EnrichResult, userna
     const m = text.match(/\{[\s\S]*\}/)
     if (!m) return null
     return JSON.parse(m[0])
-  } catch { return null }
+  } catch { return null } finally { clearTimeout(to) }
 }
 
 // ---- ヒューリスティック判定（Anthropic未使用/上限超過/失敗時のフォールバック・無料） ----
@@ -828,9 +837,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
 
         // 外部情報補完: 電話または地域が無ければ、関連サイト/予約サイト/Placesから補完
         let enrich: EnrichResult | null = null
-        // 504回避: 時間予算を超えたら補完はせず軽量判定のみ（続きは次回実行）
-        const overBudget = Date.now() - startMs > TIME_BUDGET
-        const needEnrich = enrichEnabled && !overBudget && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture || !base.address_candidate) && !base.is_foreign
+        // 504回避: 補完は1件で最大80秒級（プロフィール+Places+検索3本）かかるため、残り60秒を切ったら開始しない
+        // （TIME_BUDGET超過ちょうど手前で補完を始めると 200s+80s+AI判定 で関数上限300秒を突破する）
+        const nearBudgetEnd = Date.now() - startMs > TIME_BUDGET - 60000
+        const needEnrich = enrichEnabled && !nearBudgetEnd && enrichBudget > 0 && !!shop && (!base.phone_candidate || !baseRegion.prefecture || !base.address_candidate) && !base.is_foreign
         if (needEnrich) {
           enrich = await enrichCandidate(mapsKey, { shop, username, areaHint: baseRegion.area, industry: industry0, havePhone: base.phone_candidate || '', haveAddress: '', instagramUrl: r.url }, {
             maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent, fetchProfile: true,
@@ -998,11 +1008,15 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         if (temperature === 'HOT' && autoImportAllowed(sc.tier, iwMode) && finalPhone && candidateId && importedCount < autoImportPerDay && importedThisRun < autoImportPerRun) {
           // 投入ゲート（全ソース統一）: フォロワー1000人以上=確立済みは投入しない。
           // プロフィール取得に失敗してフォロワー数不明のままHOT化した候補が素通りしていたため、投入直前に必ず確認する。
-          let followersKnown: number | null = enrich?.profile_fetched ? (enrich?.profile_followers ?? 0) : null
+          // ※fetchInstagramProfileはログイン壁で数字が読めなくてもfollowers:0を返す（0=未確認扱いにしないと1000人超がすり抜ける）
+          let followersKnown: number | null = (enrich?.profile_fetched && (enrich?.profile_followers ?? 0) > 0) ? (enrich!.profile_followers as number) : null
           if (followersKnown == null && goodHandle && importFollowerChecks < 25 && (Date.now() - startMs) < TIME_BUDGET - 5000) {
             importFollowerChecks++
-            const prof = await fetchInstagramProfile(goodHandle).catch(() => null)
-            if (prof && typeof prof.followers === 'number') followersKnown = prof.followers
+            // 補完(enrich)で既にプロフィールを取得済みなら再fetchしない（ログイン壁で0だった直後の再取得は8秒の空焚き）
+            if (!enrich?.profile_fetched) {
+              const prof = await fetchInstagramProfile(goodHandle).catch(() => null)
+              if (prof && typeof prof.followers === 'number' && prof.followers > 0) followersKnown = prof.followers
+            }
             // IGログイン壁で読めない場合はWeb検索スニペットから確認（未確認HOLDを減らし投入量を維持）
             if (followersKnown == null) {
               const web = await fetchFollowersViaWebSearch(goodHandle)
@@ -1015,6 +1029,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
                   await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramプロフィールに多店舗/大手語（${bioMulti.hit || bioBig.hit}）のため投入対象外` }).eq('id', candidateId)
                   counts.followerExcluded = (counts.followerExcluded || 0) + 1
                   counts.hot = Math.max(0, counts.hot - 1); counts.excluded++
+                  if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
                   continue
                 }
               }
@@ -1025,12 +1040,14 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
             await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', candidateId)
             counts.followerUnknownHold = (counts.followerUnknownHold || 0) + 1
             counts.hot = Math.max(0, counts.hot - 1); counts.hold++
+            if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
             continue
           }
           if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
             await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)
             counts.followerExcluded = (counts.followerExcluded || 0) + 1
             counts.hot = Math.max(0, counts.hot - 1); counts.excluded++
+            if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
             continue
           }
           const dupCaseId = await findCaseIdByPhone(admin, finalPhone)
@@ -1042,7 +1059,10 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
             if (!gate.ok) {
               await applyGateDowngrade(admin, candidateId, gate)
               counts.gateBlocked = (counts.gateBlocked || 0) + 1
-              if (gate.action !== 'link') { counts.hot = Math.max(0, counts.hot - 1); if (gate.action === 'exclude') counts.excluded++; else counts.hold++ }
+              if (gate.action !== 'link') {
+                counts.hot = Math.max(0, counts.hot - 1); if (gate.action === 'exclude') counts.excluded++; else counts.hold++
+                if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
+              }
               continue
             }
             const memo = [`【AI自動投入 / Instagram Web(全国) / ${sc.tier}】`, `URL: ${r.url}`, `理由: ${reason}`, `クエリ: ${query}`].join('\n')

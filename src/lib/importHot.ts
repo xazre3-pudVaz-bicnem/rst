@@ -27,9 +27,11 @@ async function followersViaSerper(username: string): Promise<{ followers: number
     })
     const j: any = await res.json().catch(() => ({})); clearTimeout(to)
     const profRe = new RegExp(`instagram\\.com/${username.replace(/\./g, '\\.')}/?(\\?|$)`, 'i')
+    // 最初のマッチで即returnしない: 1件目がフォロワー数なしのリール結果でも後続結果に数が載ることがある
+    let matchedBio = ''
     for (const o of (Array.isArray(j.organic) ? j.organic : [])) {
       const text = `${o.title || ''} ${o.snippet || ''}`
-      if (!profRe.test(String(o.link || '').split('#')[0]) && !new RegExp(`\\(@${username}\\)`, 'i').test(o.title || '')) continue
+      if (!profRe.test(String(o.link || '').split('#')[0]) && !new RegExp(`\\(@${username.replace(/\./g, '\\.')}\\)`, 'i').test(o.title || '')) continue
       let followers: number | null = null
       const m = text.match(/([\d,，]+(?:\.\d+)?)\s*([KkMm万])?\+?\s*(?:人)?\s*(?:Followers|followers|フォロワー)/) || text.match(/フォロワー\s*([\d,，]+(?:\.\d+)?)\s*([KkMm万])?/)
       if (m) {
@@ -39,11 +41,14 @@ async function followersViaSerper(username: string): Promise<{ followers: number
           if (unit === 'k') n *= 1000
           else if (unit === 'm') n *= 1000000
           else if (m[2] === '万') n *= 10000
-          if (n >= 0 && n < 100000000) followers = Math.round(n)
+          // 0はプレースホルダ/古いバリアントページの可能性があるため「既知の0」とは扱わない（未確認=null）
+          if (n > 0 && n < 100000000) followers = Math.round(n)
         }
       }
-      return { followers, bio: String(o.snippet || '').slice(0, 400) }
+      if (!matchedBio) matchedBio = String(o.snippet || '').slice(0, 400)
+      if (followers != null) return { followers, bio: matchedBio }
     }
+    return { followers: null, bio: matchedBio }
   } catch { /* noop */ }
   return { followers: null, bio: '' }
 }
@@ -154,10 +159,12 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     }
     // 1.28) 同名×同市の既存案件 = 電話違いの同一店 → 二重投入せずリンク
     if (c.name && c.name !== '店名未確定') {
-      const cityM = String(address).match(/[一-龥ぁ-んァ-ヶ0-9０-９]{1,8}[市区町村]/)
+      // 都道府県を先に消費してから市区を取る（『東京都千代田区』を市区トークンにすると県なし住所の案件とマッチしなくなる）
+      const cityM = String(address).match(/(?:北海道|東京都|(?:京都|大阪)府|[一-龥]{2,3}県)?([一-龥ぁ-んァ-ヶ0-9０-９]{1,8}?[市区町村])/)
+      const cityTok = cityM?.[1] || ''
       const { data: sameName } = await admin.from('cases').select('id,name,address').ilike('name', c.name).limit(3)
       const normNm = (s: string) => String(s || '').replace(/[\s　・&＆'’\-－ー()（）【】\[\]]/g, '').toLowerCase()
-      const hitCase = (sameName || []).find((x: any) => normNm(x.name) === normNm(c.name) && (!cityM || String(x.address || '').includes(cityM[0])))
+      const hitCase = (sameName || []).find((x: any) => normNm(x.name) === normNm(c.name) && (!cityTok || String(x.address || '').includes(cityTok)))
       if (hitCase) {
         await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: hitCase.id, auto_insert_skipped_reason: '同名同市の既存案件があるためリンク（二重投入防止）' }).eq('id', c.id)
         linkedDup++; continue
@@ -215,7 +222,8 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       if (igLookups >= MAX_IG || Date.now() >= deadline - 3500) { skipped++; continue }  // 予算切れ: 次回のフォロワー確認へ持ち越し
       igLookups++
       const prof = await fetchInstagramProfile(igUser).catch(() => null)
-      let followers = prof && typeof prof.followers === 'number' ? prof.followers : null
+      // ※fetchInstagramProfileはログイン壁で読めなくてもfollowers:0を返す。0=未確認としてfallbackへ（1000人超のすり抜け防止）
+      let followers = prof && typeof prof.followers === 'number' && prof.followers > 0 ? prof.followers : null
       if (followers == null) {
         const web = await followersViaSerper(igUser)  // Webスニペットfallback
         followers = web.followers
@@ -236,8 +244,11 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     } else if (igUser && igLookups < MAX_IG && Date.now() < deadline - 3500) {
       igLookups++
       const prof = await fetchInstagramProfile(igUser).catch(() => null)
-      const followers = prof?.followers || 0
-      if (followers >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
+      // 非IGソースは「確認できたら除外」の任意チェック（未確認はHOLDにしない）。
+      // ただしログイン壁でprofが0のときはWebスニペットでも確認する（1000人超の大手すり抜け防止）
+      let followers = prof && typeof prof.followers === 'number' && prof.followers > 0 ? prof.followers : null
+      if (followers == null && Date.now() < deadline - 3500) followers = (await followersViaSerper(igUser)).followers
+      if ((followers ?? 0) >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
         await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followers}人(1000人以上=確立済み)のため投入対象外` }).eq('id', c.id)
         reviewExcluded++; continue
       }
@@ -245,11 +256,17 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     // 2) 既存案件と電話重複なら、二重投入せず候補をリンク。
     //    ※桁が欠けた部分番号(%digits%)は無関係な案件に誤マッチして"重複扱い"で新店を握り潰すため、
     //      完全な10/11桁のときだけ末尾10桁で照合する。
+    //    ※phone1は『03-1234-5678』等ハイフン付きで保存されるため、連続10桁のilikeでは一致しない。
+    //      ハイフンを跨がない末尾4桁で粗く引いてから数字正規化で厳密照合する。
     const digits = onlyDigits(phone)
     const dial = digits.slice(-10)
-    const exCase = (digits.length === 10 || digits.length === 11)
-      ? (await admin.from('cases').select('id').ilike('phone1', `%${dial}%`).limit(1)).data
-      : null
+    let exCase: any[] | null = null
+    if (digits.length === 10 || digits.length === 11) {
+      // 末尾アンカー（%last4）: 電話番号は末尾4桁で終わるため後方一致で十分。%last4%だと市外局番等の中間4桁にも
+      // 当たり、候補件数がlimitを超えて真の重複がページ外に落ちる（重複案件を作る）リスクが上がる
+      const { data: rough } = await admin.from('cases').select('id,phone1').ilike('phone1', `%${digits.slice(-4)}`).limit(60)
+      exCase = (rough || []).filter((x: any) => onlyDigits(String(x.phone1 || '')).endsWith(dial)).slice(0, 1)
+    }
     if (exCase?.[0]) {
       await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: exCase[0].id, auto_insert_skipped_reason: '既存案件と電話重複のためリンク' }).eq('id', c.id)
       linkedDup++; continue

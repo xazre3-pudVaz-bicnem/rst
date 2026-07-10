@@ -359,15 +359,14 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   if (nationwide && !testFixed) {
     const inds = industries.length ? industries : getDefaultSettings().industries
     const mixPerRun = Math.max(0, Math.min(40, Number(rawSettings?.placesMixPerRun ?? 22)))
+    const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
+    gpRunCntForMix = rc || 0
     // ホットスポット増幅: 直近2週間でHOT投入が出た市区×業種を毎回先頭に混ぜる（勝ちエリアへ自動で倍賭け）
     try {
       const hotCities = await getHotCities(admin, { days: 14, max: 8 })
-      const { count: rc0 } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
-      hotCities.forEach((city, i) => mixQueries.push({ query: `${city} ${inds[((rc0 || 0) + i) % inds.length]}`, isNewOpen: false, area: city, industry: inds[((rc0 || 0) + i) % inds.length] }))
+      hotCities.forEach((city, i) => mixQueries.push({ query: `${city} ${inds[(gpRunCntForMix + i) % inds.length]}`, isNewOpen: false, area: city, industry: inds[(gpRunCntForMix + i) % inds.length] }))
     } catch { /* noop */ }
     const totalCombos = MIX_CITIES.length * inds.length
-    const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'google_places')
-    gpRunCntForMix = rc || 0
     const start = (gpRunCntForMix * mixPerRun) % Math.max(1, totalCombos)
     for (let i = 0; i < mixPerRun; i++) {
       const idx = (start + i) % totalCombos
@@ -382,10 +381,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
   // ローテーション: 7日以内に実行済みのクエリはスキップ、未実行/古いものから dayCap 件
   let recentSet = new Set<string>()
+  const lastRunBy = new Map<string, number>()
   if (useRotation) {
     const since = new Date(Date.now() - 7 * 86400000).toISOString()
-    const { data } = await admin.from('lead_query_log').select('query').gte('last_run_at', since).limit(5000)
-    recentSet = new Set((data || []).map((r: any) => r.query))
+    const { data } = await admin.from('lead_query_log').select('query,last_run_at').gte('last_run_at', since).limit(5000)
+    for (const r of (data || []) as any[]) { recentSet.add(r.query); lastRunBy.set(r.query, Date.parse(r.last_run_at || 0) || 0) }
   }
   // 真の日次上限: 今日実行済みクエリ数を数え、残り枠だけ実行（以前はdayCapが1回あたり上限として働き、
   // 2時間おき巡回×回数で上限が実質無効＝コスト暴走の恐れがあった）
@@ -393,7 +393,11 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   const { count: ranTodayQ } = await admin.from('lead_query_log').select('query', { count: 'exact', head: true }).gte('last_run_at', startTodayQ.toISOString())
   const remainingToday = Math.max(0, dayCap - (ranTodayQ || 0))
   let picked = allQueries.filter((q) => !recentSet.has(q.query)).slice(0, remainingToday)
-  if (picked.length === 0 && remainingToday > 0) picked = allQueries.slice(0, remainingToday) // 全部最近実行済みなら先頭から
+  // 全部7日以内に実行済み（ミックス巡回周期6.5日<7日のため定常的に起きる）→ 先頭固定スライスだと
+  // 毎回同じクエリ群に日次上限を全部使い続けるため、「最後に実行してから最も古い順」で選ぶ
+  if (picked.length === 0 && remainingToday > 0) {
+    picked = [...allQueries].sort((a, b) => (lastRunBy.get(a.query) ?? 0) - (lastRunBy.get(b.query) ?? 0)).slice(0, remainingToday)
+  }
 
   const counts = {
     fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, duplicate: 0, error: 0,
@@ -824,23 +828,34 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
 
 /** 既存のGoogle Places候補を Place Details(New) で再取得し、openingDate最優先で再判定（item9）。
  *  対象: place_id あり ＆ (openingDate未取得 or 口コミ31件以上 or HOLD/EXCLUDED)。コスト制御で上限あり。 */
-export async function rejudgeExistingPlaces(admin: any, apiKey: string, opts: { limit?: number; nowIso: string }): Promise<{ scanned: number; detailed: number; updated: number; openingFound: number; hotB: number; excluded: number; caseUpdated: number }> {
+export async function rejudgeExistingPlaces(admin: any, apiKey: string, opts: { limit?: number; nowIso: string; deadlineMs?: number }): Promise<{ scanned: number; detailed: number; updated: number; openingFound: number; hotB: number; excluded: number; caseUpdated: number }> {
   const limit = Math.min(300, Math.max(1, opts.limit || 100))
+  // 時間上限（未指定でも Details 10s×limit で300秒上限を突破しない既定値を置く）
+  const deadline = opts.deadlineMs || (Date.now() + 90000)
+  // 「再確認が最も古い候補」から回す。並び指定なしだと同じ先頭N件（HOLD/EXCLUDEDは更新後も条件に一致し続ける）を
+  // 毎回再Detailsして他の候補が永遠に再判定されない＋Detailsコストの空焚きになる。
   const { data: rows } = await admin.from('lead_candidates')
     .select('id,name,address,phone_number,google_place_id,user_rating_count,imported_to_cases,imported_case_id,lead_temperature,is_new_gbp,has_google_opening_date')
     .not('google_place_id', 'is', null)
     .or('has_google_opening_date.is.null,has_google_opening_date.eq.false,user_rating_count.gte.31,lead_temperature.eq.HOLD,lead_temperature.eq.EXCLUDED')
+    .order('opening_date_checked_at', { ascending: true, nullsFirst: true })
     .limit(limit)
   const cases = await fetchCases(admin)
   let scanned = 0, detailed = 0, updated = 0, openingFound = 0, hotB = 0, excluded = 0, caseUpdated = 0
   for (const r of (rows || [])) {
+    if (Date.now() > deadline - 12000) break  // 1件最悪 Details10s+DB → 残り12s未満は次回へ
     scanned++
     const pid = r.google_place_id
     if (!pid) continue
     const p = await placeDetails(apiKey, pid)
     await new Promise((rs) => setTimeout(rs, 120))
     detailed++
-    if (!p) continue
+    if (!p) {
+      // 失敗行にも再確認日時を押す。押さないとnullsFirst並びの先頭に居座り続け、
+      // 死んだplace_id 30件だけを毎回再Detailsして他の候補が永遠に再判定されない
+      await admin.from('lead_candidates').update({ opening_date_checked_at: opts.nowIso }).eq('id', r.id).then(() => {}, () => {})
+      continue
+    }
     const og = parseGoogleOpening(p.openingDate, p.businessStatus)
     if (og.has) openingFound++
     const { latest, oldest } = reviewDates(p)

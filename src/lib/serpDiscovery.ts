@@ -251,7 +251,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const closed = detectNegative(bodyStrip.slice(0, 3000))
         const d = extractDetail(html)
         // プレスリリース/記事タイトルの断片が店名に紛れるのを防ぐ: 「◯◯店が2026年8月25日（火）…」→「◯◯店」
-        d.name = d.name.replace(/(?:が|は|を|、)?s*20d{2}年.*$/, '').replace(/（[月火水木金土日祝・]{1,3}）.*$/, '').trim()
+        d.name = d.name.replace(/(?:が|は|を|、)?\s*20\d{2}年.*$/, '').replace(/（[月火水木金土日祝・]{1,3}）.*$/, '').trim()
         // 新店根拠: 着地ページ本文＋タイトル＋スニペットに新規性の文脈があるか（クエリ由来だけを信用しない）。
         // 新店ワード＋開業日＋新HP公開＋取得元別シグナル（新入会員/制作実績/施工中 等）を広くカバーし、
         // 各取得元が正当な根拠でHOTになれるようにする（狭すぎると全部HOLDで投入ゼロになる）。
@@ -297,7 +297,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // SERPはノイズが多いため、HOTは「実店舗名が確定 or Google Places一致」を要件に追加（店名未確定だけのノイズはHOLD）。
         const noiseText = `${name} ${rr.title || ''} ${rr.snippet || ''}`
         const portalNoise = closed.portal || /ツール|まとめ記事|ランキング|比較サイト|一覧表|収集|代行業者|料金表|求人サイト|ポータル|事業者様|業者向け|toB|BtoB|システム|アプリ/.test(noiseText)
-        const genericName = !sn.valid || /^(店舗|お店|新規オープン|ショップ|サロン|クリニック|会社|お知らせ|ニュース)$/.test(name) || /20d{2}年|d{1,2}月d{1,2}日/.test(name)
+        const genericName = !sn.valid || /^(店舗|お店|新規オープン|ショップ|サロン|クリニック|会社|お知らせ|ニュース)$/.test(name) || /20\d{2}年|\d{1,2}月\d{1,2}日/.test(name)
         const shopConfirmed = (sn.valid && !genericName) || !!matchedPlaceId
         // 共通ハード除外（フリーダイヤル/○○店支店/大手量販モール/2店舗以上FC/大手チェーン/記事まとめ）を全ソース一貫適用
         const hardEx = hardExcludeReason({ name, phone, text: `${d.name} ${rr.title || ''} ${rr.snippet || ''}` })
@@ -320,7 +320,16 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // （店名/電話/住所）が載っている宝庫。見出し(h2/h3)単位で店舗ブロックを抽出し、それぞれ候補化する。
         const matomeTitle = /まとめ|ランキング|特集|\d+選|新店(?:情報|ラッシュ|続々)/.test(`${rr.title || ''} ${d.name}`)
         const uniqPhones = Array.from(new Set((bodyStrip.match(/0\d{1,3}[-(]?\d{2,4}[-)]?\d{3,4}/g) || []).map((p) => p.replace(/\D/g, '')).filter((p) => p.length >= 10)))
-        if (matomeTitle && hasNewness && uniqPhones.length >= 2 && !pageAgeVeryOld && !pageAgeOld && remain() > 22000) {
+        const matomeWorthy = matomeTitle && hasNewness && uniqPhones.length >= 2 && !pageAgeVeryOld && !pageAgeOld
+        if (matomeWorthy && remain() <= 22000) {
+          // 予算不足で展開できない: 既読マークを取り消して次回（手動/ブースト等の大予算実行）で展開する。
+          // ※自動巡回はrunBudgetMs=22sのため常にここに入る。stopAll/breakにするとmatomeページ1枚で
+          //   ソース全体が毎回中断→無限リトライになる（実績あり）ので、このページだけスキップして続行する。
+          await admin.from('discovery_seen_urls').delete().eq('source_type', sourceType).eq('url_hash', h).then(() => {}, () => {})
+          counts.matomeDeferred = (counts.matomeDeferred || 0) + 1
+          continue
+        }
+        if (matomeWorthy && remain() > 22000) {
           const sections = html.split(/<h[23][^>]*>/i).slice(1, 14).map((sec) => {
             const end = sec.search(/<\/h[23]>/i)
             const heading = strip(end >= 0 ? sec.slice(0, end) : sec.slice(0, 120)).slice(0, 50)
@@ -332,10 +341,13 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             .filter((s2) => s2.phone && s2.name.length >= 2)
             .slice(0, 6)
           if (stores.length >= 2) {
-            const exp = await ingestExtractedStores(admin, mapsKey, stores, { sourceType, label: `${def.label}(まとめ展開)`, signalType: def.signalType, sourceUrl: url, evidenceIso: hpPub.iso, userId, runId, budgetEndMs: startMs + budgetMs })
+            const exp = await ingestExtractedStores(admin, mapsKey, stores, { sourceType, label: `${def.label}(まとめ展開)`, signalType: def.signalType, sourceUrl: url, evidenceIso: hpPub.iso, userId, runId, budgetEndMs: startMs + budgetMs, maxImports: Math.max(0, autoImportPerRun - importedThisRun) })
             counts.matomeExpanded = (counts.matomeExpanded || 0) + (exp.processed || 0)
             counts.hot += exp.hot || 0; counts.hotB += exp.hotB || 0; counts.hold += exp.hold || 0; counts.excluded += exp.excluded || 0; counts.imported += exp.imported || 0; counts.saved += exp.saved || 0
+            importedThisRun += exp.imported || 0
             if (exp.importedCases?.length) importedCases.push(...exp.importedCases)
+            // 予算切れで展開しきれなかった場合は既読マークを取り消し、次回このページを再展開できるようにする（残り店舗の永久喪失防止）
+            if (!exp.processedAll) await admin.from('discovery_seen_urls').delete().eq('source_type', sourceType).eq('url_hash', h).then(() => {}, () => {})
             if (debug.samples.length < 12) debug.samples.push({ url, name: `まとめ展開×${stores.length}`, phone: '', address: '', temperature: `HOT${exp.hot || 0}/投入${exp.imported || 0}` })
             continue
           }
