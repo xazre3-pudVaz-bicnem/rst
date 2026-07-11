@@ -1055,7 +1055,8 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
             await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: dupCaseId }).eq('id', candidateId)
           } else {
             // 統一投入前ゲート（既存店/共有番号/地域不一致/同名同市/チェーン 等の最終関門・全ソース共通）
-            const gate = await caseImportGate(admin, { name, phone: finalPhone, address: addressVal || '', text: `${r.title} ${r.snippet}`.slice(0, 300), mapsKey, budgetEndMs: startMs + TIME_BUDGET })
+            // igFollowers: 0/未確認はnullで渡す規約（0はログイン壁で読めなかった可能性があり「既知の0」と扱わない）
+            const gate = await caseImportGate(admin, { name, phone: finalPhone, address: addressVal || '', text: `${r.title} ${r.snippet}`.slice(0, 300), mapsKey, budgetEndMs: startMs + TIME_BUDGET, igFollowers: followersKnown && followersKnown > 0 ? followersKnown : null })
             if (!gate.ok) {
               await applyGateDowngrade(admin, candidateId, gate)
               counts.gateBlocked = (counts.gateBlocked || 0) + 1

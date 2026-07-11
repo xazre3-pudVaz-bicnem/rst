@@ -61,6 +61,20 @@ export function computeSalesPriority(c: any, signalTypes: string[] = [], web?: W
   }
 }
 
+/** 開業への近接度（小さいほど開業に近い）。sweep投入順・開業予定キューの処理順で共用する共通コンパレータ。
+ *  なぜ専用関数か: DBのorderだけでは「duo負値がascで先頭に来る」「gradeは辞書順でSが末尾」等の並び崩れが
+ *  避けられないため、JS側で開業タイミングへの距離を単一の数直線に射影する。
+ *  duo>=0（開業前）はそのまま残日数、開業直後(dso 0〜30)は開業予定45日先の直後に並ぶよう46+dso、
+ *  FUTURE_OPENINGで日付不明は「予定30日先」相当とみなし30、開業根拠なしは999。 */
+export function openProx(c: { days_until_opening?: number | null; days_since_opening?: number | null; google_business_status?: string | null }): number {
+  const duo = c?.days_until_opening == null ? NaN : Number(c.days_until_opening)
+  const dso = c?.days_since_opening == null ? NaN : Number(c.days_since_opening)
+  if (Number.isFinite(duo) && duo >= 0) return duo
+  if (Number.isFinite(dso) && dso >= 0 && dso <= 30) return 46 + dso
+  if (c?.google_business_status === 'FUTURE_OPENING') return 30
+  return 999
+}
+
 const SIGNAL_LABEL: Record<string, string> = {
   future_opening: '開業予定', opening_date: '開業直後', new_gbp: '新規GBP', portal_published_date: 'ポータル公開日が直近', press_release: 'プレスリリース',
   official_news: '公式サイトのオープン告知', new_article: '新店記事', job_opening: 'オープニング求人', construction_signal: '開業準備ワード', construction_case: '内装/看板の施工事例',

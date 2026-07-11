@@ -9,8 +9,8 @@ import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } fro
 import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
-import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate } from './directoryParser.js'
-import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, sanitizeShopName, extractShopFromTitle, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
+import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate, extractOpeningDateFromText } from './directoryParser.js'
+import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, parseGoguynetShopInfo, extractMainContent, sanitizeShopName, extractShopFromTitle, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { autoImportAllowed, scoreCandidate, tierToTemperature, type InjectMode, type HotTier } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
@@ -875,10 +875,29 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         if (aRes.timedOut) { counts.timeouts++; diag.timeouts++ }
         const html = aRes.ok ? aRes.html : null
         await sleep(delay)
-        const body = html ? stripTags(html) : ''
+        // 本文抽出は記事エリア優先: サイドバー/広告/関連記事の電話・住所を誤認しない。
+        // extractMainContentが過剰除去したとき（<300字）は全文へフォールバック。
+        // 4000→6000字: 実測で記事末尾の店舗情報（住所4600字目等）が4000字切りで物理的に欠落していた
+        const mainText = html ? stripTags(extractMainContent(html)) : ''
+        const body = mainText.length >= 300 ? mainText : (html ? stripTags(html) : '')
         const meta = html ? articleMeta(html) : { published_at: null, excerpt: '', title: '' }
         const bestTitle = meta.title && meta.title.length >= link.title.length ? meta.title : (link.title || meta.title)
-        const ex = extractFromArticle(bestTitle, body.slice(0, 4000))
+        let ex = extractFromArticle(bestTitle, body.slice(0, 6000))
+        // 記事エリア限定で電話も住所も取れなかった場合は全文で再抽出（店舗情報が<article>外にあるサイトの黙殺防止）
+        if (!ex.phone && !ex.address && html && mainText.length >= 300) {
+          const exFull = extractFromArticle(bestTitle, stripTags(html).slice(0, 6000))
+          if (exFull.phone || exFull.address) ex = exFull
+        }
+        // 号外NET系のCMS定型「店舗情報」ブロック（店名/住所/電話/営業時間/リンク）を構造化直取り。
+        // 見出し断片から店名を推測するより桁違いに正確。ブロックが無いサイトは found:false で従来フロー
+        const gg = html ? parseGoguynetShopInfo(html) : null
+        const ggSn = gg?.name ? sanitizeShopName(gg.name, { placesMatched: true }) : null
+        // 店名の最優先はCMS定型ブロック（shop-info-name）由来のみ。マップ埋め込み由来は精度が落ちるため
+        // Places正式名/記事抽出より弱い最終フォールバックとして扱う
+        const ggName = ggSn?.valid && gg?.nameFromBlock ? ggSn.name : ''
+        const ggNameWeak = ggSn?.valid && !gg?.nameFromBlock ? ggSn.name : ''
+        // テキスト由来の開業日（タイトル/抜粋/抽出開店日から。Google補完値があればそちら優先で下のpayloadにて解決）
+        const odText = extractOpeningDateFromText(`${bestTitle} ${meta.excerpt || ''} ${ex.open_date || ''} ${body.slice(0, 3000)}`, { publishedIso: meta.published_at })
 
         const publishedMs = meta.published_at ? Date.parse(meta.published_at) : NaN
         const pubKnown = !Number.isNaN(publishedMs)
@@ -900,11 +919,11 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         // 保存条件: 公開日が判明していて3日(=saveDays)より古いものは lead_candidates に保存しない
         if (tooOld) { diag.tooOld = (diag.tooOld || 0) + 1; continue }
 
-        // 外部情報補完（記事だけで電話なし/エリア不明を確定しない）。電話or住所が無ければ実行
+        // 外部情報補完（記事だけで電話なし/エリア不明を確定しない）。構造化ブロック(gg)で埋まっていれば補完不要
         let enrich: any = null
-        const needEnrich = enrichEnabled && enrichBudget > 0 && !!ex.shop_name && (!ex.phone || !ex.address) && !ex.is_chain && !ex.is_mall
+        const needEnrich = enrichEnabled && enrichBudget > 0 && !!(ggName || ex.shop_name) && (!(ex.phone || gg?.phone) || !(ex.address || gg?.address)) && !ex.is_chain && !ex.is_mall
         if (needEnrich) {
-          enrich = await enrichCandidate(mapsKey, { shop: ex.shop_name, username: '', areaHint: ex.area || '', industry: ex.industry || '', havePhone: ex.phone || '', haveAddress: ex.address || '' }, {
+          enrich = await enrichCandidate(mapsKey, { shop: ggName || ex.shop_name, username: '', areaHint: gg?.address || ex.area || '', industry: ex.industry || '', havePhone: ex.phone || gg?.phone || '', haveAddress: ex.address || gg?.address || '' }, {
             maxQueries: enrichMaxQueries, perQuery: enrichPerQuery, skipQuery: enrichRecent,
             onQuery: (qq: string) => { counts.enrichQueries++; diag.enrichQueries = (diag.enrichQueries || 0) + 1; enrichQueriesToLog.add(qq) },
           })
@@ -919,16 +938,16 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const placeMatched = !!matchedPlaceId
         if (placeMatched) counts.placeMatched++
 
-        // マージ（記事 → 補完）。記事の都道府県とPlaces住所の都道府県が食い違う場合はHOLD寄りに
-        const phone = ex.phone || enrich?.phone || ''
-        const address = ex.address || enrich?.address || null
+        // マージ（記事 → 構造化ブロック(gg) → 補完）。記事の都道府県とPlaces住所の都道府県が食い違う場合はHOLD寄りに
+        const phone = ex.phone || gg?.phone || enrich?.phone || ''
+        const address = ex.address || gg?.address || enrich?.address || null
         const prefecture = enrich?.prefecture || null
         const city = enrich?.city || null
         const areaMerged = ex.area || [prefecture, city].filter(Boolean).join('') || null
-        const officialVal = enrich?.official || null
+        const officialVal = enrich?.official || gg?.officialUrl || null
         const reservationVal = enrich?.reservation || null
         const lineVal = enrich?.line || null
-        const instagramVal = enrich?.instagram || null
+        const instagramVal = enrich?.instagram || gg?.instagramUrl || null
         if (phone) counts.phoneYes++
 
         // 判定: HOTは店名＋電話＋（住所/市区町村 または Google開業日）必須（甘くしない）
@@ -938,10 +957,10 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const haveArea = !!(areaMerged || address)
         const strongOpening = !!enrich?.has_opening  // Google openingDate / FUTURE_OPENING
         const openNote = strongOpening ? `Google開業日(${enrich.opening_raw}${enrich.business_status === 'FUTURE_OPENING' ? '・開業予定' : ''})` : ''
-        // 店名: Google Places正式名 > 記事抽出(整形) > 記事タイトルから「」内を切り出し（タイトル全文は使わない）
+        // 店名: 構造化ブロック(gg=CMS公式値) > Google Places正式名 > 記事抽出(整形) > タイトル「」内
         const sn = sanitizeShopName(ex.shop_name || '', { placesMatched: !!placeMatched })
         const fromTitle = sn.valid ? '' : extractShopFromTitle(bestTitle || '')
-        const shopName = (placeMatched && enrich?.place_name) ? enrich.place_name : (sn.valid ? sn.name : (fromTitle || ''))
+        const shopName = ggName || ((placeMatched && enrich?.place_name) ? enrich.place_name : (sn.valid ? sn.name : (fromTitle || ggNameWeak || '')))
         const nameValid = !!shopName
         const nameReason = nameValid ? '' : (sn.reason || '店名抽出失敗')
         // 日本国外は除外（海外住所/海外電話）
@@ -1043,12 +1062,23 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           enriched_reservation_url: enrich?.reservation || null, enriched_line_url: enrich?.line || null,
           enriched_google_place_id: enrich?.place_id || null, enrichment_reason: enrich?.reason || null,
           enrichment_confidence: enrich?.confidence ?? null, last_enriched_at: enrich ? nowIso : null,
-          // Google openingDate / businessStatus（補完経由）
+          // Google openingDate / businessStatus（補完経由）。開業日フィールド群は「Google一式 or テキスト一式」の
+          // 二者択一でマージする（フィールド単位の??混合は禁止: enrichはGoogle開業日なしでもopening_confidence:0を
+          // 返すため0がテキスト確度を潰す／duoとdsoが別系統から混ざり「両方非null」の規約違反行ができる／
+          // テキスト日付がsource='external_enrichment'として裏取り済みに化ける、の3事故が実際に起きた）
           google_business_status: enrich?.business_status || null, google_opening_date_raw: enrich?.opening_raw || null,
           google_opening_date_year: enrich?.opening_year ?? null, google_opening_date_month: enrich?.opening_month ?? null, google_opening_date_day: enrich?.opening_day ?? null,
-          has_google_opening_date: enrich?.has_opening || false, opening_date_confidence: enrich?.opening_confidence ?? null,
-          days_until_opening: enrich?.days_until_opening ?? null, days_since_opening: enrich?.days_since_opening ?? null,
-          opening_date_source: enrich?.has_opening ? 'external_enrichment' : null,
+          has_google_opening_date: enrich?.has_opening || false,
+          ...(enrich?.has_opening ? {
+            opening_date_confidence: enrich.opening_confidence ?? null,
+            days_until_opening: enrich.days_until_opening ?? null, days_since_opening: enrich.days_since_opening ?? null,
+            opening_date_source: 'external_enrichment',
+            ...(enrich.opening_year && enrich.opening_month ? { opening_date: `${enrich.opening_year}-${String(enrich.opening_month).padStart(2, '0')}-${String(enrich.opening_day || 1).padStart(2, '0')}` } : {}),
+          } : odText ? {
+            opening_date: odText.iso, opening_date_source: `article_text_${odText.precision}`, opening_date_confidence: odText.confidence,
+            days_until_opening: odText.daysUntil, days_since_opening: odText.daysSince,
+          } : {}),
+          business_hours: gg?.hours || null,
           google_places_checked_at: enrich?.place_id ? nowIso : null, opening_date_checked_at: enrich?.has_opening ? nowIso : null,
           google_place_id: matchedPlaceId, matched_google_place_id: matchedPlaceId, match_confidence: enrich?.confidence ?? null,
           last_seen_at: nowIso, source_run_id: runId,

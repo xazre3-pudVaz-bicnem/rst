@@ -19,6 +19,7 @@ import { autoImportAllowed, type InjectMode } from './hotTier.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 import { ingestExtractedStores } from './newSourceEngines.js'
+import { extractOpeningDateFromText } from './directoryParser.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { DEFAULT_STATUS } from './constants.js'
 
@@ -279,6 +280,8 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // 記事/告知の公開日を全ページで抽出（新店根拠の鮮度検証・signal日付・スコアの実鮮度に使用）
         let hpEvidence = false
         const hpPub: { iso: string | null; daysAgo: number | null } = extractPublishDate(html, bodyStrip, Date.now())
+        // 開業日そのものをテキストから抽出（記事公開日≠開業日。「7月15日グランドオープン」等 → 開業予定キュー/再コールへ接続）
+        const od = extractOpeningDateFromText(`${rr.title || ''} ${rr.snippet || ''} ${d.name} ${bodyStrip.slice(0, 6000)}`, { publishedIso: hpPub.iso })
         let wq: ReturnType<typeof analyzeWebQuality> | null = null
         const hasOfficialUrl = !!official && /^https?:\/\//.test(official) && !/instagram\.com|facebook\.com|twitter\.com|x\.com|prtimes\.jp|tiktok\.com|threads\.net/i.test(official)
         if (isHp) {
@@ -310,6 +313,8 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         // 記事日付ゲート（isHp以外の全SERP共通）: 「オープンしました」記事が古い＝もう新店ではない。1年超はEXCLUDED・90日超はHOLD。
         const pageAgeVeryOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 365
         const pageAgeOld = !isHp && hpPub.daysAgo != null && hpPub.daysAgo > 90
+        // 開業日ベースの鮮度ガード: 記事は新しくても開業自体が90日超前（回顧/紹介記事）はもう新店ではない
+        const openStale = !isHp && !!od && od.confidence >= 70 && od.daysSince != null && od.daysSince > 90
         // 電話×住所の地域整合: 固定電話の市外局番が住所の都道府県と不一致＝別店舗/本社番号の誤抽出の疑い（HOT禁止）
         const pmMismatch = phoneAddressMatch(phone, address) === 'mismatch'
         // プレスリリース配信サイトは掲載住所/電話が「発行元(本社)」であることが多い → Google Places裏取りが無ければHOTにしない
@@ -358,10 +363,10 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
         else if (dateHardOld || pageAgeVeryOld) { temperature = 'EXCLUDED'; counts.hpOldExcluded = (counts.hpOldExcluded || 0) + 1 }
         // HOT要件: 電話+実店舗住所+日本+実店舗名確定+新店(新HP)根拠+記事鮮度+電話地域整合。HP取得元はさらに公式URL＋公開7日以内が必須。
-        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !pmMismatch && (!prSource || matchedPlaceId)) {
+        else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !openStale && !pmMismatch && (!prSource || matchedPlaceId)) {
           temperature = 'HOT'; hotTier = 'B'; if (isHp) counts.hpRecent = (counts.hpRecent || 0) + 1
-          // Places裏取り＋直近30日以内の記事（or HP7日以内）= 確度が高い → HOT-A（優先架電）
-          if (matchedPlaceId && ((hpPub.daysAgo != null && hpPub.daysAgo <= 30) || (isHp && recencyOk))) hotTier = 'A'
+          // Places裏取り＋「直近30日以内の記事 or HP7日以内 or 高確度の開業日（開業前/開業30日以内）」= 確度が高い → HOT-A（優先架電）
+          if (matchedPlaceId && ((hpPub.daysAgo != null && hpPub.daysAgo <= 30) || (isHp && recencyOk) || (od && od.confidence >= 75 && (od.daysUntil != null || (od.daysSince != null && od.daysSince <= 30))))) hotTier = 'A'
         }
         else {
           temperature = 'HOLD'
@@ -369,6 +374,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
             : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし'
             : pmMismatch ? `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）`
             : pageAgeOld ? `新店記事が${hpPub.daysAgo}日前（90日超=新店鮮度切れ）`
+            : openStale ? `開業日が${od!.daysSince}日前（90日超=新店鮮度切れ。記事日付でなく開業日基準）`
             : (prSource && !matchedPlaceId) ? 'プレスリリース由来はGoogle Places裏取り必須（掲載住所/電話が発行元の可能性）'
             : (requireOfficial && !hasOfficialUrl) ? '公式サイトURL未確定'
             : !newnessOk ? (isHp ? '新HP公開の根拠が本文で確認できず' : '新店根拠が本文で確認できず')
@@ -378,6 +384,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
           if (isHp) { if (requireOfficial && !hasOfficialUrl) counts.holdNoOfficial = (counts.holdNoOfficial || 0) + 1; if (dateUnknown) counts.holdDateUnknown = (counts.holdDateUnknown || 0) + 1 }
           if (pmMismatch) counts.phonePrefMismatch = (counts.phonePrefMismatch || 0) + 1
           if (pageAgeOld) counts.staleArticleHold = (counts.staleArticleHold || 0) + 1
+          if (openStale) counts.openStaleHold = (counts.openStaleHold || 0) + 1
         }
         if (temperature === 'HOT') counts.hot++
         else if (temperature === 'EXCLUDED') counts.excluded++
@@ -397,6 +404,17 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
           auto_insert_skipped_reason: temperature === 'HOLD' && holdReason ? holdReason : null,
           // 新HP公開: HOT/HOLDには営業角度メモを付与（案件投入時にcaseメモへ転記される）
           ...(isHp && (temperature === 'HOT' || temperature === 'HOLD') ? { call_memo: buildHpSalesAngle(hpPub.iso, hpPub.daysAgo, wq, official) } : {}),
+          // 開業日: Google補完(enrich)由来を最優先、無ければ記事テキスト抽出。テキスト由来は精度をsourceに符号化
+          // （article_text_day/part/month）→ 開業予定キューが確度/精度ゲートに使う
+          ...(enrich?.has_opening ? {
+            opening_date: (enrich.opening_year && enrich.opening_month) ? `${enrich.opening_year}-${String(enrich.opening_month).padStart(2, '0')}-${String(enrich.opening_day || 1).padStart(2, '0')}` : null,
+            opening_date_source: 'external_enrichment', opening_date_confidence: enrich.opening_confidence ?? null,
+            days_until_opening: enrich.days_until_opening ?? null, days_since_opening: enrich.days_since_opening ?? null,
+            has_google_opening_date: true, google_business_status: enrich.business_status || null,
+          } : od ? {
+            opening_date: od.iso, opening_date_source: `article_text_${od.precision}`, opening_date_confidence: od.confidence,
+            days_until_opening: od.daysUntil, days_since_opening: od.daysSince,
+          } : {}),
         }
         const qr = computeQuality(payload)
         Object.assign(payload, { quality_score: qr.score, quality_grade: qr.grade, industry_category: qr.category, dedup_key: qr.dedupKey, quality_flags: qr.flags, phone_pref_match: qr.phoneMatch, quality_computed_at: nowIso })
@@ -424,7 +442,7 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         else { const { data: ins } = await admin.from('lead_candidates').insert({ ...payload, first_seen_at: nowIso, imported_to_cases: false, created_by_id: userId }).select('id').single(); candidateId = ins?.id || null; counts.saved++ }
 
         if (candidateId) {
-          await addSignals(admin, candidateId, [{ type: def.signalType, source: def.label, url, date: hpPub.iso, text: (isHp && hpEvidence ? `新HP公開根拠: ${(newnessText.match(HP_PUBLISH_RE) || [''])[0]} / ` : '') + (rr.title || '').slice(0, 180), confidence: (hpPub.daysAgo != null && hpPub.daysAgo <= 30) ? 0.8 : isHp ? 0.5 : 0.6 }])
+          await addSignals(admin, candidateId, [{ type: def.signalType, source: def.label, url, date: od?.iso || hpPub.iso, text: (isHp && hpEvidence ? `新HP公開根拠: ${(newnessText.match(HP_PUBLISH_RE) || [''])[0]} / ` : '') + (rr.title || '').slice(0, 180), confidence: (hpPub.daysAgo != null && hpPub.daysAgo <= 30) ? 0.8 : isHp ? 0.5 : 0.6 }])
           const { data: full } = await admin.from('lead_candidates').select('*').eq('id', candidateId).single()
           const { data: sigs } = await admin.from('lead_signals').select('signal_type').eq('lead_candidate_id', candidateId)
           if (full) await applySalesScore(admin, full, Array.from(new Set((sigs || []).map((s: any) => s.signal_type))))

@@ -68,6 +68,47 @@ export function looksLikeBranchStore(name?: string | null): boolean {
   return BRANCH_STORE_RE.test(s) || /(本店|支店|[0-9０-９]+号店|[0-9０-９]+号館)$/.test(s)
 }
 
+// ============================================================
+// 同業者検出（HP制作/Web制作/広告代理店/集客支援/コンサル/SNS運用/MEO/SEO 等 = 当社と同業＝見込み客ではない）。
+// 店名に強語が出た場合のみ exclude。本文/スニペットの単発語では絶対に発火させない
+// （web_agency_portfolio_crawl のスニペットは制作会社の実績ページ由来で必ず「制作実績」等を含み、
+//   text単発で除外すると正当な顧客店舗が全滅するため）。
+// ============================================================
+// 店名向け強語: 店舗名にこれが入っていれば同業でほぼ確実（地名/一般店名と衝突しない語のみ）。
+// ※「デザイン」単体は入れない（ネイルデザイン等のサロン名と衝突）。
+// ※裸の\bSEO\bは入れない（韓国姓Seo等の実店舗名と衝突。SEOは対策/会社等の複合語のみ）
+const SAME_INDUSTRY_NAME_RE = /(ホームページ制作|ＨＰ制作|HP制作|[Ww][Ee][Bb]制作|ＷＥＢ制作|ウェブ制作|サイト制作|ＬＰ制作|LP制作|制作会社|広告代理店|広告運用|集客(?:代行|支援)|開業(?:支援|サポート)|コンサル|マーケティング|SNS(?:運用|代行)|ＭＥＯ対策|MEO(?:対策|運用|代行)|SEO(?:対策|会社|支援|コンサル)|デザイン事務所)/
+// 本文向け同業語カテゴリ（店名未確定のときのみ・異なるカテゴリ2種以上でhold）。
+// 「制作実績」は単独カテゴリとしては数えるが、これ1種だけでは絶対に発火しない設計。
+const SAME_INDUSTRY_TEXT_RES: RegExp[] = [
+  /ホームページ制作|ＨＰ制作|HP制作|[Ww][Ee][Bb]制作|ＷＥＢ制作|ウェブ制作|サイト制作/,
+  /広告代理店|広告運用/,
+  /集客(?:代行|支援)/,
+  /開業支援/,
+  /コンサル/,
+  /マーケティング/,
+  /SNS(?:運用|代行)/,
+  /ＭＥＯ対策|MEO対策/,
+  /SEO(?:対策|会社|支援|コンサル)/,
+  /デザイン事務所/,
+  /制作実績/,
+]
+/** 同業者（Web制作/広告/集客支援/コンサル等）か。
+ *  店名確定→強語のみでexclude。店名未確定→textに異なる同業語カテゴリが2種以上あるときのみhold（単発発火は禁止）。 */
+export function detectSameIndustry(name: string, text?: string): { exclude: boolean; hold: boolean; reason: string; hit: string } {
+  const n = String(name || '').trim()
+  if (n && n !== '店名未確定') {
+    const m = n.match(SAME_INDUSTRY_NAME_RE)
+    if (m) return { exclude: true, hold: false, hit: m[0], reason: `同業者（${m[0]}＝Web制作/広告/集客支援系）のため営業対象外。ターゲットは店舗事業者本人。` }
+  } else if (text) {
+    // 店名未確定の候補は記事/ページ自体が制作会社の可能性 → 異なる同業語2種以上で要確認hold（除外はしない）
+    const t = String(text)
+    const hits = SAME_INDUSTRY_TEXT_RES.map((re) => t.match(re)?.[0]).filter((w): w is string => !!w)
+    if (hits.length >= 2) return { exclude: false, hold: true, hit: hits.slice(0, 3).join('/'), reason: `同業者の疑い（店名未確定＋同業語${hits.length}種: ${hits.slice(0, 3).join('/')}）→実店舗か要確認` }
+  }
+  return { exclude: false, hold: false, reason: '', hit: '' }
+}
+
 // 確立済み大型の閾値（厳しめ）
 export const BIG_REVIEW_COUNT = 30       // Google口コミがこれ以上＝既に集客できている → 除外
 export const BIG_IG_FOLLOWERS = 500      // Instagramフォロワーがこれ以上 → 除外（IG分類時の判定）

@@ -75,6 +75,184 @@ export function extractOpenDateFromTitle(text: string, now = Date.now()): OpenDa
   return { text: label, month, day, year: useYear, confidence, iso }
 }
 
+// ============================================================
+// 全ソース共通の開業日テキスト抽出（アンカー方式・高精度版）
+// extractOpenDateFromTitle はディレクトリ経路の互換維持のため変更せず併存させ、
+// 記事タイトル/本文/スニペットにはこちらを使う。純関数・外部依存なし
+// （regionalMediaRun/newSourceEngines/serpDiscovery から循環なしで共用するため）。
+// ============================================================
+
+/**
+ * 開業日抽出の結果。daysUntil/daysSince の符号規約は googlePlacesRun.parseGoogleOpening と同一
+ * （開業日-現在 が 0以上→daysUntil、負→daysSince=絶対値。両方同時に非nullにはならない）。
+ * precision は lead_candidates に専用カラムが無いため、呼び出し側で opening_date_source に
+ * 'article_text_day' | 'article_text_part' | 'article_text_month' として符号化する規約。
+ */
+export interface TextOpeningDate { iso: string; raw: string; year: number; month: number; day: number; precision: 'day' | 'part' | 'month'; confidence: number; daysUntil: number | null; daysSince: number | null; yearInferred: boolean }
+
+// オープン語（アンカー）。閉店告知や販促文の日付を拾わないよう、日付との共起でのみ発火させる
+const OPEN_ANCHOR_RE = /(グランドオープン|プレオープン|ニューオープン|リニューアルオープン|新規オープン|移転オープン|オープン|ｵｰﾌﾟﾝ|(?<![A-Za-z])OPEN(?![A-Za-z])|新規開店|新装開店|開店|開業|開院|開所|開局)/i
+// 強ラベル: 開業イベントを明示する語（confidence +10 の根拠）
+const OPEN_STRONG_RE = /(グランドオープン|プレオープン|ニューオープン|新規オープン|新規開店|新装開店|開業|開院)/i
+// オープン語の直後がこれらなら販促/経過の文脈（「オープン記念セール」「オープンから」等）でありオープン日アンカーにしない
+const OPEN_EXCLUDE_AFTER_RE = /^\s*(記念|から|以来|以降|後|当時|セール|フェア|キャンペーン|価格|特価|限定|\d+\s*周年)/
+// 閉店・周年（回顧）文脈: 日付の前後30字にあればその日付は開業日として不採用
+const OPEN_CLOSE_CONTEXT_RE = /(閉店|閉業|閉院|閉館|閉園|閉鎖|廃業|休業|営業終了|閉場|\d+\s*周年|創業\s*\d)/
+// 日付トークン: 「2026年7月15日」「7月15日」「7月上旬」「7月」「2026/7/15」「7/15」。
+// 電話番号・価格の誤爆を避けるため、ハイフン区切り数字は年つき以外は対象にしない
+const OPEN_DATE_TOKEN_RE = /(?<!\d)(?:(?:(20\d{2})\s*年\s*)?(\d{1,2})\s*月\s*(?:(\d{1,2})\s*日|(上旬|中旬|下旬))?|(20\d{2})[/.](\d{1,2})[/.](\d{1,2})|(\d{1,2})\/(\d{1,2})(?![\d/.]))/g
+const OPEN_WEEKDAY_JA = '日月火水木金土'
+
+/**
+ * 記事タイトル/本文/スニペットから開業日を1件抽出する共通関数（全ソース共用の基盤）。
+ * アンカー方式: 日付とオープン語が「。」（改行含む）を跨がず20字以内に共起した場合のみ採用。
+ * - 旬（上旬/中旬/下旬）は 5/15/25日 に丸めて precision:'part'、月のみは1日扱いで precision:'month'
+ * - 年なしは publishedIso（無ければ nowMs）基準に Y-1/Y/Y+1 の最近接年を推定
+ *   （括弧曜日「(火)」があれば曜日一致年のみ採用・全滅なら破棄＝誤年推定の防波堤）
+ * - ガード: 前後30字の閉店/周年語、日付直後の「まで/をもって」、相異なる日付3件以上（まとめ記事）、
+ *   現在±400日超 → いずれも null（誤抽出がHOT昇格や再コールを誤駆動しないための多層防御）
+ * - confidence 0-100: 基礎50 / 明示年+20 / day精度+15 / 強ラベル+10 / 曜日一致+15 / 月のみ-10 / 年推定-10、
+ *   相異なるアンカー付き日付が複数拮抗する場合は55キャップ
+ * 代表例:
+ * - 採用: 「7月15日(火)グランドオープン」→ day精度・曜日検証・強ラベルで高confidence
+ * - null: 「12月28日をもって閉店」（閉店文脈）/「オープンから3周年」（経過文脈・開業日語共起なし）/
+ *         「セールは7月31日まで」（期限表現）
+ */
+export function extractOpeningDateFromText(text: string, opts?: { publishedIso?: string | null; nowMs?: number }): TextOpeningDate | null {
+  const nowMs = opts?.nowMs ?? Date.now()
+  let t = String(text || '').slice(0, 12000)
+  if (!t.trim()) return null
+  // 全角→半角の正規化（数字/英字/括弧/区切り）。改行は文境界として「。」に落とす（アンカーが文を跨がないように）
+  t = t
+    .replace(/[０-９Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/（/g, '(').replace(/）/g, ')')
+    .replace(/／/g, '/').replace(/．/g, '.').replace(/[−－‐―]/g, '-')
+    .replace(/[\r\n]+/g, '。')
+  // 年推定の基準は記事公開日（無ければ現在）。開業告知記事は開業日の前後数週間に出るため最近接が最も当たる
+  const pubMs = opts?.publishedIso ? Date.parse(opts.publishedIso) : NaN
+  const refMs = Number.isFinite(pubMs) ? pubMs : nowMs
+  const baseYear = new Date(refMs).getFullYear()
+
+  interface Tok { start: number; end: number; raw: string; year: number | null; month: number; day: number | null; part: string | null }
+  const toks: Tok[] = []
+  for (const m of t.matchAll(OPEN_DATE_TOKEN_RE)) {
+    const year = m[1] ? Number(m[1]) : m[5] ? Number(m[5]) : null
+    const month = Number(m[2] ?? m[6] ?? m[8])
+    const dayRaw = m[3] ?? m[7] ?? m[9]
+    const day = dayRaw != null ? Number(dayRaw) : null
+    if (!(month >= 1 && month <= 12)) continue
+    if (day != null && !(day >= 1 && day <= 31)) continue
+    toks.push({ start: m.index!, end: m.index! + m[0].length, raw: m[0].trim(), year, month, day, part: m[4] ?? null })
+  }
+  if (!toks.length) return null
+
+  // まとめ記事ガード: 「日まで特定できる」相異なる日付が3件以上ある文章は単一店舗の開業告知と断定できない
+  // （年の有無だけの表記ゆれを同一視するため月-日をキーにする）
+  const distinctDates = new Set<string>()
+  for (const tk of toks) { if (tk.day != null || tk.part) distinctDates.add(`${tk.month}-${tk.day ?? tk.part}`) }
+  if (distinctDates.size >= 3) return null
+
+  interface Cand { tk: Tok; strong: boolean; weekday: number | null }
+  const cands: Cand[] = []
+  for (const tk of toks) {
+    const before30 = t.slice(Math.max(0, tk.start - 30), tk.start)
+    const after30 = t.slice(tk.end, tk.end + 30)
+    // 閉店/周年（回顧）文脈: この日付は開業日ではない
+    if (OPEN_CLOSE_CONTEXT_RE.test(before30) || OPEN_CLOSE_CONTEXT_RE.test(after30)) continue
+    // 期限表現: 「7月31日まで」「12月28日をもって」はセール終期/閉店日であって開業日ではない
+    if (/^\s*(?:を?もって|までに?|迄)/.test(after30)) continue
+    // 括弧曜日（例: (火) / (火・祝)）。年推定の検証に使う
+    const wd = after30.match(/^\s*\(\s*([日月火水木金土])(?:曜日?)?(?:[・,、/]\s*祝日?)?\s*\)/)
+    const weekday = wd ? OPEN_WEEKDAY_JA.indexOf(wd[1]) : null
+    // アンカー1: 日付→語（日付の後20字以内・。を跨がない）
+    let word = ''
+    const afterSeg = t.slice(tk.end, tk.end + 20).split('。')[0]
+    const am = afterSeg.match(OPEN_ANCHOR_RE)
+    if (am && am.index != null) {
+      const wordEndAbs = tk.end + am.index + am[0].length
+      if (!OPEN_EXCLUDE_AFTER_RE.test(t.slice(wordEndAbs, wordEndAbs + 10))) word = am[0]
+    }
+    // アンカー2: 語→日付（日付の前20字以内・。を跨がない。語の直後が除外文脈なら不採用）
+    if (!word) {
+      const beforeSeg = t.slice(Math.max(0, tk.start - 20), tk.start)
+      const seg = beforeSeg.split('。').pop() || ''
+      const segStartAbs = tk.start - seg.length
+      const re = new RegExp(OPEN_ANCHOR_RE.source, 'gi')
+      let last: RegExpExecArray | null = null
+      for (let mm = re.exec(seg); mm; mm = re.exec(seg)) last = mm
+      if (last) {
+        const wordEndAbs = segStartAbs + last.index + last[0].length
+        if (!OPEN_EXCLUDE_AFTER_RE.test(t.slice(wordEndAbs, wordEndAbs + 10))) word = last[0]
+      }
+    }
+    if (!word) continue
+    cands.push({ tk, strong: OPEN_STRONG_RE.test(word), weekday })
+  }
+  if (!cands.length) return null
+
+  const resolve = (c: Cand): TextOpeningDate | null => {
+    const day = c.tk.day ?? (c.tk.part === '上旬' ? 5 : c.tk.part === '中旬' ? 15 : c.tk.part === '下旬' ? 25 : 1)
+    const precision: TextOpeningDate['precision'] = c.tk.day != null ? 'day' : c.tk.part ? 'part' : 'month'
+    // 実在日チェック（2月30日等はDateが繰り上がるため月日一致で検証）
+    const valid = (y: number): Date | null => {
+      const d = new Date(y, c.tk.month - 1, day)
+      return d.getFullYear() === y && d.getMonth() === c.tk.month - 1 && d.getDate() === day ? d : null
+    }
+    let year: number
+    let yearInferred = false
+    let weekdayMatched = false
+    if (c.tk.year != null) {
+      const d = valid(c.tk.year)
+      if (!d) return null
+      if (c.weekday != null && precision === 'day') {
+        // 明示年でも括弧曜日と不一致なら誤記/誤抽出の可能性が高く破棄
+        if (d.getDay() !== c.weekday) return null
+        weekdayMatched = true
+      }
+      year = c.tk.year
+    } else {
+      yearInferred = true
+      let best: { y: number; dist: number } | null = null
+      for (const y of [baseYear - 1, baseYear, baseYear + 1]) {
+        const d = valid(y)
+        if (!d) continue
+        if (c.weekday != null && precision === 'day' && d.getDay() !== c.weekday) continue
+        const dist = Math.abs(d.getTime() - refMs)
+        if (!best || dist < best.dist) best = { y, dist }
+      }
+      if (!best) return null // 曜日一致年なし → 誤抽出とみなし破棄
+      year = best.y
+      if (c.weekday != null && precision === 'day') weekdayMatched = true
+    }
+    const dt = new Date(year, c.tk.month - 1, day)
+    const diff = Math.round((dt.getTime() - nowMs) / 86400000)
+    if (Math.abs(diff) > 400) return null // 現在±400日超は開業日として不自然（回顧記事・年ズレの防御）
+    let confidence = 50
+    if (c.tk.year != null) confidence += 20
+    if (precision === 'day') confidence += 15
+    else if (precision === 'month') confidence -= 10
+    if (c.strong) confidence += 10
+    if (weekdayMatched) confidence += 15
+    if (yearInferred) confidence -= 10
+    confidence = Math.max(0, Math.min(100, confidence))
+    const iso = `${year}-${String(c.tk.month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    return {
+      iso, raw: c.tk.raw, year, month: c.tk.month, day, precision, confidence,
+      daysUntil: diff >= 0 ? diff : null, daysSince: diff < 0 ? -diff : null, yearInferred,
+    }
+  }
+
+  const resolved: TextOpeningDate[] = []
+  for (const c of cands) { const r = resolve(c); if (r) resolved.push(r) }
+  if (!resolved.length) return null
+  // 複数候補拮抗: アンカー付きの相異なる日付が並存（プレ/グランド両告知等）→ どれが開業日か断定しづらいので55キャップ
+  const cap = new Set(resolved.map((r) => r.iso)).size >= 2 ? 55 : 100
+  let bestR = resolved[0]
+  for (const r of resolved) { if (r.confidence > bestR.confidence) bestR = r }
+  if (bestR.confidence > cap) bestR = { ...bestR, confidence: cap }
+  return bestR
+}
+
 export interface DirectoryLink { url: string; title: string; open: OpenDate }
 
 /** 一覧ページから店舗詳細リンクを抽出（media_family の detailPattern で判定）。 */

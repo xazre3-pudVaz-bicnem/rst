@@ -228,7 +228,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 自動実行。手動ボタンを押さなくても「常に採点済み・新鮮な架電リスト」が維持される。
   try {
     const r1 = budgetMs - (Date.now() - startMs)
-    if (r1 > 22000) { const os = await runOpeningSoonQueue(admin, { limit: 150, runBudgetMs: Math.min(25000, r1 - 12000) }, opts.userId || null); agg.cases_inserted_count += os?.imported || 0 }
+    if (r1 > 22000) { const os = await runOpeningSoonQueue(admin, { limit: 150, runBudgetMs: Math.min(25000, r1 - 12000), mapsKey }, opts.userId || null); agg.cases_inserted_count += os?.imported || 0 }
   } catch { /* noop */ }
   try {
     // HOLD復活: 「電話なし/住所なし/フォロワー未確認」など一時要因のHOLDを再検証してHOT復帰→投入（安全な理由のみ対象）

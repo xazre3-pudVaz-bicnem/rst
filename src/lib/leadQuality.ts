@@ -98,6 +98,28 @@ export function isRealStoreAddress(addr?: string | null): boolean {
   return true
 }
 
+// ============================================================
+// バーチャルオフィス/レンタルオフィス住所の検出。
+// 開業届・登記だけの「実店舗なし開業」はMEO/HP営業の対象外（来店ビジネスでない）。
+// definite: ブランド名/確定語（そこに実店舗が存在しないことがほぼ確実）→ exclude 相当。
+// suspect(hit&&!definite): 汎用語（実店舗を構えるコワーキング併設等の例外があり得る）→ hold 相当。
+// ※「レンタルサロン」は絶対に入れないこと: 間借りで開業する個人サロンは主要ターゲットそのもの。
+// ============================================================
+// definiteは「その語が住所に出たら登記用でほぼ確実」な語のみ（EXCLUDEDは復活しないため誤爆コストが高い）。
+// レゾナンス/Karigo等の一般語と衝突しうるブランド名はsuspect（HOLD=手動確認可能）に留める
+const VIRTUAL_OFFICE_DEFINITE_RE = /(バーチャルオフィス|ヴァーチャルオフィス|私書箱|リージャス|Regus|WeWork|ウィーワーク|DMMバーチャルオフィス|GMOオフィスサポート|ワンストップビジネスセンター|ナレッジソサエティ|METSオフィス|ユナイテッドオフィス)/i
+const VIRTUAL_OFFICE_SUSPECT_RE = /(レンタルオフィス|シェアオフィス|コワーキングスペース|コワーキング|サービスオフィス|Karigo|カリゴ|(?:^|[\s　])気付|c\/o\s)/i
+/** 住所がバーチャルオフィス/登記用オフィスの可能性。definite=確定語 / hit&&!definite=疑い（要確認）。 */
+export function isVirtualOfficeAddress(addr?: string | null): { hit: boolean; definite: boolean; word: string } {
+  const s = String(addr || '')
+  if (!s) return { hit: false, definite: false, word: '' }
+  const d = s.match(VIRTUAL_OFFICE_DEFINITE_RE)
+  if (d) return { hit: true, definite: true, word: d[0] }
+  const su = s.match(VIRTUAL_OFFICE_SUSPECT_RE)
+  if (su) return { hit: true, definite: false, word: su[0].trim() }
+  return { hit: false, definite: false, word: '' }
+}
+
 /** ネガティブ/ポータル系シグナルを検出（閉店・移転・求人・ポータルそのもの）。店名・住所・短いスニペットに対して使う。 */
 export function detectNegative(text?: string | null): { hit: boolean; closed: boolean; portal: boolean; reason: string } {
   const t = String(text || '')

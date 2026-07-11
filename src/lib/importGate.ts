@@ -8,8 +8,8 @@
 // ============================================================
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
-import { isRealStoreAddress, phoneAddressMatch, onlyDigits } from './leadQuality.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
+import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
@@ -19,6 +19,7 @@ export interface GateInput {
   mapsKey?: string | null
   skipEstablishment?: boolean   // 呼び出し元が既にGoogle口コミ既存店チェック済みならtrue
   budgetEndMs?: number          // これを過ぎる外部確認はスキップ（時間予算の死守）
+  igFollowers?: number | null   // Instagramフォロワー数（判明時のみ）。0/未確認はnullで渡す規約（0=ログイン壁の可能性）
 }
 export interface GateResult { ok: boolean; action: 'import' | 'hold' | 'exclude' | 'link'; reason: string; linkCaseId?: string | null }
 
@@ -40,11 +41,21 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   const address = String(g.address || '').trim()
   const budgetEnd = g.budgetEndMs || (Date.now() + 20000)
 
+  // 0) Instagramフォロワー1000人以上=確立済み（判明している場合のみ。0/未確認はnullで渡す規約）
+  if (g.igFollowers != null && g.igFollowers >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
+    return exclude(`Instagramフォロワー${g.igFollowers}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため対象外（投入ゲート）`)
+  }
   // 1) 電話（HOTの絶対条件）: 日本の有効な番号・フリーダイヤル/ナビダイヤル不可
   if (!phone || !isJapanPhone(phone) || !isValidJpPhone(phone)) return hold('電話番号なし/無効（投入ゲート）')
   if (isTollFreeJp(phone)) return exclude(`フリーダイヤル(${phone})は店舗直通でないため対象外（投入ゲート）`)
   // 2) 住所: 実店舗住所・国内
   if (!address || !isRealStoreAddress(address) || isForeignAddress(address)) return hold('実店舗住所なし/国外（投入ゲート）')
+  // 2.5) バーチャルオフィス/登記用住所: 実店舗なし開業はMEO/HP営業の対象外（確定語=除外 / 汎用語=要確認）
+  {
+    const vo = isVirtualOfficeAddress(address)
+    if (vo.definite) return exclude(`バーチャルオフィス/登記用住所（${vo.word}）＝実店舗なしのため対象外（投入ゲート）`)
+    if (vo.hit) return hold(`レンタル/シェアオフィス系住所（${vo.word}）＝実店舗か要確認（投入ゲート）`)
+  }
   // 3) 電話×住所の地域整合（固定電話の市外局番と都道府県の不一致=別店舗/本社番号の誤抽出）
   if (phoneAddressMatch(phone, address) === 'mismatch') return hold(`電話(${phone})と住所の地域不一致（誤抽出/本社番号の疑い・投入ゲート)`)
   // 4) 店名: チェーン/支店(○○店)/大手・公共/多店舗
@@ -55,6 +66,13 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     if (big.exclude) return exclude(`${big.hit}（大手/公共/大型施設）のため対象外（投入ゲート）`)
     const bigStrong = detectBigOrPublicStrong(name)
     if (bigStrong.exclude) return exclude(`${bigStrong.hit}（大手）のため対象外（投入ゲート）`)
+  }
+  // 4.5) 同業者（Web制作/広告/集客支援/コンサル等）は見込み客ではない。
+  //      店名確定→強語のみexclude / 店名未確定→text内の同業語2種以上でhold（text単発発火は禁止）
+  {
+    const same = detectSameIndustry(name, g.text)
+    if (same.exclude) return exclude(`${same.reason}（投入ゲート）`)
+    if (same.hold) return hold(`${same.reason}（投入ゲート）`)
   }
   const multi = detectMultiStore(`${name} ${(g.text || '').slice(0, 300)}`)
   if (multi.exclude) return exclude(`多店舗/FC(${String(multi.hit).trim()})のため対象外（投入ゲート）`)

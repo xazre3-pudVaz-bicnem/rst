@@ -6,12 +6,13 @@
 // ============================================================
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
-import { onlyDigits, looksLikeArticle, isRealStoreAddress, phoneAddressMatch } from './leadQuality.js'
+import { onlyDigits, looksLikeArticle, isRealStoreAddress, phoneAddressMatch, isVirtualOfficeAddress } from './leadQuality.js'
 import { detectBigOrPublicStrong, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { fetchInstagramProfile } from './enrichProfile.js'
+import { openProx } from './salesScore.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 // Web検索スニペットからフォロワー数＋bioを取得（IGログイン壁対策。instagramWebRunと同等のローカル実装＝循環import回避）
@@ -60,7 +61,7 @@ function igUsername(url?: string | null): string {
   return u && !/^(p|reel|reels|explore|tv|stories|accounts)$/i.test(u) ? u : ''
 }
 
-const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count,phone_source,enriched_phone_source,enriched_address_source,name_unconfirmed_hot,source_detail_url,source_type,business_hours'
+const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,sales_priority_score,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count,phone_source,enriched_phone_source,enriched_address_source,name_unconfirmed_hot,source_detail_url,source_type,business_hours,first_seen_at,opening_date,opening_date_source,opening_date_confidence,days_until_opening,days_since_opening,google_business_status'
 
 // phone_source/address_source の内部値 → 人が読める取得元ラベル
 function sourceLabel(v?: string | null): string {
@@ -121,10 +122,27 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
   const nowIso = new Date().toISOString()
   // 時間予算（自動巡回の60s枠を守るため）。外部ルックアップ(Places詳細/IGフォロワー)は残り時間があるときだけ実行。
   const deadline = Date.now() + Math.max(3000, opts.budgetMs ?? 600000)
-  // 鮮度の高い順に処理（時間予算で途中打ち切りになっても「新しい候補から」投入される）
+  // 品質優先の2クエリ窓埋め: sweepは予算切れで途中終了が常態のため「窓に何を入れるか＋処理順」が投入品質を決める。
+  // Q1=開業シグナル付き候補（古くても開業目前なら最優先で窓に入れる）、Q2=従来の新しい順で残りを埋める。
+  // ※開業予定リードの価値は日単位で減衰する。first_seen_at単独順では「たまたま新しいB級」がHOT-A/開業目前を締め出していた。
+  const half = Math.ceil(limit / 2)
+  const { data: rowsOpen } = await admin.from('lead_candidates').select(FIELDS)
+    .eq('lead_temperature', 'HOT').eq('imported_to_cases', false)
+    .or('google_business_status.eq.FUTURE_OPENING,days_until_opening.not.is.null,days_since_opening.lte.30')
+    .order('sales_priority_score', { ascending: false, nullsFirst: false })
+    .limit(half)
   const { data: rows, error } = await admin.from('lead_candidates').select(FIELDS).eq('lead_temperature', 'HOT').eq('imported_to_cases', false).order('first_seen_at', { ascending: false }).limit(limit)
   if (error) return { ok: false, error: error.message }
-  const list: any[] = rows || []
+  const byId = new Map<string, any>()
+  for (const r of [...(rowsOpen || []), ...(rows || [])]) { if (!byId.has(r.id)) byId.set(r.id, r) }
+  // 処理順: HOT-A優先 → 開業に近い順（openProx昇順）→ 営業優先度スコア降順 → 新しい順。
+  // 予算で打ち切られても常に「最良のprefix」が処理済みになる。
+  const list: any[] = [...byId.values()].sort((a, b) =>
+    ((a.hot_tier === 'A' ? 0 : 1) - (b.hot_tier === 'A' ? 0 : 1))
+    || (openProx(a) - openProx(b))
+    || ((Number(b.sales_priority_score) || 0) - (Number(a.sales_priority_score) || 0))
+    || (Date.parse(b.first_seen_at || 0) - Date.parse(a.first_seen_at || 0)),
+  ).slice(0, limit)
   let downgraded = 0, imported = 0, linkedDup = 0, skipped = 0, reviewExcluded = 0
   let placesLookups = 0, igLookups = 0, timedOut = false
   const MAX_PLACES = 150, MAX_IG = 100
@@ -148,6 +166,18 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     if (phoneAddressMatch(phone, address) === 'mismatch') {
       await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `電話(${phone})の市外局番と住所の都道府県が不一致（別店舗/本社番号の誤抽出の疑い）→HOLD` }).eq('id', c.id)
       downgraded++; continue
+    }
+    // 1.22) バーチャルオフィス/登記用住所 = 実店舗なし開業（MEO/HP営業の対象外）。確定語=EXCLUDED / 汎用語=HOLD
+    {
+      const vo = isVirtualOfficeAddress(address)
+      if (vo.definite) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `バーチャルオフィス/登記用住所（${vo.word}）＝実店舗なしのため対象外` }).eq('id', c.id)
+        reviewExcluded++; continue
+      }
+      if (vo.hit) {
+        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `レンタル/シェアオフィス系住所（${vo.word}）＝実店舗か要確認→HOLD` }).eq('id', c.id)
+        downgraded++; continue
+      }
     }
     // 1.25) 共有電話番号: 同じ番号が多数の候補に出現＝ポータル転送/代行/掲載用番号（店舗直通でない）→ 投入せずHOLD
     {
@@ -275,20 +305,54 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     const name = c.name && c.name !== '店名未確定' ? c.name : (c.name || '（店名未確定）')
     const nameUnclear = !c.name || c.name === '店名未確定'
     const origin = phoneOrigin(c)
+    // 開業タイミング（メモ・priority・自動再コールで共用）。
+    // 信用条件: (1) opening_date列がある行のみ「投入時点の値」で再計算して使う（days_*スナップショットは
+    //   発見からの経過日数ぶんズレており、そのまま使うと再コールが開業後に飛ぶ事故になる）
+    // (2) テキスト由来（article_text_*）は確度60以上かつ月のみ精度でない場合のみ信用
+    //   （開業予定キューと同じゲート。conf30の「7月オープン」→7/1丸めで再コール登録される穴を塞ぐ）
+    const srcOd = String(c.opening_date_source || '')
+    const isTextOd = /^article_text/.test(srcOd)
+    const odTrusted = !!c.opening_date && (!isTextOd || (Number(c.opening_date_confidence ?? 0) >= 60 && !/month$/.test(srcOd)))
+    let duo: number | null = null
+    let dso: number | null = null
+    if (odTrusted) {
+      const t = Date.parse(String(c.opening_date).slice(0, 10) + 'T00:00:00+09:00')
+      if (Number.isFinite(t)) { const diff = Math.round((t - Date.now()) / 86400000); duo = diff >= 0 ? diff : null; dso = diff < 0 ? -diff : null }
+    }
+    const openSoon = (duo != null && duo >= 0) || (dso != null && dso >= 0 && dso <= 14) || c.google_business_status === 'FUTURE_OPENING'
+    const openLine = duo != null ? `開業予定: ${c.opening_date || ''}（あと${duo}日）→ 開業前はGBP整備・HP・MEO提案の黄金期。今すぐ接触が最適` :
+      (dso != null && dso <= 30) ? `開業: ${c.opening_date || ''}（${dso}日前にオープン）→ 開業直後で集客整備の提案最適期` :
+      c.google_business_status === 'FUTURE_OPENING' ? '開業前(FUTURE_OPENING)→ 開業前提案の黄金期' : ''
     const memo = [
-      `【一括投入 / HOT-${c.hot_tier || 'B'}${c.sales_priority_grade ? ` / 営業${c.sales_priority_grade}` : ''}】`,
+      `【一括投入 / HOT-${c.hot_tier || 'B'}${c.sales_priority_grade ? ` / 営業${c.sales_priority_grade}` : ''}${openSoon ? ' / 開業近接' : ''}】`,
       `店名: ${nameUnclear ? '店名未確定' : name}`,
       `電話: ${phone}　←取得元: ${origin}`,
       `住所: ${address}${c.enriched_address_source ? `（取得元: ${sourceLabel(c.enriched_address_source)}）` : ''}`,
+      ...(openLine ? [openLine] : []),
       ...(nameUnclear ? [`⚠️ 店名が未確定です。この電話番号（取得元: ${origin}）が対象店のものか、架電前に住所・${c.source_detail_url ? '掲載ページ' : '検索'}で店名をご確認ください。`] : []),
       `理由: ${c.auto_import_reason || c.regional_media_newness_reason || ''}`,
       ...(c.source_detail_url ? [`掲載元: ${c.source_detail_url}`] : []),
       ...(c.call_memo ? ['', c.call_memo] : []),
     ].join('\n')
-    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: normalizeIndustry(c.industry) || classifyIndustry(name) || normalizeIndustry(c.industry_category) || null, status: DEFAULT_STATUS, priority: c.hot_tier === 'A' ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
+    // priority: HOT-A / 開業近接 / 営業S は「高」（開業タイミングを逃さない）
+    const priorityHigh = c.hot_tier === 'A' || openSoon || c.sales_priority_grade === 'S'
+    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: normalizeIndustry(c.industry) || classifyIndustry(name) || normalizeIndustry(c.industry_category) || null, status: DEFAULT_STATUS, priority: priorityHigh ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.auto_import_reason || 'AI一括投入', memo, created_by_id: userId }).select('id').single()
     if (ce || !created?.id) { skipped++; await admin.from('lead_candidates').update({ auto_insert_attempted: true, auto_insert_success: false, auto_insert_error: ce?.message || 'case作成失敗' }).eq('id', c.id); continue }
     await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)
     imported++
+    // 開業日ドリブンの自動再コール（runOpeningSoonQueueから移植: sweepが先に投入するとimported_to_cases=trueで
+    // queueの対象外になり再コールが永久に未登録になる穴を塞ぐ）。開業4日以上先なら「開業3日前の10:00 JST」に登録。
+    if (duo != null && duo >= 4) {
+      try {
+        const { data: exR } = await admin.from('recalls').select('id').eq('case_id', created.id).eq('done', false).limit(1)
+        if (!exR?.[0]) {
+          // VercelはUTC実行のためsetHours(10)だと19:00 JSTかつJST深夜帯は日付が1日ズレる。JST暦日で(duo-3)日後の01:00 UTC(=10:00 JST)
+          const jstBase = new Date(Date.now() + 9 * 3600000 + (duo - 3) * 86400000)
+          const target = new Date(Date.UTC(jstBase.getUTCFullYear(), jstBase.getUTCMonth(), jstBase.getUTCDate(), 1, 0, 0))
+          await admin.from('recalls').insert({ case_id: created.id, case_name: name, target_at: target.toISOString(), done: false, memo: `開業${duo}日前に投入（自動）。開業3日前アプローチ: GBP整備・HP・MEOは開業前が最適。`, created_by_id: userId })
+        }
+      } catch { /* noop */ }
+    }
   }
   return { ok: true, scanned: list.length, imported, linkedDup, downgraded, reviewExcluded, skipped, timedOut }
 }

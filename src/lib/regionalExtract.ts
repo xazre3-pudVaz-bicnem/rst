@@ -4,6 +4,7 @@
 // ============================================================
 import { PREFECTURES } from './areaPresets.js'
 import { classifyIndustry } from './industry.js'
+import { extractJpPhone } from './regionalParsers.js'
 
 const AREA_TOKENS: string[] = (() => {
   const t = new Set<string>()
@@ -75,9 +76,12 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
   if (bra) area = AREA_TOKENS.find((t) => bra[1].includes(t)) || ''
   if (!area) area = AREA_TOKENS.find((t) => text.includes(t)) || ''
 
-  // 住所
-  const addrMatch = text.match(/(東京都|神奈川県|埼玉県|千葉県)[^\n。、）)]{2,40}/) || text.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][^\n。、）)]{1,30}\d/)
-  const address = addrMatch ? addrMatch[0].trim().slice(0, 60) : ''
+  // 住所: 47都道府県対応（従来は関東4都県のみで、号外NET全国展開後の43道府県の住所が構造的に取れなかった）。
+  // 全角数字を半角化してからマッチ（「東京都台東区１−２−３」型の表記に対応）
+  const normText = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[−－]/g, '-')
+  const addrMatch = normText.match(/〒?\s*(?:\d{3}-?\d{4}\s*)?(?:北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\n。、）)]{2,50}/)
+    || normText.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][^\n。、）)]{1,30}\d/)
+  const address = addrMatch ? addrMatch[0].replace(/^〒?\s*(?:\d{3}-?\d{4})?\s*/, '').trim().slice(0, 60) : ''
 
   // 開店日: 「○月○日オープン」「2026/6/28」等
   const dateMatch = text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/) || text.match(/(\d{1,2}月\d{1,2}日)(?:[^\n]{0,6}(?:オープン|開店|開業|オープン予定))/)
@@ -85,8 +89,9 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
 
   const industry = classifyIndustry(text)
 
-  const phoneMatch = bodyText.match(/0\d{1,3}[-(]?\d{2,4}[-)]?\d{3,4}/)
-  const phone = phoneMatch ? phoneMatch[0] : ''
+  // 電話: 検証込みの共通抽出（regionalParsers.extractJpPhone は isValidJpPhone 検証込み。
+  // 素の正規表現だと郵便番号や価格の数字列を電話と誤認することがあった）
+  const phone = extractJpPhone(bodyText)
 
   const is_chain = CHAIN_HINT.test(text)
   const is_mall = MALL_HINT.test(text)

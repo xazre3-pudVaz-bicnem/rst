@@ -37,6 +37,10 @@ export function sanitizeShopName(raw: string, opts: { placesMatched?: boolean } 
   s = s.replace(/^[「『”"]+|[」』”"]+$/g, '').trim()
   if (!s || s.length < 2) return { name: '', valid: false, reason: '店名抽出失敗（記事タイトル/見出しのみ）' }
   if (BAD_SHOP_NAME_RE.test(s)) return { name: '', valid: false, reason: 'サイト名/カテゴリ名のため店名未確定' }
+  // 価格/日付を含む「店名」は見出し断片（『日替わりランチがなんと600円！4月9日に』型）→ 店名未確定として扱う。
+  // 全角数字（６００円）も対象にするため半角化してから判定（漢数字の「三日月」等は数字でないため誤爆しない）
+  const sNum = s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+  if (/\d+\s*円|\d{1,2}月\d{1,2}日/.test(sNum)) return { name: '', valid: false, reason: '価格/日付を含む見出し断片のため店名未確定' }
   if (s.length >= 30 && !opts.placesMatched) return { name: '', valid: false, reason: '説明文の可能性（30字以上・Places未照合）' }
   return { name: s.slice(0, 40), valid: true, reason: '' }
 }
@@ -245,6 +249,76 @@ export function parseHorbyDetail(html: string): { name: string; address: string;
   const mapUrl = ((rows['住所'] || '').match(/href=["'](https?:\/\/[^"']*maps[^"']+)["']/i)?.[1] || '')
   const hours = txt(rows['営業時間'] || '').slice(0, 40)
   return { name, address, prefecture, phone, official: official && !/^https?:/.test(official) ? `https://${official}` : official, mapUrl, hours }
+}
+
+// ============================================================
+// 号外NET（goguynet系）記事詳細の「shop-info」構造化ブロック直取り。
+// 記事本文の末尾に CMS 定型の店舗情報（店名/住所/電話/営業時間/リンク）が dt/dd で載っており、
+// 見出し断片から店名を推測するより桁違いに正確。旧テンプレ記事は Googleマップ埋め込み（pb=...!2z<base64>）
+// から店名/住所を復元する。ブロックが無いサイト/古い記事は found:false で既存フローへ完全フォールバック。
+// ============================================================
+export interface GoguynetShopInfo { name: string; address: string; phone: string; hours: string; holiday: string; station: string; officialUrl: string; instagramUrl: string; found: boolean; nameFromBlock: boolean }
+export function parseGoguynetShopInfo(html: string): GoguynetShopInfo {
+  const out: GoguynetShopInfo = { name: '', address: '', phone: '', hours: '', holiday: '', station: '', officialUrl: '', instagramUrl: '', found: false, nameFromBlock: false }
+  if (!html) return out
+  // マップ埋め込みフォールバック(2)(3)は号外NET系ページ限定（全地域メディアで発火させると
+  // アクセス地図の駅名/緯度経度が店名としてすり抜ける）。shop-infoブロック(1)はclass名が特異なので常時可
+  const isGoguynet = /goguynet/i.test(html)
+  const norm = (s: string) => stripTags(s).replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[−－‐]/g, '-').replace(/\s+/g, ' ').trim()
+  // 1) shop-info ブロック（新テンプレ）
+  const block = html.match(/<div[^>]+class=["'][^"']*shop-info[^"']*["'][^>]*>([\s\S]*?)(?=<div[^>]+class=["'](?:prevnext|related)|<\/article>|$)/i)?.[1] || ''
+  if (block) {
+    out.name = norm(block.match(/class=["'][^"']*shop-info-name[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|h\d|p|span)>/i)?.[1] || '').slice(0, 60)
+    out.nameFromBlock = !!out.name
+    for (const m of block.matchAll(/<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi)) {
+      const label = norm(m[1])
+      const ddHtml = m[2]
+      const val = norm(ddHtml)
+      if (/住所|所在地/.test(label)) out.address = val.slice(0, 80)
+      else if (/電話|TEL/i.test(label)) out.phone = extractJpPhone(val)
+      else if (/営業時間/.test(label)) out.hours = val.slice(0, 60)
+      else if (/定休/.test(label)) out.holiday = val.slice(0, 40)
+      else if (/最寄|アクセス|駅/.test(label)) out.station = val.slice(0, 40)
+      else if (/リンク|URL|HP|ホームページ|サイト|SNS/i.test(label)) {
+        for (const a of ddHtml.matchAll(/href=["'](https?:\/\/[^"']+)["']/gi)) {
+          const u = a[1]
+          if (/instagram\.com/i.test(u)) { if (!out.instagramUrl) out.instagramUrl = u }
+          else if (!/goguynet|google\.|maps\.|line\.me|lin\.ee|x\.com|twitter\.com|facebook\.com|youtube\.com/i.test(u)) { if (!out.officialUrl) out.officialUrl = u }
+        }
+      }
+    }
+  }
+  // 埋め込み由来の店名候補として不適切な文字列（駅名/出口/路線/座標/住所そのもの）
+  const badEmbedName = (s: string) => !s || s.length < 2 || s.length > 40 || /駅$|口$|線$|^[0-9.,\s\-]+$|丁目|番地|^〒/.test(s) || /^https?:/.test(s)
+  // 2) 新型Googleマップ埋め込み（maps/embed/v1/place?q=店名,住所）で不足を補完（号外NET系限定）
+  if (isGoguynet && (!out.address || !out.name)) {
+    const q = html.match(/maps\/embed\/v1\/place\?[^"']*q=([^"'&]+)/i)?.[1]
+    if (q) {
+      try {
+        const dec = decodeURIComponent(q.replace(/\+/g, ' '))
+        const parts = dec.split(',').map((s) => s.trim()).filter(Boolean)
+        if (parts.length >= 2) {
+          if (!out.name && !badEmbedName(parts[0])) out.name = parts[0]
+          const addr = parts.slice(1).join('')
+          if (!out.address && /北海道|東京都|(?:京都|大阪)府|[一-龥]{2,3}県|[一-龥]{1,8}[市区町村]/.test(addr)) out.address = addr.slice(0, 80)
+        }
+      } catch { /* noop */ }
+    }
+  }
+  // 3) 旧型pb=埋め込み: !2z<base64url> に店名/住所がUTF-8で入っている（サーバー専用なのでBuffer使用可・号外NET系限定）
+  if (isGoguynet && (!out.address || !out.name)) {
+    for (const m of html.matchAll(/!2z([A-Za-z0-9+/=_-]{8,})/g)) {
+      try {
+        const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/')
+        const dec = Buffer.from(b64, 'base64').toString('utf8')
+        if (!dec || /�/.test(dec)) continue
+        if (!out.address && /^(〒?\s*\d{3}-?\d{4})?\s*(北海道|東京都|(?:京都|大阪)府|[一-龥]{2,3}県)/.test(dec.trim())) out.address = norm(dec).replace(/^〒?\s*\d{3}-?\d{4}\s*/, '').slice(0, 80)
+        else if (!out.name && !badEmbedName(norm(dec))) out.name = norm(dec).slice(0, 40)
+      } catch { /* noop */ }
+    }
+  }
+  out.found = !!(out.name || out.address || out.phone)
+  return out
 }
 
 /** カード/リスト/記事ブロック単位で新店候補を抽出（マーケットプレイス/汎用本文スキャン共通） */
