@@ -116,7 +116,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   // ---- 初期OFF（高負荷・要調整・外部API確認が必要） ----
   { type: 'yahoo_local_search_delta', label: 'Yahooローカルサーチ差分', group: '新規候補', mode: 'foundation', defaultEnabled: false, signalType: 'new_gbp', note: 'Yahoo Local API。土台のみ' },
   { type: 'corporation_new_registration', label: '法人番号/gBizINFO新規法人', group: '法人番号由来', mode: 'foundation', defaultEnabled: false, signalType: 'corporation_new', note: '国税庁法人番号/gBizINFO API。土台のみ' },
-  { type: 'public_open_data_crawl', label: '自治体オープンデータ/営業許可', group: '新店シグナル', mode: 'foundation', defaultEnabled: false, signalType: 'public_permit', note: 'CSV/Excel/PDF許可情報。土台のみ' },
+  { type: 'public_open_data_crawl', label: '保健所 新規営業許可（オープンデータ）', group: '新店シグナル', mode: 'foundation', defaultEnabled: true, signalType: 'public_permit', note: '本稼働: 保健所の食品営業許可CSV（台東=月次新規/江東・港・中央・新宿・中野=標準台帳）から直近45日の新規許可を取込。行政一次データ＝誤検知ほぼゼロ・許可日≒開業日' },
   { type: 'sns_web_search', label: 'SNS横断Web検索', group: '新店シグナル', mode: 'serp', defaultEnabled: false, signalType: 'sns_opening',
     queries: ['site:instagram.com "新規オープンしました"', 'site:instagram.com "オープン準備中"', 'site:tiktok.com "新規オープン"', 'site:threads.net "新規オープン"', '"看板がつきました" "オープン"', '"内装工事中" "オープン予定"'] },
   { type: 'category_specific_portal_crawl', label: 'カテゴリ別ポータル', group: '公開日7日以内', mode: 'foundation', defaultEnabled: false, signalType: 'portal_published_date', note: '食べログ/楽天ビューティ/Caloo等。robots確認後に有効化' },
@@ -269,7 +269,7 @@ export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_pl
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
 export const ENGINE_SOURCE_TYPES = [
   'new_ssl_certificate_domain_scan', 'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
-  'document_to_lead_import', 'event_vendor_list_import', 'google_news_rss_opening', 'opening_soon_promotion',
+  'document_to_lead_import', 'event_vendor_list_import', 'google_news_rss_opening', 'opening_soon_promotion', 'public_open_data_crawl',
   'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
   'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',
   'lead_exclusion_classifier', 'sales_angle_classifier', 'calling_priority_queue', 'industry_fit_score', 'ai_duplicate_merge', 'area_hotspot_expansion',

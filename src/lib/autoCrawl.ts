@@ -136,7 +136,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     }
     // 本稼働エンジン系（Googleニュース RSS/エキテン公開日/WordPress初回投稿/sitemap直近更新/SSL新規発行）も
     // 自動巡回でローテーション実行（これまで手動実行のみで、自動では一度も回っていなかった）。古い順に2件/回。
-    const engineTypes = ['google_news_rss_opening', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
+    const engineTypes = ['google_news_rss_opening', 'public_open_data_crawl', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
       .filter((t) => toggles[t] !== false)
     const { data: lastE } = await admin.from('auto_lead_runs').select('source,created_date').in('source', engineTypes).order('created_date', { ascending: false }).limit(100)
     const lastByE = new Map<string, number>()

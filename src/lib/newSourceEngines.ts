@@ -620,11 +620,14 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
       // テキスト由来の開業日は確度/精度ゲート: 低確度・月のみ精度はHOT-A昇格に使わない（誤日付での誤投入防止）
       const srcTxt = String(c.opening_date_source || '')
       const isTextDate = /^article_text/.test(srcTxt)
+      // 保健所営業許可由来: 行政一次で日付は確実だが「経営者交代/移転も申請区分=新規」のため既存店チェックは必須
+      //（Google裏取り済みと同格に扱うと、取込時に既存店として降格した判断を翌巡回で覆して投入してしまう）
+      const needsEstab = isTextDate || srcTxt === 'health_permit'
       const conf = Number(c.opening_date_confidence ?? 0)
       if (isTextDate && (conf < 60 || /month$/.test(srcTxt))) { counts.skipped++; counts.textLowConfSkipped = (counts.textLowConfSkipped || 0) + 1; continue }
-      // テキスト由来は残り12秒未満だと後段の既存店チェックが予算条件(budgetEnd-8000)でスキップされ
-      // 無検証のままHOT-A投入される境界があるため、昇格前にここで次回へ持ち越す
-      if (isTextDate && remain() < 12000) { counts.skipped++; continue }
+      // 既存店チェック必須の由来は残り12秒未満だとチェックが予算条件(budgetEnd-8000)でスキップされ
+      // 無検証のままHOT投入される境界があるため、昇格前にここで次回へ持ち越す
+      if (needsEstab && remain() < 12000) { counts.skipped++; continue }
       const phone = c.phone_number || c.extracted_phone || ''
       const address = c.address || c.extracted_address || ''
       const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
@@ -635,14 +638,14 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
       // テキスト由来は高確度×日精度のみHOT-A。Google由来は従来通りHOT-A
       const strongText = isTextDate && conf >= 75 && /day$/.test(srcTxt)
       const tierUp: 'A' | 'B' = !isTextDate || strongText ? 'A' : 'B'
-      const evidenceLabel = isTextDate ? `記事由来・確度${conf}${/part$/.test(srcTxt) ? '・旬丸め' : ''}` : 'Google openingDate裏取り済み'
+      const evidenceLabel = isTextDate ? `記事由来・確度${conf}${/part$/.test(srcTxt) ? '・旬丸め' : ''}` : srcTxt === 'health_permit' ? '保健所営業許可・行政一次データ' : 'Google openingDate裏取り済み'
       const why = c.google_business_status === 'FUTURE_OPENING' ? `開業予定(FUTURE_OPENING${c.google_opening_date_raw ? `・${c.google_opening_date_raw}` : ''})`
         : (duo != null && duo >= 0) ? `開業まで${duo}日${c.opening_date ? `（${c.opening_date}）` : ''}`
         : `開業${Math.abs(dso ?? 0)}日目${c.opening_date ? `（${c.opening_date}）` : ''}`
       await admin.from('lead_candidates').update({ lead_temperature: 'HOT', hot_tier: tierUp, recommended_status: tierUp === 'A' ? 'HOT_A' : 'HOT_B', auto_import_reason: `開業予定日キュー: ${why}（${evidenceLabel}）`, ai_comment: `開業予定日キュー: ${why}。開業前後はMEO/HP提案の最適期。` }).eq('id', c.id)
       counts.promotedHot++
-      // 統一投入前ゲート。Google裏取り済みは既存店チェックskip / テキスト由来はPlaces口コミの既存店チェック必須
-      const gate = await caseImportGate(admin, { name, phone, address, mapsKey: isTextDate ? mapsKey : null, skipEstablishment: !isTextDate, budgetEndMs: startMs + budgetMs })
+      // 統一投入前ゲート。Google裏取り済みは既存店チェックskip / テキスト・営業許可由来はPlaces口コミの既存店チェック必須
+      const gate = await caseImportGate(admin, { name, phone, address, mapsKey: needsEstab ? mapsKey : null, skipEstablishment: !needsEstab, budgetEndMs: startMs + budgetMs })
       if (!gate.ok) { await applyGateDowngrade(admin, c.id, gate); counts.promotedHot = Math.max(0, counts.promotedHot - 1); counts.skipped++; continue }
       const dupCaseId = await findCaseIdByPhone(admin, phone)
       const nowIso = new Date().toISOString()
@@ -926,12 +929,218 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
   } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
+// ============================================================
+// 4.8) 保健所「食品営業許可」オープンデータ取込（public_open_data_crawl）
+//   行政一次データ＝誤検知ほぼゼロの最上流シグナル。「新規許可」＝開業直前後の店そのもの。
+//   形式は2系統: (a)台東区型=月次の新規許可のみのCSV (b)国の標準データセット様式の全施設台帳
+//   （施設名称/所在地_連結表記/施設電話番号/初回許可年月日/申請区分/廃業年月日…列名は全国共通）。
+//   エンコードはUTF-8 BOM/Shift-JIS/UTF-16LEが混在するため自動判定する。
+// ============================================================
+export interface PermitSource { key: string; label: string; kind: 'taito_monthly' | 'std_registry'; urls: (nowMs: number) => string[]; areaPrefix?: string; telAreaCode?: string }
+export const PERMIT_SOURCES: PermitSource[] = [
+  {
+    key: 'taito', label: '台東区 月次新規許可', kind: 'taito_monthly', areaPrefix: '東京都台東区', telAreaCode: '03',
+    // 公開は月遅れ（当月分は404が正常）: 当月→前月→前々月の順で最初に取れたファイルを使う
+    urls: (nowMs) => {
+      const out: string[] = []
+      for (let back = 0; back <= 2; back++) {
+        const d = new Date(nowMs + 9 * 3600000); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - back)
+        out.push(`https://www.city.taito.lg.jp/kenkohukusi/kenkokikikanrieisei/food/syokuhin-sisetu/index.files/OPD${String(d.getUTCMonth() + 1).padStart(2, '0')}_PER.csv`)
+      }
+      return out
+    },
+  },
+  { key: 'minato', label: '港区 営業許可台帳', kind: 'std_registry', urls: () => ['https://opendata.city.minato.tokyo.jp/dataset/54d8c582-00e2-4730-a23f-4a5befec9ae5/resource/c9d0299e-8e05-4317-877f-83055709e41f/download/food_business_all.csv'] },
+  // ※実測で外したソース（2026-07実査）: 江東/中央/新宿=標準台帳だが年次スナップショット更新で直近45日の新規0件、
+  //   中野=日付列なしの独自様式。更新頻度の高い自治体が見つかれば std_registry で1行追加するだけで対応可能。
+]
+
+/** 政府系CSVのエンコード自動判定デコード（UTF-8 BOM / UTF-16LE BOM / Shift-JIS / UTF-8）。 */
+export function decodeGovCsv(buf: Buffer): string {
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return buf.subarray(3).toString('utf8')
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le')
+  const tryDecs: string[] = []
+  try { tryDecs.push(new TextDecoder('shift_jis').decode(buf)) } catch { /* full-icu無し環境 */ }
+  tryDecs.push(buf.toString('utf8'))
+  // 「許可/施設/営業」の出現が多い方を採用（誤エンコードだと壊れて出現しない）
+  let best = tryDecs[0] || ''
+  let bestScore = -1
+  for (const t of tryDecs) { const sc = (t.slice(0, 4000).match(/許可|施設|営業|名称/g) || []).length; if (sc > bestScore) { bestScore = sc; best = t } }
+  return best
+}
+
+/** ダブルクォート対応の最小CSVパーサ（RFC4180相当・状態機械）。 */
+function parseCsvRows(text: string, maxRows = 100000): string[][] {
+  const rows: string[][] = []
+  let field = '', row: string[] = [], inQ = false
+  for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+    const ch = text[i]
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++ } else inQ = false }
+      else field += ch
+    } else if (ch === '"') inQ = true
+    else if (ch === ',') { row.push(field); field = '' }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      row.push(field); field = ''
+      if (row.length > 1 || row[0] !== '') rows.push(row)
+      row = []
+    } else field += ch
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row) }
+  return rows
+}
+
+const zenToHan = (s: string) => String(s || '').replace(/[０-９Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/　/g, ' ').replace(/[−－‐]/g, '-').trim()
+const parsePermitDate = (s: string) => { const m = zenToHan(s).match(/(20\d{2})[/.年-]\s?(\d{1,2})[/.月-]\s?(\d{1,2})/); return m ? Date.parse(`${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}T00:00:00+09:00`) : NaN }
+// 対象業種（来店型の飲食/食品製造）。販売・自販機・運搬・催事・移動営業はMEO/HP営業の対象外
+const PERMIT_INDUSTRY_OK_RE = /(飲食店営業|喫茶|菓子製造|アイスクリーム|そうざい|調理|パン|めん類)/
+const PERMIT_INDUSTRY_NG_RE = /(販売|自動販売機|自動車|運搬|集乳|冷凍|倉庫|催事|移動)/
+
+export interface FreshPermitRow { name: string; addr: string; tel: string; kind: string; iso: string; no: string; op: string }
+/** CSVバッファから「直近の新規営業許可」行を抽出する純関数（エンジンとローカル検証テストで共用）。
+ *  新規判定: 初回許可年月日が直近 ＞ （初回列なし）申請区分=新規かつ許可開始日が直近 ＞ 台東月次（全行その月の許可）。
+ *  更新許可（初回が古く許可開始日だけ新しい行）を新店と誤認しないための優先順位。 */
+export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: number): { rows: number; fresh: FreshPermitRow[]; error: string } {
+  const rows = parseCsvRows(decodeGovCsv(buf))
+  if (rows.length < 2) return { rows: 0, fresh: [], error: 'CSVが空/解析不能' }
+  const header = rows[0].map((h) => zenToHan(h).replace(/\s|"/g, ''))
+  const col = (...names: string[]) => { for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i } return -1 }
+  // 列マップ（台東型と標準データセット様式の両対応・列名で特定＝位置固定にしない）
+  const cName = col('施設名称', '屋号')
+  const cAddr = col('所在地_連結表記', '営業所所在地')
+  const cAddr2 = col('施設方書', '営業所方書')
+  const cTel = col('施設電話番号', '営業所TEL')
+  const cKind = col('営業の種類', '業種')
+  const cFirst = col('初回許可年月日')
+  const cStart = col('許可開始日', '許可年月日')
+  const cClosed = col('廃業年月日')
+  const cApply = col('申請区分')
+  const cOp = col('法人名', '営業者名')
+  const cNo = col('許可番号')
+  if (cName < 0 || cAddr < 0 || cStart < 0) return { rows: rows.length - 1, fresh: [], error: `必須列が見つからない（header: ${header.slice(0, 8).join(',')}）` }
+
+  const fresh: FreshPermitRow[] = []
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i]
+    if (cClosed >= 0 && zenToHan(r[cClosed] || '')) continue  // 廃業済み
+    const kind = zenToHan(r[cKind] || '')
+    if (kind && (!PERMIT_INDUSTRY_OK_RE.test(kind) || PERMIT_INDUSTRY_NG_RE.test(kind))) continue
+    const firstMs = cFirst >= 0 ? parsePermitDate(r[cFirst] || '') : NaN
+    const startMs2 = parsePermitDate(r[cStart] || '')
+    let freshOk = false; let evMs = NaN
+    if (Number.isFinite(firstMs)) { freshOk = firstMs >= sinceMs; evMs = firstMs }
+    else if (cApply >= 0 && /新規/.test(zenToHan(r[cApply] || ''))) { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
+    else if (src.kind === 'taito_monthly') { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
+    if (!freshOk || !Number.isFinite(evMs)) continue
+    const name = zenToHan(r[cName] || '').replace(/["']/g, '').slice(0, 60)
+    let addr = zenToHan(r[cAddr] || '').replace(/\s+/g, '')
+    // 方書（ビル名/階）は連結表記に含まれていない場合のみ追記（港区は連結表記が方書を含み重複するため）
+    const addr2 = cAddr2 >= 0 ? zenToHan(r[cAddr2] || '').replace(/\s+/g, '') : ''
+    if (addr2 && !addr.includes(addr2)) addr += addr2
+    addr = addr.slice(0, 90)
+    if (!name || name.length < 2 || !addr) continue
+    if (/一円|催事|イベント|移動/.test(addr)) continue  // 固定店舗でない（キッチンカー/催事）
+    if (src.areaPrefix && !/^(北海道|東京都|(?:京都|大阪)府|[一-龥]{2,3}県)/.test(addr)) addr = `${src.areaPrefix}${addr}`
+    let tel = cTel >= 0 ? zenToHan(r[cTel] || '').replace(/[^\d-]/g, '') : ''
+    if (tel && !/^0/.test(tel) && src.telAreaCode) tel = `${src.telAreaCode}-${tel}`  // 台東は市外局番なし表記
+    const op = cOp >= 0 ? zenToHan(r[cOp] || '') : ''
+    // 営業者が大手チェーン/大手法人なら除外（※=個人営業者は最優先ターゲット）
+    if (op && op !== '※' && (detectChain(op).definite || detectBigOrPublic(op).exclude)) continue
+    const no = cNo >= 0 ? zenToHan(r[cNo] || '').replace(/[^\dA-Za-z]/g, '') : ''
+    // evMsはJST 0時のepoch。UTCのtoISOStringだと前日15:00Z=日付が1日巻き戻るため+9hしてからJST暦日を取る
+    fresh.push({ name, addr, tel, kind, iso: new Date(evMs + 9 * 3600000).toISOString().slice(0, 10), no: no || `${src.key}-${i}`, op })
+  }
+  // 同一店の複数業種行をdedupe ＋ 電話あり行を先に（即HOT候補・enrich不要で安い）
+  const seenKey = new Set<string>()
+  const uniq = fresh.filter((f) => { const k = `${f.name}|${f.addr}`; if (seenKey.has(k)) return false; seenKey.add(k); return true })
+    .sort((a, b) => (b.tel ? 1 : 0) - (a.tel ? 1 : 0))
+  return { rows: rows.length - 1, fresh: uniq, error: '' }
+}
+
+export async function runHealthPermitScan(admin: any, mapsKey: string | null, opts: { runBudgetMs?: number; limit?: number; recencyDays?: number } = {}, userId: string | null): Promise<any> {
+  const startMs = Date.now(); const budgetMs = Math.max(20000, Math.min(280000, opts.runBudgetMs || 150000)); const remain = () => budgetMs - (Date.now() - startMs)
+  const perItemMs = Math.min(15000, Math.floor(budgetMs / 3))  // 【不変条件】敷居は必ず予算より小さく（恒久0件バグの再発防止）
+  const maxItems = Math.max(1, Math.min(60, opts.limit || 12))
+  const recencyDays = Math.max(7, Math.min(90, opts.recencyDays || 45))
+  const counts: any = { sourceType: 'public_open_data_crawl', label: '保健所営業許可オープンデータ', sources: 0, rows: 0, fresh: 0, fetched: 0, hot: 0, hold: 0, excluded: 0, imported: 0, seenSkipped: 0, skipped: 0 }
+  const runId = await startRun(admin, 'public_open_data_crawl', userId)
+  const importedCases: any[] = []
+  try {
+    // ローテーション: 1回2ソース（実行回数ベース）。台帳は月次更新なので全ソース1〜2日で一巡すれば十分
+    const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'public_open_data_crawl')
+    const startIdx = ((rc || 0) * 2) % PERMIT_SOURCES.length
+    const picked = [PERMIT_SOURCES[startIdx % PERMIT_SOURCES.length], PERMIT_SOURCES[(startIdx + 1) % PERMIT_SOURCES.length]].filter((v, i, a) => a.indexOf(v) === i)
+    const sinceMs = Date.now() - recencyDays * 86400000
+    let processed = 0
+
+    for (const src of picked) {
+      if (remain() < perItemMs + 15000 || processed >= maxItems) break
+      // CSV取得（月次ファイルはフォールバック列を順に試す）
+      let csvUrl = ''; let buf: Buffer | null = null
+      for (const u of src.urls(Date.now())) {
+        try {
+          const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 15000)
+          const r = await fetch(u, { headers: { 'User-Agent': UA, Accept: 'text/csv,*/*' }, signal: ctrl.signal, redirect: 'follow' })
+          if (r.ok) {
+            const ab = await r.arrayBuffer(); clearTimeout(to)
+            if (ab.byteLength > 0 && ab.byteLength < 25 * 1024 * 1024) { buf = Buffer.from(ab); csvUrl = u; break }
+          } else clearTimeout(to)
+        } catch { /* 次のURLへ */ }
+      }
+      if (!buf) { counts.skipped++; continue }
+      counts.sources++
+      const ext = extractFreshPermitRows(src, buf, sinceMs)
+      counts.rows += ext.rows
+      counts.fresh += ext.fresh.length
+      if (ext.error) { counts.skipped++; continue }
+      const uniq = ext.fresh
+
+      for (const f of uniq) {
+        if (remain() < perItemMs || processed >= maxItems) break
+        // 既読（許可番号）スキップ＝冪等
+        const hashKey = `${src.key}-${f.no}`.slice(0, 80)
+        const { data: seen } = await admin.from('discovery_seen_urls').select('id').eq('source_type', 'public_open_data_crawl').eq('url_hash', hashKey).limit(1)
+        if (seen?.[0]) { counts.seenSkipped++; continue }
+        processed++; counts.fetched++
+        // 行識別はクエリパラメータで付与する。#フラグメントは ingestFromUrl が先頭で剥がすため、
+        // #方式だと全行が同一source_detail_urlに潰れて相互上書き＋2行目以降の投入が恒久ブロックされる（検証で実証済み）
+        const rowUrl = `${csvUrl}${csvUrl.includes('?') ? '&' : '?'}rst_no=${encodeURIComponent(f.no)}`
+        const r = await ingestFromUrl(admin, mapsKey, {
+          url: rowUrl, sourceType: 'public_open_data_crawl', label: `保健所営業許可(${src.label})`, signalType: 'public_permit',
+          hintName: f.name, hintPhone: f.tel, hintAddress: f.addr, evidenceIso: f.iso,
+          extraText: `${f.kind} 新規営業許可 ${f.iso} ${f.op && f.op !== '※' ? f.op : '個人営業'}`,
+          userId, runId,
+        })
+        // 既読マークはingest完了後に押す（先に押すと関数打ち切り時にその行が候補未作成のまま恒久スキップ＝月次ファイルは再掲されず永久喪失）
+        await admin.from('discovery_seen_urls').upsert({ source_type: 'public_open_data_crawl', url_hash: hashKey, url: rowUrl }, { onConflict: 'source_type,url_hash' }).then(() => {}, () => {})
+        if (r.temperature === 'HOT') { counts.hot++; if (r.imported) { counts.imported++; importedCases.push({ id: r.importedCaseId, name: r.name, phone: r.phone, address: r.address }) } }
+        else if (r.temperature === 'EXCLUDED') counts.excluded++
+        else if (r.temperature === 'SKIPPED') counts.skipped++
+        else counts.hold++
+        // 許可開始日≒開業日として候補に記録（行政一次＝高確度。開業予定キュー/再コール/スイープ優先順が使う）。
+        // ※既存店ガードで降格(DOWNGRADED)/除外された候補には書かない: 開業予定キューが翌巡回で拾って降格判断を覆すのを防ぐ
+        if (r.candidateId && r.temperature !== 'DOWNGRADED' && r.temperature !== 'EXCLUDED') {
+          const diff = Math.round((Date.parse(f.iso + 'T00:00:00+09:00') - Date.now()) / 86400000)
+          await admin.from('lead_candidates').update({
+            opening_date: f.iso, opening_date_source: 'health_permit', opening_date_confidence: 75,
+            days_until_opening: diff >= 0 ? diff : null, days_since_opening: diff < 0 ? -diff : null,
+          }).eq('id', r.candidateId).then(() => {}, () => {})
+        }
+      }
+    }
+    await finishRun(admin, runId, counts)
+    return { ok: true, ...counts, importedCases }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+}
+
 // source_type → エンジン実行の振り分け。run.ts から呼ぶ。未対応(OCR/PDF/Meta API要)は null を返す。
 export async function runEngineSource(admin: any, mapsKey: string | null, sourceType: string, opts: any, userId: string | null): Promise<any | null> {
   switch (sourceType) {
     case 'new_ssl_certificate_domain_scan': return runSslCertScan(admin, mapsKey, opts, userId)
     case 'google_news_rss_opening': return runGoogleNewsRss(admin, mapsKey, opts, userId)
     case 'opening_soon_promotion': return runOpeningSoonQueue(admin, { ...(opts || {}), mapsKey }, userId)
+    case 'public_open_data_crawl': return runHealthPermitScan(admin, mapsKey, opts, userId)
     case 'wordpress_first_post_scan': return runDomainSignalScan(admin, mapsKey, 'wordpress', opts, userId)
     case 'sitemap_recent_url_scan': return runDomainSignalScan(admin, mapsKey, 'sitemap', opts, userId)
     case 'new_domain_registration_scan': return runDomainSignalScan(admin, mapsKey, 'rdap', opts, userId)
