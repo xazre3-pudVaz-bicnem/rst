@@ -352,8 +352,9 @@ export default function Employees() {
 
             {/* 勤務時間 */}
             <FormSection title="勤務時間">
-              <TextField label="所定始業（HH:mm）" value={form.standard_work_start} onChange={(v) => setField('standard_work_start', v)} placeholder="09:00" />
-              <TextField label="所定終業（HH:mm）" value={form.standard_work_end} onChange={(v) => setField('standard_work_end', v)} placeholder="18:00" />
+              {/* type="time" で HH:mm 以外の不正値（"9時"等）を排除し、遅刻/所定労働の split(':') 破損を防止 */}
+              <TextField label="所定始業" type="time" value={form.standard_work_start} onChange={(v) => setField('standard_work_start', v)} placeholder="09:00" />
+              <TextField label="所定終業" type="time" value={form.standard_work_end} onChange={(v) => setField('standard_work_end', v)} placeholder="18:00" />
               <NumberField label="休憩（分）" value={form.standard_break_minutes} onChange={(v) => setField('standard_break_minutes', v)} />
               <NumberField label="週所定労働日数" value={form.weekly_work_days} onChange={(v) => setField('weekly_work_days', v)} />
               <NumberField label="締め日" value={form.closing_day} onChange={(v) => setField('closing_day', v)} />

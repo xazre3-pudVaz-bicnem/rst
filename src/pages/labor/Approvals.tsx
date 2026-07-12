@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   ClipboardCheck, Plus, Check, X, Clock, User as UserIcon, Search,
 } from 'lucide-react'
@@ -209,6 +209,11 @@ export default function Approvals() {
     const employee_id = perms.selfOnly && myEmployee ? myEmployee.id : form.employee_id
     if (!employee_id) { toast.error('従業員を選択してください'); return }
     if (!form.request_type) { toast.error('申請種別を選択してください'); return }
+    // 有給申請は残高引当まで行う休暇管理へ一本化。ここでは作成せず誘導のみ
+    if (form.request_type === '有給申請') {
+      toast.info('有給申請は「有給・休暇管理」から行ってください')
+      return
+    }
     setCreating(true)
     try {
       const now = new Date().toISOString()
@@ -539,6 +544,20 @@ export default function Approvals() {
                 </SelectContent>
               </Select>
             </div>
+            {form.request_type === '有給申請' ? (
+              // 有給は残高引当込みの休暇管理へ誘導（二系統でのデータ欠落を防ぐ）
+              <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-2xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                <p className="mb-1.5">有給の申請は残高から自動で引き当てるため「有給・休暇管理」から行ってください。</p>
+                <Link
+                  to="/labor/leaves?new=1"
+                  className="inline-flex items-center gap-1 font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900 dark:text-sky-300"
+                  onClick={() => setCreateOpen(false)}
+                >
+                  有給・休暇管理を開く
+                </Link>
+              </div>
+            ) : (
+              <>
             <div>
               <label className="mb-1 block font-medium text-muted-foreground">件名</label>
               <Input
@@ -558,10 +577,12 @@ export default function Approvals() {
                 className="text-xs"
               />
             </div>
+              </>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>キャンセル</Button>
-            <Button disabled={creating} onClick={submitCreate}>
+            <Button disabled={creating || form.request_type === '有給申請'} onClick={submitCreate}>
               {creating ? '送信中…' : '申請する'}
             </Button>
           </DialogFooter>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CalendarDays, Clock, Moon, TrendingUp, AlertTriangle, LogOut, Pencil, UserPlus } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { CalendarDays, Clock, Moon, TrendingUp, AlertTriangle, LogOut, Pencil, UserPlus, Calculator } from 'lucide-react'
 import LaborLayout from '@/components/layout/LaborLayout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,13 +15,13 @@ import { SkeletonRows } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/toast'
 import { useAuth } from '@/context/AuthContext'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
-import { EmployeeApi, AttendanceApi, LaborAuditApi } from '@/lib/api'
+import { EmployeeApi, AttendanceApi, LaborAuditApi, LaborSettingsApi } from '@/lib/api'
 import {
-  laborPerms, attendanceStatusColor, computeAttendance, fmtMinutes, fmtTime,
+  laborPerms, attendanceStatusColor, computeAttendance, fmtMinutes, fmtTime, scheduledMinutesFor,
   monthStr, todayStr, ATTENDANCE_STATUSES, WORK_LOCATION_TYPES,
 } from '@/lib/labor'
 import { cn } from '@/lib/utils'
-import type { Employee, AttendanceRecord } from '@/lib/types'
+import type { Employee, AttendanceRecord, LaborSettings } from '@/lib/types'
 
 const ALL = '__all__'
 
@@ -40,6 +41,13 @@ function toIso(dateStr: string, time: string): string | null {
   return d.toISOString()
 }
 
+/** YYYY-MM-DD の翌日を YYYY-MM-DD で返す（日跨ぎ夜勤の退勤/休憩終了に使用） */
+function nextDayStr(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00`)
+  d.setDate(d.getDate() + 1)
+  return todayStr(d)
+}
+
 const locationLabel = (v?: string | null) =>
   WORK_LOCATION_TYPES.find((t) => t.value === v)?.label ?? '—'
 
@@ -57,12 +65,14 @@ interface EditForm {
 }
 
 export default function Attendance() {
+  const navigate = useNavigate()
   const toast = useToast()
   const { role, user, displayName } = useAuth()
   const perms = laborPerms(role)
 
   const [employees, setEmployees] = useState<Employee[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
+  const [settings, setSettings] = useState<LaborSettings | null>(null)
   const [month, setMonth] = useState(monthStr())
   const [empFilter, setEmpFilter] = useState<string>(ALL)
   const [statusFilter, setStatusFilter] = useState<string>(ALL)
@@ -82,19 +92,32 @@ export default function Attendance() {
     if (!isSupabaseConfigured) { setLoading(false); return }
     setLoading(true)
     try {
-      const [emps, recs] = await Promise.all([
-        EmployeeApi.list(),
-        AttendanceApi.listByMonth(month),
-      ])
-      setEmployees(emps)
-      setRecords(recs)
+      if (perms.canViewAll) {
+        // 管理者・マネージャー・閲覧者: 全社の従業員（修正時の所定時刻算出に給与項目付き list が必要）と月次勤怠
+        const [emps, recs, st] = await Promise.all([
+          EmployeeApi.list(),
+          AttendanceApi.listByMonth(month),
+          LaborSettingsApi.get(),
+        ])
+        setEmployees(emps)
+        setRecords(recs)
+        setSettings(st)
+      } else {
+        // 一般従業員(selfOnly): 同僚の給与・勤怠を露出させないため listDirectory + 自分の勤怠のみ取得
+        const [dir, st] = await Promise.all([EmployeeApi.listDirectory(), LaborSettingsApi.get()])
+        setSettings(st)
+        const meLite = dir.find((e) => e.user_id && user?.id && e.user_id === user.id)
+        setEmployees(meLite ? [meLite as Employee] : [])
+        const mine = meLite ? await AttendanceApi.listByEmployee(meLite.id) : []
+        setRecords(mine.filter((r) => r.work_date.startsWith(month)))
+      }
     } catch (e) {
       console.error('[Attendance]', e)
       toast.error(e instanceof Error ? e.message : '勤怠の読み込みに失敗しました')
     } finally {
       setLoading(false)
     }
-  }, [month])
+  }, [month, perms.canViewAll, user])
 
   useEffect(() => { load() }, [load])
 
@@ -159,13 +182,22 @@ export default function Attendance() {
     try {
       const wd = editing.work_date
       const clock_in_at = toIso(wd, form.clockIn)
-      const clock_out_at = toIso(wd, form.clockOut)
+      // 退勤が出勤以前なら日跨ぎ夜勤とみなし翌日日付で再生成（実働0分・深夜0分の誤算出を防止）
+      let clock_out_at = toIso(wd, form.clockOut)
+      if (clock_in_at && clock_out_at && new Date(clock_out_at) <= new Date(clock_in_at)) {
+        clock_out_at = toIso(nextDayStr(wd), form.clockOut)
+      }
       const break_start_at = toIso(wd, form.breakStart)
-      const break_end_at = toIso(wd, form.breakEnd)
+      let break_end_at = toIso(wd, form.breakEnd)
+      if (break_start_at && break_end_at && new Date(break_end_at) <= new Date(break_start_at)) {
+        break_end_at = toIso(nextDayStr(wd), form.breakEnd)
+      }
       const total_break_minutes = Number(form.totalBreak) || 0
+      // 所定労働は従業員マスタ→労務設定の順で決定（480固定を廃止し時短勤務者の残業も正しく算出）
+      const sched = scheduledMinutesFor(empById.get(editing.employee_id), settings)
       const c = computeAttendance(
         { clock_in_at, clock_out_at, break_start_at, break_end_at, total_break_minutes },
-        480,
+        sched,
       )
       const payload: Partial<AttendanceRecord> = {
         status: form.status,
@@ -270,6 +302,12 @@ export default function Attendance() {
             {perms.canManage && (
               <Button size="sm" variant="outline" onClick={() => { setProxyEmp(''); setProxyDate(todayStr()); setProxyOpen(true) }}>
                 <UserPlus className="h-3.5 w-3.5" />代理打刻
+              </Button>
+            )}
+            {perms.canManage && (
+              // 月次締めフロー: 表示中の月をそのまま給与計算画面へ引き継ぐ
+              <Button size="sm" onClick={() => navigate(`/labor/payroll-calc?month=${month}`)}>
+                <Calculator className="h-3.5 w-3.5" />この月を給与計算へ
               </Button>
             )}
           </div>
@@ -440,7 +478,7 @@ export default function Attendance() {
                 <Textarea rows={2} className="text-xs" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
               </label>
 
-              <p className="text-2xs text-muted-foreground">保存時に実働・残業・深夜を自動再計算します。</p>
+              <p className="text-2xs text-muted-foreground">保存時に実働・残業・深夜を自動再計算します。退勤が出勤より前の時刻の場合は翌日扱い（日跨ぎ夜勤）として計算します。</p>
             </div>
           )}
           <DialogFooter>

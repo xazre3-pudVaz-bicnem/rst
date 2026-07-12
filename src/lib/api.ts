@@ -539,7 +539,30 @@ export const CallSessionApi = {
 // テーブル未適用環境でも一覧系は空配列で握りつぶし、画面を壊さない。
 // ============================================================
 
-/** テーブル未作成でも落ちない一覧取得の共通ヘルパ */
+/**
+ * テーブル未作成（PostgrestError code 42P01 = undefined_table）判定。
+ * これ以外（権限エラー 42501・接続断・RLS 等）は障害なので握りつぶさず throw させる。
+ * 「未適用環境で空表示」と「本番での一時障害を空データと誤認」を切り分けるための基準。
+ */
+function isMissingTable(error: { code?: string } | null | undefined): boolean {
+  return error?.code === '42P01'
+}
+
+/**
+ * 'YYYY-MM' の翌月1日 'YYYY-MM-01' を返す（月次範囲クエリの排他上限用）。
+ * `${month}-31` を固定上限にすると2/4/6/9/11月で不正日付(22008)になりクエリが落ちるため、
+ * DATE型カラムには [月初, 翌月初) の半開区間で範囲指定する。
+ */
+function nextMonthFirst(month: string): string {
+  const [y, m] = month.split('-').map(Number)
+  return m >= 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`
+}
+
+/**
+ * テーブル未作成でも落ちない一覧取得の共通ヘルパ。
+ * 42P01（テーブル未作成）のみ空配列で握りつぶし、それ以外のエラーは throw する。
+ * 呼び出し側の load() は try/catch + toast 実装済みのため、障害はユーザーに可視化される。
+ */
 async function safeList<T>(table: string, orderCol: string, ascending = false, limit = 1000): Promise<T[]> {
   const { data, error } = await supabase
     .from(table)
@@ -547,14 +570,34 @@ async function safeList<T>(table: string, orderCol: string, ascending = false, l
     .order(orderCol, { ascending })
     .limit(limit)
   if (error) {
-    console.warn(`[Labor] ${table} list skipped:`, error.message)
-    return []
+    if (isMissingTable(error)) {
+      console.warn(`[Labor] ${table} 未作成のため空表示:`, error.message)
+      return []
+    }
+    throw new Error(error.message)
   }
   return (data ?? []) as T[]
 }
 
 export const EmployeeApi = {
   list: (limit = 1000) => safeList<Employee>('employees', 'created_at', true, limit),
+  /**
+   * 給与項目（base_salary/hourly_wage/口座情報等）を含まない従業員ディレクトリ。
+   * 名前解決・一覧表示のみ必要な画面（勤怠・承認・ダッシュボード）はこちらを使い、
+   * 一般ロールへ同僚の給与情報を露出させない。RLS 整備前の段階的遮断（select 限定）。
+   */
+  async listDirectory(limit = 1000): Promise<Employee[]> {
+    const { data, error } = await supabase
+      .from('employees')
+      .select('id,user_id,name,name_kana,department,position,status,work_style,employment_type')
+      .order('created_at', { ascending: true })
+      .limit(limit)
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Employee] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
+    return (data ?? []) as Employee[]
+  },
   async get(id: string): Promise<Employee | null> {
     const { data, error } = await supabase.from('employees').select('*').eq('id', id).maybeSingle()
     if (error) { console.warn('[Employee] get', error.message); return null }
@@ -579,23 +622,33 @@ export const AttendanceApi = {
   async listByDate(date: string): Promise<AttendanceRecord[]> {
     const { data, error } = await supabase
       .from('attendance_records').select('*').eq('work_date', date)
-    if (error) { console.warn('[Attendance] listByDate', error.message); return [] }
+    // 未作成のみ空表示。権限エラー等は throw して「0件」と誤認させない（給与計算の空明細事故防止）
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Attendance] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as AttendanceRecord[]
   },
   async listByMonth(month: string): Promise<AttendanceRecord[]> {
     // month = 'YYYY-MM'
     const { data, error } = await supabase
       .from('attendance_records').select('*')
-      .gte('work_date', `${month}-01`).lte('work_date', `${month}-31`)
+      .gte('work_date', `${month}-01`).lt('work_date', nextMonthFirst(month))
       .order('work_date', { ascending: false })
-    if (error) { console.warn('[Attendance] listByMonth', error.message); return [] }
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Attendance] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as AttendanceRecord[]
   },
   async listByEmployee(employeeId: string, limit = 200): Promise<AttendanceRecord[]> {
     const { data, error } = await supabase
       .from('attendance_records').select('*').eq('employee_id', employeeId)
       .order('work_date', { ascending: false }).limit(limit)
-    if (error) { console.warn('[Attendance] listByEmployee', error.message); return [] }
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Attendance] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as AttendanceRecord[]
   },
   async getForDay(employeeId: string, date: string): Promise<AttendanceRecord | null> {
@@ -628,7 +681,7 @@ export const ShiftApi = {
   async listByMonth(month: string): Promise<WorkShift[]> {
     const { data, error } = await supabase
       .from('work_shifts').select('*')
-      .gte('shift_date', `${month}-01`).lte('shift_date', `${month}-31`)
+      .gte('shift_date', `${month}-01`).lt('shift_date', nextMonthFirst(month))
       .order('shift_date', { ascending: true })
     if (error) { console.warn('[Shift] listByMonth', error.message); return [] }
     return (data ?? []) as WorkShift[]
@@ -671,6 +724,23 @@ export const LeaveRequestApi = {
     const { data, error } = await supabase.from('leave_requests').insert(payload).select().single()
     return unwrap(data, error)
   },
+  /**
+   * status='pending' の行だけを条件付き update する楽観ロック（二重承認防止）。
+   * 他の管理者が先に承認/却下して pending でなくなっていれば更新0件となり {conflict:true} を返す。
+   * 呼び出し側は conflict 時に「他の管理者が処理済み」を表示し再読込する。
+   */
+  async approveIfPending(id: string, patch: Partial<LeaveRequest>): Promise<{ conflict?: boolean }> {
+    const { data, error } = await supabase
+      .from('leave_requests')
+      .update(patch)
+      .eq('id', id)
+      .eq('status', 'pending')
+      .select()
+    if (error) throw new Error(error.message)
+    // 更新行が0件 = 既に pending 以外（他管理者が処理済み）
+    if (!data || data.length === 0) return { conflict: true }
+    return {}
+  },
   async update(id: string, payload: Partial<LeaveRequest>): Promise<void> {
     const { error } = await supabase.from('leave_requests').update(payload).eq('id', id)
     if (error) throw new Error(error.message)
@@ -687,7 +757,10 @@ export const ApprovalApi = {
     const { data, error } = await supabase
       .from('approval_requests').select('*').eq('status', 'pending')
       .order('requested_at', { ascending: true })
-    if (error) { console.warn('[Approval] listPending', error.message); return [] }
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Approval] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as ApprovalRequest[]
   },
   async create(payload: Partial<ApprovalRequest>): Promise<ApprovalRequest> {
@@ -710,7 +783,10 @@ export const LaborAlertApi = {
     const { data, error } = await supabase
       .from('labor_alerts').select('*').eq('status', 'open')
       .order('created_at', { ascending: false })
-    if (error) { console.warn('[Alert] listOpen', error.message); return [] }
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Alert] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as LaborAlert[]
   },
   async create(payload: Partial<LaborAlert>): Promise<LaborAlert> {
@@ -802,7 +878,10 @@ export const PayslipApi = {
   async listByMonth(month: string): Promise<Payslip[]> {
     const { data, error } = await supabase
       .from('payslips').select('*').eq('target_month', month)
-    if (error) { console.warn('[Payslip] listByMonth', error.message); return [] }
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[Payslip] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
     return (data ?? []) as Payslip[]
   },
   async listByEmployee(employeeId: string, limit = 36): Promise<Payslip[]> {

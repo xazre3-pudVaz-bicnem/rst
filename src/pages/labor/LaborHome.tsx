@@ -16,7 +16,7 @@ import {
 } from '@/lib/api'
 import {
   laborPerms, attendanceStatusColor, alertSeverityColor, ALERT_SEVERITY_LABEL,
-  APPROVAL_STATUS_LABEL, computeAttendance, estimateMonthlyCost, fmtMinutes, fmtTime,
+  computeAttendance, estimateMonthlyCost, fmtMinutes, fmtTime, scheduledMinutesFor,
   todayStr, monthStr,
 } from '@/lib/labor'
 import { cn } from '@/lib/utils'
@@ -49,23 +49,46 @@ export default function LaborHome() {
     if (!isSupabaseConfigured) { setLoading(false); return }
     setLoading(true)
     try {
-      const [emps, att, mAtt, apps, alrt, bals, st] = await Promise.all([
-        EmployeeApi.list(),
-        AttendanceApi.listByDate(today),
-        AttendanceApi.listByMonth(month),
-        ApprovalApi.listPending(),
-        LaborAlertApi.listOpen(),
-        LeaveBalanceApi.list(),
-        LaborSettingsApi.get(),
-      ])
-      setEmployees(emps); setAttendance(att); setMonthAttendance(mAtt)
-      setApprovals(apps); setAlerts(alrt); setBalances(bals); setSettings(st)
+      if (perms.canViewAll) {
+        // 管理者・マネージャー・閲覧者: 全社データ（人件費見込には給与項目付き list() が必要）
+        const [emps, att, mAtt, apps, alrt, bals, st] = await Promise.all([
+          EmployeeApi.list(),
+          AttendanceApi.listByDate(today),
+          AttendanceApi.listByMonth(month),
+          ApprovalApi.listPending(),
+          LaborAlertApi.listOpen(),
+          LeaveBalanceApi.list(),
+          LaborSettingsApi.get(),
+        ])
+        setEmployees(emps); setAttendance(att); setMonthAttendance(mAtt)
+        setApprovals(apps); setAlerts(alrt); setBalances(bals); setSettings(st)
+      } else {
+        // 一般従業員(selfOnly): 同僚の給与・勤怠を露出させないため全社 list() は使わず、
+        // 給与項目を含まない listDirectory() で自分を特定→自分の全レコードのみ取得。
+        const [dir, st] = await Promise.all([EmployeeApi.listDirectory(), LaborSettingsApi.get()])
+        setSettings(st)
+        const meLite = dir.find((e) => e.user_id && user?.id && e.user_id === user.id)
+        if (!meLite) {
+          setEmployees([]); setAttendance([]); setMonthAttendance([])
+          setApprovals([]); setAlerts([]); setBalances([])
+          return
+        }
+        // 自分自身のフルレコード（自分の給与・所定時刻は本人閲覧のため漏洩ではない）
+        const [me, mine] = await Promise.all([
+          EmployeeApi.get(meLite.id),
+          AttendanceApi.listByEmployee(meLite.id),
+        ])
+        setEmployees(me ? [me] : [meLite as Employee])
+        setAttendance(mine.filter((r) => r.work_date === today))
+        setMonthAttendance(mine.filter((r) => r.work_date.startsWith(month)))
+        setApprovals([]); setAlerts([]); setBalances([])
+      }
     } catch (e) {
       console.error('[LaborHome]', e)
     } finally {
       setLoading(false)
     }
-  }, [today, month])
+  }, [today, month, perms.canViewAll, user])
 
   useEffect(() => { load() }, [load])
 
@@ -76,6 +99,15 @@ export default function LaborHome() {
   )
   const attByEmp = useMemo(() => new Map(attendance.map((a) => [a.employee_id, a])), [attendance])
   const myRecord = myEmployee ? attByEmp.get(myEmployee.id) ?? null : null
+
+  // 現在の状況から「次に押すべき打刻」を判定し、その1つだけを強調表示する
+  const nextAction = useMemo(() => {
+    const s = myRecord?.status ?? '未出勤'
+    if (s === '出勤中') return '退勤'
+    if (s === '休憩中') return '休憩終了'
+    if (s === '退勤済') return '' // 本日は完了。打ち直しは可能だが強調はしない
+    return '出勤'
+  }, [myRecord])
 
   // --- 本日の勤怠サマリー ---
   const summary = useMemo(() => {
@@ -142,11 +174,14 @@ export default function LaborHome() {
 
   // --- 給与連携前チェック ---
   const payrollCheck = useMemo(() => {
-    const unclosedCount = activeEmployees.length // 締め機能は月次集計側。ここでは全員未締め扱いの目安
-    const punchErrors = monthAttendance.filter((r) => r.clock_in_at && !r.clock_out_at).length
+    // 「今月まだ一度も打刻していない在籍者」だけを未対応として数える（全員未締め扱いのオオカミ少年を解消）
+    const punchedEmp = new Set(monthAttendance.map((r) => r.employee_id))
+    const unclosedCount = activeEmployees.filter((e) => !punchedEmp.has(e.id)).length
+    // 退勤漏れは過去日のみ対象（本日出勤中で未退勤は正常なので除外）
+    const punchErrors = monthAttendance.filter((r) => r.work_date < today && r.clock_in_at && !r.clock_out_at).length
     const canExport = punchErrors === 0 && approvals.length === 0
     return { unclosedCount, punchErrors, pendingCount: approvals.length, canExport }
-  }, [activeEmployees, monthAttendance, approvals])
+  }, [activeEmployees, monthAttendance, approvals, today])
 
   // --- 打刻処理 ---
   async function punch(action: '出勤' | '退勤' | '休憩開始' | '休憩終了' | '直行' | '直帰') {
@@ -155,7 +190,8 @@ export default function LaborHome() {
     try {
       const now = new Date().toISOString()
       const existing = myRecord
-      const sched = settings?.scheduled_daily_minutes ?? myEmployee.standard_break_minutes ?? 480
+      // 所定労働（分）。従来は休憩60分を所定に誤用していたため scheduledMinutesFor に統一
+      const sched = scheduledMinutesFor(myEmployee, settings)
       const payload: Partial<AttendanceRecord> & { employee_id: string; work_date: string } = {
         employee_id: myEmployee.id, work_date: today,
       }
@@ -168,7 +204,10 @@ export default function LaborHome() {
         const start = myEmployee.standard_work_start || settings?.standard_work_start || '09:00'
         const [sh, sm] = start.split(':').map(Number)
         const nowD = new Date()
-        payload.is_late = action === '出勤' && (nowD.getHours() > sh || (nowD.getHours() === sh && nowD.getMinutes() > sm))
+        // 既に出勤打刻済みなら遅刻判定を上書きしない（打ち直し・区分変更での遅刻誤判定を防止）
+        payload.is_late = existing?.clock_in_at
+          ? !!existing.is_late
+          : action === '出勤' && (nowD.getHours() > sh || (nowD.getHours() === sh && nowD.getMinutes() > sm))
       } else if (action === '休憩開始') {
         payload.break_start_at = now; payload.status = '休憩中'
       } else if (action === '休憩終了') {
@@ -190,7 +229,10 @@ export default function LaborHome() {
         const end = myEmployee.standard_work_end || settings?.standard_work_end || '18:00'
         const [eh, em] = end.split(':').map(Number)
         const nowD = new Date()
-        payload.is_early_leave = action === '退勤' && (nowD.getHours() < eh || (nowD.getHours() === eh && nowD.getMinutes() < em))
+        // 既に退勤打刻済みなら早退判定を上書きしない（打ち直しでの早退誤判定を防止）
+        payload.is_early_leave = existing?.clock_out_at
+          ? !!existing.is_early_leave
+          : action === '退勤' && (nowD.getHours() < eh || (nowD.getHours() === eh && nowD.getMinutes() < em))
       }
       await AttendanceApi.upsert(payload)
       await LaborAuditApi.log({
@@ -246,17 +288,22 @@ export default function LaborHome() {
             <div>
               <h1 className="text-lg font-bold">労務管理ダッシュボード</h1>
               <p className="text-2xs text-muted-foreground">
-                本日の勤怠状況・申請承認・労務アラートを確認できます — {JP_DATE.format(new Date())}
+                {perms.canViewAll
+                  ? <>本日の勤怠状況・申請承認・労務アラートを確認できます — {JP_DATE.format(new Date())}</>
+                  : <>あなたの打刻と今月の勤怠を確認できます — {JP_DATE.format(new Date())}</>}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="rounded-lg border bg-card px-2 py-1 text-2xs">
-                承認待ち <b className="text-primary">{approvals.length}</b>
-              </span>
-              <span className="rounded-lg border bg-card px-2 py-1 text-2xs">
-                アラート <b className="text-red-600">{alerts.length}</b>
-              </span>
-            </div>
+            {/* 全社集計バッジは管理者・マネージャー・閲覧者のみ（一般従業員には非表示） */}
+            {perms.canViewAll && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="rounded-lg border bg-card px-2 py-1 text-2xs">
+                  承認待ち <b className="text-primary">{approvals.length}</b>
+                </span>
+                <span className="rounded-lg border bg-card px-2 py-1 text-2xs">
+                  アラート <b className="text-red-600">{alerts.length}</b>
+                </span>
+              </div>
+            )}
           </div>
 
           {/* 自分の打刻バー */}
@@ -277,46 +324,50 @@ export default function LaborHome() {
                 )}
               </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              <Button size="sm" disabled={punching || !myEmployee} onClick={() => punch('出勤')}>
+            {/* モバイルは3列グリッド＋高さ h-12 でタップミス防止。次アクションのみ default で強調 */}
+            <div className="grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap">
+              <Button size="sm" className="h-12 sm:h-8" variant={nextAction === '出勤' ? 'default' : 'outline'} disabled={punching || !myEmployee} onClick={() => punch('出勤')}>
                 <LogIn className="h-3.5 w-3.5" />出勤
               </Button>
-              <Button size="sm" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('退勤')}>
+              <Button size="sm" className="h-12 sm:h-8" variant={nextAction === '退勤' ? 'default' : 'outline'} disabled={punching || !myEmployee} onClick={() => punch('退勤')}>
                 <LogOut className="h-3.5 w-3.5" />退勤
               </Button>
-              <Button size="sm" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('休憩開始')}>
+              <Button size="sm" className="h-12 sm:h-8" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('休憩開始')}>
                 <Coffee className="h-3.5 w-3.5" />休憩開始
               </Button>
-              <Button size="sm" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('休憩終了')}>
+              <Button size="sm" className="h-12 sm:h-8" variant={nextAction === '休憩終了' ? 'default' : 'outline'} disabled={punching || !myEmployee} onClick={() => punch('休憩終了')}>
                 <Coffee className="h-3.5 w-3.5" />休憩終了
               </Button>
-              <Button size="sm" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('直行')}>
+              <Button size="sm" className="h-12 sm:h-8" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('直行')}>
                 <MapPin className="h-3.5 w-3.5" />直行
               </Button>
-              <Button size="sm" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('直帰')}>
+              <Button size="sm" className="h-12 sm:h-8" variant="outline" disabled={punching || !myEmployee} onClick={() => punch('直帰')}>
                 <MapPin className="h-3.5 w-3.5" />直帰
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => navigate('/labor/approvals?new=打刻修正')}>
+              <Button size="sm" variant="ghost" className="col-span-3 h-9 sm:col-span-1 sm:h-8" onClick={() => navigate('/labor/approvals?new=打刻修正')}>
                 打刻忘れ申請
               </Button>
             </div>
           </div>
 
-          {/* 1. 本日の勤怠サマリー */}
+          {/* 1. 本日の勤怠サマリー（全社集計・人件費見込は管理者/マネージャー/閲覧者のみ） */}
+          {perms.canViewAll && (
           <section>
             <h2 className="mb-2 text-sm font-bold">本日の勤怠サマリー</h2>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
               {stat(<Users className="h-5 w-5 text-white" />, '出勤済み', summary.present, 'bg-green-600', () => navigate('/labor/attendance'))}
               {stat(<Clock className="h-5 w-5 text-white" />, '未打刻', summary.notClockedIn, 'bg-slate-500', () => navigate('/labor/attendance'))}
-              {stat(<AlertTriangle className="h-5 w-5 text-white" />, '遅刻', summary.late, 'bg-amber-500')}
-              {stat(<LogOut className="h-5 w-5 text-white" />, '早退', summary.earlyLeave, 'bg-orange-500')}
+              {stat(<AlertTriangle className="h-5 w-5 text-white" />, '遅刻', summary.late, 'bg-amber-500', () => navigate('/labor/attendance'))}
+              {stat(<LogOut className="h-5 w-5 text-white" />, '早退', summary.earlyLeave, 'bg-orange-500', () => navigate('/labor/attendance'))}
               {stat(<CalendarDays className="h-5 w-5 text-white" />, '休暇中', summary.onLeave, 'bg-violet-500', () => navigate('/labor/leaves'))}
               {stat(<HomeIcon className="h-5 w-5 text-white" />, '在宅勤務', summary.remote, 'bg-sky-500')}
               {stat(<MapPin className="h-5 w-5 text-white" />, '直行直帰', summary.direct, 'bg-teal-500')}
               {stat(<CircleDollarSign className="h-5 w-5 text-white" />, '今月人件費見込', `¥${(monthlyCost / 10000).toFixed(0)}万`, 'bg-indigo-500', () => navigate('/labor/payroll'))}
             </div>
           </section>
+          )}
 
+          {perms.canViewAll && (
           <div className="grid gap-3 md:grid-cols-2">
             {/* 2. 承認待ち */}
             <div className="rounded-xl border bg-card">
@@ -371,8 +422,10 @@ export default function LaborHome() {
               </div>
             </div>
           </div>
+          )}
 
-          {/* 4. 今日の従業員一覧 */}
+          {/* 4. 今日の従業員一覧（全社員テーブルは管理者/マネージャー/閲覧者のみ） */}
+          {perms.canViewAll && (
           <div className="rounded-xl border bg-card">
             <div className="flex items-center justify-between border-b px-3 py-2">
               <div className="text-sm font-bold">今日の従業員一覧（{activeEmployees.length}）</div>
@@ -416,12 +469,13 @@ export default function LaborHome() {
               )}
             </div>
           </div>
+          )}
 
           {/* 下段: 今月集計 / 有給 / 契約 / 給与連携チェック */}
           <div className="grid gap-3 md:grid-cols-2">
-            {/* 5. 今月の勤怠集計 */}
+            {/* 5. 今月の勤怠集計（selfOnly は自分の実績のみ） */}
             <div className="rounded-xl border bg-card p-3">
-              <div className="mb-2 flex items-center gap-1.5 text-sm font-bold"><TrendingUp className="h-4 w-4 text-primary" />今月の勤怠集計（全社）</div>
+              <div className="mb-2 flex items-center gap-1.5 text-sm font-bold"><TrendingUp className="h-4 w-4 text-primary" />今月の勤怠集計（{perms.canViewAll ? '全社' : '自分'}）</div>
               <div className="grid grid-cols-3 gap-2 text-center">
                 {[
                   ['総労働', fmtMinutes(monthAgg.work)],
@@ -439,15 +493,16 @@ export default function LaborHome() {
               </div>
             </div>
 
-            {/* 6. 給与連携前チェック + アラート系 */}
+            {/* 6. 給与連携前チェック（人件費・全社チェックは管理者/マネージャー/閲覧者のみ） */}
+            {perms.canViewAll && (
             <div className="rounded-xl border bg-card p-3">
               <div className="mb-2 flex items-center gap-1.5 text-sm font-bold"><FileWarning className="h-4 w-4 text-primary" />給与連携前チェック</div>
               <div className="space-y-1 text-xs">
-                <CheckRow label="勤怠未締め" value={`${payrollCheck.unclosedCount}人`} bad={payrollCheck.unclosedCount > 0} />
-                <CheckRow label="打刻エラー（退勤漏れ）" value={`${payrollCheck.punchErrors}人`} bad={payrollCheck.punchErrors > 0} />
-                <CheckRow label="承認待ち" value={`${payrollCheck.pendingCount}件`} bad={payrollCheck.pendingCount > 0} />
-                <CheckRow label="有給5日未取得リスク" value={`${paidLeaveRisk}人`} bad={paidLeaveRisk > 0} />
-                <CheckRow label="契約更新/試用終了 30日内" value={`${contractSoon.length}人`} bad={contractSoon.length > 0} />
+                <CheckRow label="今月打刻なし" value={`${payrollCheck.unclosedCount}人`} bad={payrollCheck.unclosedCount > 0} onClick={() => navigate('/labor/attendance')} />
+                <CheckRow label="退勤漏れ（過去日）" value={`${payrollCheck.punchErrors}件`} bad={payrollCheck.punchErrors > 0} onClick={() => navigate('/labor/attendance')} />
+                <CheckRow label="承認待ち" value={`${payrollCheck.pendingCount}件`} bad={payrollCheck.pendingCount > 0} onClick={() => navigate('/labor/approvals')} />
+                <CheckRow label="有給5日未取得リスク" value={`${paidLeaveRisk}人`} bad={paidLeaveRisk > 0} onClick={() => navigate('/labor/leaves')} />
+                <CheckRow label="契約更新/試用終了 30日内" value={`${contractSoon.length}人`} bad={contractSoon.length > 0} onClick={() => navigate('/labor/employees')} />
                 <div className="mt-2 flex items-center justify-between rounded-lg border p-2">
                   <span className="flex items-center gap-1 font-medium">
                     {payrollCheck.canExport
@@ -460,6 +515,7 @@ export default function LaborHome() {
                 </div>
               </div>
             </div>
+            )}
           </div>
         </div>
       )}
@@ -467,11 +523,21 @@ export default function LaborHome() {
   )
 }
 
-function CheckRow({ label, value, bad }: { label: string; value: string; bad: boolean }) {
+function CheckRow({ label, value, bad, onClick }: { label: string; value: string; bad: boolean; onClick?: () => void }) {
   return (
-    <div className="flex items-center justify-between border-b py-1 last:border-0">
-      <span className="text-muted-foreground">{label}</span>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center justify-between border-b py-1 text-left last:border-0',
+        onClick && 'cursor-pointer hover:bg-accent/50',
+      )}
+    >
+      <span className="flex items-center gap-1 text-muted-foreground">
+        {label}
+        {onClick && <ChevronRight className="h-3 w-3 opacity-50" />}
+      </span>
       <span className={cn('font-bold', bad ? 'text-amber-600' : 'text-green-600')}>{value}</span>
-    </div>
+    </button>
   )
 }

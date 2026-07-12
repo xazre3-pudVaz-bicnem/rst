@@ -24,7 +24,6 @@ import type { Employee, YearEndAdjustment } from '@/lib/types'
 
 const CURRENT_YEAR = 2026
 const YEARS = [2024, 2025, 2026, 2027] as const
-const DEFAULT_BASIC = 480000
 
 /** 所得税 速算表（年間・課税所得ベース） */
 function incomeTax(taxable: number): number {
@@ -38,6 +37,64 @@ function incomeTax(taxable: number): number {
   else if (t <= 40_000_000) base = t * 0.40 - 2_796_000
   else base = t * 0.45 - 4_796_000
   return Math.max(0, base)
+}
+
+/**
+ * 給与所得控除額。給与収入(額面)から控除して「給与所得」を出す最初のステップ。
+ * 令和7年度税制改正で最低控除額が55万→65万、下限区分が162.5万→190万に引上げ。
+ * この引上げは基礎控除の見直しと同時に「令和7年分以後」適用のため、basicDeductionFor と
+ * 施行年(2025)を一致させる（両者が揃って初めて「160万円の壁」＝給与所得控除65万+基礎控除95万が成立）。
+ * 出典: 所得税法28条3項（令和7年改正後）。令和6年分以前が旧区分（最低55万）。
+ */
+function salaryIncomeDeduction(income: number, fiscalYear: number): number {
+  const inc = Math.max(0, income)
+  if (fiscalYear >= 2025) {
+    // 令和7年分〜（最低65万・下限区分190万）
+    if (inc <= 1_900_000) return Math.min(inc, 650_000) // 収入が控除額未満なら給与所得0
+    if (inc <= 3_600_000) return inc * 0.3 + 80_000
+    if (inc <= 6_600_000) return inc * 0.2 + 440_000
+    if (inc <= 8_500_000) return inc * 0.1 + 1_100_000
+    return 1_950_000 // 上限
+  }
+  // 令和6年分以前（旧・最低55万）
+  if (inc <= 1_625_000) return Math.min(inc, 550_000)
+  if (inc <= 1_800_000) return inc * 0.4 - 100_000
+  if (inc <= 3_600_000) return inc * 0.3 + 80_000
+  if (inc <= 6_600_000) return inc * 0.2 + 440_000
+  if (inc <= 8_500_000) return inc * 0.1 + 1_100_000
+  return 1_950_000
+}
+
+/**
+ * 基礎控除額（自動値）。引数 totalIncome は合計所得金額（給与のみなら給与所得控除後の額）。
+ * 令和7年度税制改正で48万→58万（恒久）に引上げ＋令和7・8年分限定の上乗せ特例あり。
+ * 出典: 所得税法86条（令和7年改正後）・国税庁「令和7年度税制改正による基礎控除の見直し」で
+ *   金額・所得区分をWeb照合済み（2026-07）。空欄時のプレースホルダとして使う。
+ */
+function basicDeductionFor(totalIncome: number, fiscalYear: number): number {
+  const inc = Math.max(0, totalIncome)
+  // 58万恒久化と上乗せ特例はいずれも令和7年分(2025)から適用。よってゲートは 2025〜。
+  if (fiscalYear >= 2025) {
+    // 上乗せ特例は令和7・8年分限定（令和9年分以降は132万超が58万へ統一）。
+    // 令和9年分以降の確定値は物価スライドで未定のため、当面は令和8年分の値を前方充当する。
+    const withBonus = fiscalYear <= 2026
+    if (withBonus) {
+      if (inc <= 1_320_000) return 950_000 // 合計所得132万以下（58万+37万）
+      if (inc <= 3_360_000) return 880_000 // 132万超336万以下（58万+30万）
+      if (inc <= 4_890_000) return 680_000 // 336万超489万以下（58万+10万）
+      if (inc <= 6_550_000) return 630_000 // 489万超655万以下（58万+5万）
+    }
+    if (inc <= 23_500_000) return 580_000 // 恒久措置58万
+    if (inc <= 24_000_000) return 480_000
+    if (inc <= 24_500_000) return 320_000
+    if (inc <= 25_000_000) return 160_000
+    return 0
+  }
+  // 令和6年分(2024)以前（48万・所得により逓減）
+  if (inc <= 24_000_000) return 480_000
+  if (inc <= 24_500_000) return 320_000
+  if (inc <= 25_000_000) return 160_000
+  return 0
 }
 
 /** 数値入力用のフォーム状態（文字列で保持） */
@@ -71,7 +128,7 @@ function emptyForm(): FormState {
     earthquake_insurance_deduction: '',
     spouse_deduction: '',
     dependent_deduction: '',
-    basic_deduction: String(DEFAULT_BASIC),
+    basic_deduction: '', // 空欄なら年度・所得に応じた自動値を適用
     housing_loan_deduction: '',
     taxable_income: null,
     calculated_tax: null,
@@ -93,7 +150,7 @@ function formFromRecord(r: YearEndAdjustment): FormState {
     earthquake_insurance_deduction: s(r.earthquake_insurance_deduction),
     spouse_deduction: s(r.spouse_deduction),
     dependent_deduction: s(r.dependent_deduction),
-    basic_deduction: r.basic_deduction == null ? String(DEFAULT_BASIC) : String(r.basic_deduction),
+    basic_deduction: r.basic_deduction == null ? '' : String(r.basic_deduction),
     housing_loan_deduction: s(r.housing_loan_deduction),
     taxable_income: r.taxable_income ?? null,
     calculated_tax: r.calculated_tax ?? null,
@@ -107,6 +164,37 @@ function formFromRecord(r: YearEndAdjustment): FormState {
 function num(v: string): number {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * 年末調整の年税額を算出する（純粋関数）。自動計算・保存の双方で使い結果を一致させる。
+ * 手順: 給与収入(額面) → 給与所得控除を引いて給与所得 → 各種所得控除を引いて課税所得 → 税額。
+ * ※旧実装は給与所得控除ステップが無く、課税所得が最大195万円過大になっていた（本修正で解消）。
+ */
+function computeYearEnd(form: FormState, fiscalYear: number) {
+  const totalIncome = num(form.total_income) // 給与収入(額面合計)
+  const salaryDeduction = salaryIncomeDeduction(totalIncome, fiscalYear)
+  const salaryIncome = Math.max(0, totalIncome - salaryDeduction) // 給与所得
+  const autoBasic = basicDeductionFor(salaryIncome, fiscalYear) // 空欄時に使う基礎控除の自動値
+  const basicDeduction = form.basic_deduction.trim() === '' ? autoBasic : num(form.basic_deduction)
+  const otherDeductions =
+    num(form.social_insurance_deduction) +
+    num(form.life_insurance_deduction) +
+    num(form.earthquake_insurance_deduction) +
+    num(form.spouse_deduction) +
+    num(form.dependent_deduction)
+  const totalDeductions = otherDeductions + basicDeduction // 所得控除計
+  const rawTaxable = Math.max(0, salaryIncome - totalDeductions) // 課税所得 = 給与所得 - 所得控除
+  const taxable = Math.floor(rawTaxable / 1000) * 1000 // 課税所得は千円未満切捨て
+  const baseTax = incomeTax(taxable) // 算出税額
+  const afterLoan = Math.max(0, baseTax - num(form.housing_loan_deduction)) // 住宅ローン控除後
+  // 復興特別所得税（2.1%）込み、100円未満切り捨て
+  const calcTax = Math.floor((afterLoan * 1.021) / 100) * 100
+  const settlement = num(form.total_withholding) - calcTax // 過不足（+還付 / -徴収）
+  return {
+    totalIncome, salaryDeduction, salaryIncome, autoBasic, basicDeduction,
+    totalDeductions, taxable, baseTax, afterLoan, calcTax, settlement,
+  }
 }
 
 export default function YearEnd() {
@@ -173,6 +261,9 @@ export default function YearEnd() {
     [rows, empMap],
   )
 
+  // 入力に応じて年税額の内訳をライブ算出（自動計算ボタンを押さなくても表示に反映）
+  const derived = useMemo(() => computeYearEnd(form, year), [form, year])
+
   function openAdd() {
     setForm(emptyForm())
     setDialogOpen(true)
@@ -187,31 +278,16 @@ export default function YearEnd() {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
-  /** 自動計算：課税所得・年税額・過不足額 */
+  /** 自動計算：給与所得控除→給与所得→課税所得→年税額→過不足額を確定し、基礎控除の空欄を自動補完 */
   function handleCompute() {
-    const totalIncome = num(form.total_income)
-    const deductions =
-      num(form.social_insurance_deduction) +
-      num(form.life_insurance_deduction) +
-      num(form.earthquake_insurance_deduction) +
-      num(form.spouse_deduction) +
-      num(form.dependent_deduction) +
-      num(form.basic_deduction)
-    const rawTaxable = Math.max(0, totalIncome - deductions)
-    const taxable = Math.floor(rawTaxable / 1000) * 1000
-
-    const baseTax = incomeTax(taxable)
-    const afterLoan = Math.max(0, baseTax - num(form.housing_loan_deduction))
-    // 復興特別所得税（2.1%）込み、100円未満切り捨て
-    const calcTax = Math.floor((afterLoan * 1.021) / 100) * 100
-
-    const settlement = num(form.total_withholding) - calcTax
-
+    const c = computeYearEnd(form, year)
     setForm((f) => ({
       ...f,
-      taxable_income: taxable,
-      calculated_tax: calcTax,
-      settlement_amount: settlement,
+      // 基礎控除が空欄なら年度・所得に応じた自動値を反映（手入力済みなら尊重）
+      basic_deduction: f.basic_deduction.trim() === '' ? String(c.autoBasic) : f.basic_deduction,
+      taxable_income: c.taxable,
+      calculated_tax: c.calcTax,
+      settlement_amount: c.settlement,
     }))
     toast.success('自動計算しました')
   }
@@ -221,6 +297,8 @@ export default function YearEnd() {
     if (!form.employee_id) { toast.error('従業員を選択してください'); return }
     setSaving(true)
     try {
+      // 保存時にも再計算し、自動計算未押下でも一貫した課税所得・年税額を保存する
+      const c = computeYearEnd(form, year)
       const payload = {
         employee_id: form.employee_id,
         fiscal_year: year,
@@ -231,11 +309,11 @@ export default function YearEnd() {
         earthquake_insurance_deduction: num(form.earthquake_insurance_deduction),
         spouse_deduction: num(form.spouse_deduction),
         dependent_deduction: num(form.dependent_deduction),
-        basic_deduction: form.basic_deduction === '' ? DEFAULT_BASIC : num(form.basic_deduction),
+        basic_deduction: c.basicDeduction, // 空欄なら年度・所得別の自動値
         housing_loan_deduction: num(form.housing_loan_deduction),
-        taxable_income: form.taxable_income,
-        calculated_tax: form.calculated_tax,
-        settlement_amount: form.settlement_amount,
+        taxable_income: c.taxable,
+        calculated_tax: c.calcTax,
+        settlement_amount: c.settlement,
         status: form.status,
         note: form.note.trim() || null,
       }
@@ -370,7 +448,7 @@ export default function YearEnd() {
                   <tr>
                     <th className="px-2 py-1.5 text-left font-medium">従業員</th>
                     <th className="px-2 py-1.5 text-left font-medium">ステータス</th>
-                    <th className="px-2 py-1.5 text-left font-medium">給与総額</th>
+                    <th className="px-2 py-1.5 text-left font-medium">給与収入</th>
                     <th className="px-2 py-1.5 text-left font-medium">課税所得</th>
                     <th className="px-2 py-1.5 text-left font-medium">年税額</th>
                     <th className="px-2 py-1.5 text-left font-medium">過不足</th>
@@ -445,7 +523,7 @@ export default function YearEnd() {
             {/* 金額入力 */}
             <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
               {([
-                ['total_income', '給与総額'],
+                ['total_income', '給与収入(額面合計)'],
                 ['total_withholding', '源泉徴収税額'],
                 ['social_insurance_deduction', '社会保険料控除'],
                 ['life_insurance_deduction', '生命保険料控除'],
@@ -462,6 +540,8 @@ export default function YearEnd() {
                     inputMode="numeric"
                     value={form[key] as string}
                     onChange={(e) => setField(key, e.target.value as FormState[typeof key])}
+                    // 基礎控除は空欄なら年度・所得に応じた自動値を適用する旨をプレースホルダで明示
+                    placeholder={key === 'basic_deduction' ? `自動 ${fmtYen(derived.autoBasic)}` : undefined}
                     className="h-8 text-xs"
                   />
                 </div>
@@ -471,19 +551,35 @@ export default function YearEnd() {
             {/* 自動計算 */}
             <div className="rounded-lg border bg-muted/30 p-2.5">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-2xs font-bold text-muted-foreground">年税額計算</span>
+                <span className="text-2xs font-bold text-muted-foreground">年税額計算（入力に応じてライブ表示）</span>
                 <Button variant="outline" size="sm" className="h-7" onClick={handleCompute}>
                   <Calculator className="h-3.5 w-3.5" />自動計算
                 </Button>
               </div>
+              {/* 計算内訳（給与所得控除を先に引くステップを可視化） */}
+              <div className="mb-2 divide-y rounded-md border bg-card">
+                {([
+                  ['給与所得控除額', derived.salaryDeduction],
+                  ['給与所得', derived.salaryIncome],
+                  ['所得控除計', derived.totalDeductions],
+                  ['算出税額', derived.baseTax],
+                  ['住宅ローン控除後', derived.afterLoan],
+                  ['復興税込み年税額', derived.calcTax],
+                ] as [string, number][]).map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between px-2.5 py-1 text-2xs">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span className="tabular-nums">{fmtYen(value)}</span>
+                  </div>
+                ))}
+              </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
                   <label className="text-2xs font-medium text-muted-foreground">課税所得</label>
-                  <Input readOnly disabled value={form.taxable_income == null ? '' : fmtYen(form.taxable_income)} className="h-8 text-xs" />
+                  <Input readOnly disabled value={fmtYen(derived.taxable)} className="h-8 text-xs" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-2xs font-medium text-muted-foreground">年税額</label>
-                  <Input readOnly disabled value={form.calculated_tax == null ? '' : fmtYen(form.calculated_tax)} className="h-8 text-xs" />
+                  <Input readOnly disabled value={fmtYen(derived.calcTax)} className="h-8 text-xs" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-2xs font-medium text-muted-foreground">過不足額</label>
@@ -491,11 +587,9 @@ export default function YearEnd() {
                     readOnly
                     disabled
                     value={
-                      form.settlement_amount == null
-                        ? ''
-                        : form.settlement_amount >= 0
-                          ? `還付 ${fmtYen(form.settlement_amount)}`
-                          : `徴収 ${fmtYen(-form.settlement_amount)}`
+                      derived.settlement >= 0
+                        ? `還付 ${fmtYen(derived.settlement)}`
+                        : `徴収 ${fmtYen(-derived.settlement)}`
                     }
                     className="h-8 text-xs"
                   />

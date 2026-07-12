@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
-  Calculator, Download, Lock, CheckCircle2, RefreshCw, Wallet, Info,
+  Calculator, Download, Lock, LockOpen, CheckCircle2, RefreshCw, Wallet, Info,
 } from 'lucide-react'
 import LaborLayout from '@/components/layout/LaborLayout'
 import { Button } from '@/components/ui/button'
@@ -18,7 +19,7 @@ import {
   EmployeeApi, AttendanceApi, LeaveRequestApi, PayrollRunApi, PayslipApi, LaborAuditApi,
 } from '@/lib/api'
 import { laborPerms, fmtYen, fmtMinutes, monthStr, procedureStatusColor, toCsv, downloadCsv } from '@/lib/labor'
-import { calcPayslip, PAYROLL_RATES } from '@/lib/payrollCalc'
+import { calcPayslip, recalcDeductions, ratesForMonth, hourlyRateOf } from '@/lib/payrollCalc'
 import { cn } from '@/lib/utils'
 import type { Employee, AttendanceRecord, LeaveRequest, PayrollRun, Payslip } from '@/lib/types'
 
@@ -26,6 +27,11 @@ import type { Employee, AttendanceRecord, LeaveRequest, PayrollRun, Payslip } fr
 function num(v: string): number {
   const n = Number(v)
   return Number.isFinite(n) ? Math.round(n) : 0
+}
+
+/** 率 → パーセント表記（例 0.04925 → "4.925%"） */
+function pct(n: number): string {
+  return `${(n * 100).toFixed(3)}%`
 }
 
 /** 従業員ごとの当月勤怠を集計し PayrollInput を作る */
@@ -75,8 +81,13 @@ export default function PayrollCalc() {
   const toast = useToast()
   const { role, user, displayName } = useAuth()
   const perms = laborPerms(role)
+  const [searchParams] = useSearchParams()
 
-  const [month, setMonth] = useState(monthStr())
+  // 勤怠画面などから ?month=YYYY-MM で対象月を引き継ぐ（不正値は当月にフォールバック）
+  const [month, setMonth] = useState(() => {
+    const m = searchParams.get('month')
+    return m && /^\d{4}-\d{2}$/.test(m) ? m : monthStr()
+  })
   const [employees, setEmployees] = useState<Employee[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
   const [leaves, setLeaves] = useState<LeaveRequest[]>([])
@@ -133,6 +144,16 @@ export default function PayrollCalc() {
   }, [employees])
 
   const runStatus = run?.status ?? '未計算'
+  // 確定・締め済みは上書き禁止（締めは再計算そのものを不可、確定は確認のうえ未確定へ）
+  const locked = runStatus === '確定' || runStatus === '締め'
+  // 対象月に適用する料率セット（注意バナーで動的表示）
+  const rates = useMemo(() => ratesForMonth(month), [month])
+
+  const slipByEmp = useMemo(() => {
+    const m = new Map<string, Payslip>()
+    for (const s of payslips) m.set(s.employee_id, s)
+    return m
+  }, [payslips])
 
   const sortedSlips = useMemo(() => {
     return [...payslips].sort((a, b) => {
@@ -151,12 +172,29 @@ export default function PayrollCalc() {
   // --- 給与計算を実行 ---
   async function handleRun() {
     if (!perms.canManage || running) return
+    // 締め済みは再計算不可。確定済みは確認のうえ未確定へ戻す。
+    if (runStatus === '締め') { toast.error('締め済みです。締め解除してから再計算してください'); return }
+    if (runStatus === '確定'
+      && !window.confirm('確定済みの明細を再計算して未確定に戻します。よろしいですか？')) return
+    const active = employees.filter((e) => e.status === '在籍中')
+    // 勤怠0件ガード：一時エラー等で0件のまま満額/0円明細を正規データとして保存する事故を防ぐ
+    if (records.length === 0 && active.length > 0
+      && !window.confirm('この月の勤怠データが0件です。このまま計算しますか？（月給者は満額・時給者は0円で計算されます）')) return
     setRunning(true)
     try {
-      const active = employees.filter((e) => e.status === '在籍中')
       for (const emp of active) {
+        const prev = slipByEmp.get(emp.id)
         const input = aggregate(emp, month, records, leaves)
+        // 既存明細の手入力（手当・住民税・その他控除・介護該当）を再計算後も引き継ぐ
+        input.commuteAllowance = prev?.commute_allowance ?? 0
+        input.positionAllowance = prev?.position_allowance ?? 0
+        input.otherAllowance = prev?.other_allowance ?? 0
+        input.residentTax = prev?.resident_tax ?? 0
+        input.otherDeduction = prev?.other_deduction ?? 0
+        // 介護保険該当は birth_date 未管理のため、既存明細に控除があれば維持する
+        input.longTermCareApplicable = (prev?.long_term_care_insurance ?? 0) > 0
         const draft = calcPayslip(emp, month, input)
+        draft.note = prev?.note ?? null // 備考も維持
         await PayslipApi.upsert(draft)
       }
       const saved = await PayrollRunApi.upsert({
@@ -229,6 +267,31 @@ export default function PayrollCalc() {
     }
   }
 
+  // --- 締め解除（管理者のみ）。締め後の修正が必要になった場合に計算済へ戻す ---
+  async function handleReopen() {
+    if (!perms.canConfigure || !run || busy) return
+    if (runStatus !== '締め') return
+    if (!window.confirm('締めを解除して再計算可能な状態に戻します。よろしいですか？')) return
+    setBusy(true)
+    try {
+      await PayrollRunApi.update(run.id, { status: '計算済', closed_at: null })
+      await LaborAuditApi.log({
+        actor_user_id: user?.id ?? null,
+        actor_name: displayName,
+        action: '給与締め解除',
+        target_table: 'payroll_runs',
+        after_data: { month, run_id: run.id },
+      })
+      toast.success('締めを解除しました')
+      await load()
+    } catch (e) {
+      console.error('[PayrollCalc] reopen', e)
+      toast.error(e instanceof Error ? e.message : '締め解除に失敗しました')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // --- CSV出力 ---
   async function handleExport() {
     if (!perms.canExport) return
@@ -284,6 +347,8 @@ export default function PayrollCalc() {
 
   async function handleSaveDetail() {
     if (!selected || !edit || !perms.canManage || saving) return
+    // 確定済み明細は上書き禁止（締め解除・再計算で変更する運用）
+    if (selected.status === '確定') { toast.error('確定済みの明細は編集できません。締め解除・再計算が必要です'); return }
     setSaving(true)
     try {
       const commute = num(edit.commute_allowance)
@@ -291,13 +356,26 @@ export default function PayrollCalc() {
       const other = num(edit.other_allowance)
       const residentTax = num(edit.resident_tax)
       const otherDeduction = num(edit.other_deduction)
-      const gross = (selected.base_salary ?? 0) + (selected.overtime_pay ?? 0)
-        + (selected.late_night_pay ?? 0) + (selected.holiday_pay ?? 0)
-        + (selected.fixed_overtime_pay ?? 0) + commute + position + other
-      const totalDeduction = (selected.health_insurance ?? 0) + (selected.long_term_care_insurance ?? 0)
-        + (selected.pension_insurance ?? 0) + (selected.employment_insurance ?? 0)
-        + (selected.income_tax ?? 0) + residentTax + otherDeduction
-      const net = gross - totalDeduction
+      // 手当変更に連動して雇用保険・源泉所得税も再計算する（社保は標準報酬ベースで据え置き）。
+      // これがないと総支給と控除が矛盾した明細になる。
+      const d = recalcDeductions(
+        selected.target_month,
+        {
+          base: selected.base_salary ?? 0,
+          overtimePay: selected.overtime_pay ?? 0,
+          lateNightPay: selected.late_night_pay ?? 0,
+          holidayPay: selected.holiday_pay ?? 0,
+          fixedOtPay: selected.fixed_overtime_pay ?? 0,
+          commute, position, other,
+        },
+        {
+          health: selected.health_insurance ?? 0,
+          care: selected.long_term_care_insurance ?? 0,
+          pension: selected.pension_insurance ?? 0,
+        },
+        residentTax,
+        otherDeduction,
+      )
       const patch: Partial<Payslip> = {
         commute_allowance: commute,
         position_allowance: position,
@@ -305,9 +383,11 @@ export default function PayrollCalc() {
         resident_tax: residentTax,
         other_deduction: otherDeduction,
         note: edit.note || null,
-        gross_pay: gross,
-        total_deduction: totalDeduction,
-        net_pay: net,
+        employment_insurance: d.employmentInsurance,
+        income_tax: d.incomeTax,
+        gross_pay: d.gross,
+        total_deduction: d.totalDeduction,
+        net_pay: d.netPay,
       }
       await PayslipApi.update(selected.id, patch)
       await LaborAuditApi.log({
@@ -330,12 +410,22 @@ export default function PayrollCalc() {
 
   async function handleRecalc() {
     if (!selected || !perms.canManage || saving) return
+    // 確定済み明細は再計算不可（締め解除・全体再計算で扱う）
+    if (selected.status === '確定') { toast.error('確定済みの明細は再計算できません。締め解除が必要です'); return }
     const emp = empById.get(selected.employee_id)
     if (!emp) { toast.error('従業員が見つかりません'); return }
     setSaving(true)
     try {
       const input = aggregate(emp, month, records, leaves)
+      // 手入力（手当・住民税・その他控除・介護該当）を再計算後も引き継ぐ
+      input.commuteAllowance = selected.commute_allowance ?? 0
+      input.positionAllowance = selected.position_allowance ?? 0
+      input.otherAllowance = selected.other_allowance ?? 0
+      input.residentTax = selected.resident_tax ?? 0
+      input.otherDeduction = selected.other_deduction ?? 0
+      input.longTermCareApplicable = (selected.long_term_care_insurance ?? 0) > 0
       const draft = calcPayslip(emp, month, input)
+      draft.note = selected.note ?? null // 備考も維持
       await PayslipApi.upsert(draft)
       await LaborAuditApi.log({
         actor_user_id: user?.id ?? null,
@@ -365,9 +455,19 @@ export default function PayrollCalc() {
     )
   }
 
-  const payRows: { label: string; value: number | null | undefined }[] = selected ? [
+  // 残業手当に合算済みの「月60h超割増(+25%)」を内訳表示用に概算で切り出す
+  // （明細に専用カラムがないため、保存済みの残業分数と現在の時間単価から再導出＝概算）
+  const selEmp = selected ? empById.get(selected.employee_id) : undefined
+  const over60Min = selected ? Math.max(0, (selected.overtime_minutes ?? 0) - 3600) : 0
+  const over60Approx = selEmp && over60Min > 0
+    ? Math.round(hourlyRateOf(selEmp) * 0.25 * (over60Min / 60))
+    : 0
+  const payRows: { label: string; value: number | null | undefined; muted?: boolean }[] = selected ? [
     { label: '基本給', value: selected.base_salary },
     { label: '残業手当', value: selected.overtime_pay },
+    ...(over60Min > 0
+      ? [{ label: `　└ うち60h超割増（+25%）`, value: over60Approx, muted: true }]
+      : []),
     { label: '深夜手当', value: selected.late_night_pay },
     { label: '休日手当', value: selected.holiday_pay },
     { label: '固定残業', value: selected.fixed_overtime_pay },
@@ -400,9 +500,9 @@ export default function PayrollCalc() {
               <div className="border-b px-3 py-2 text-sm font-bold">支給内訳</div>
               <div className="divide-y">
                 {payRows.map((row) => (
-                  <div key={row.label} className="flex items-center justify-between px-3 py-1.5 text-xs">
+                  <div key={row.label} className={cn('flex items-center justify-between px-3 text-xs', row.muted ? 'py-1 text-2xs' : 'py-1.5')}>
                     <span className="text-muted-foreground">{row.label}</span>
-                    <span className="tabular-nums">{fmtYen(row.value)}</span>
+                    <span className={cn('tabular-nums', row.muted && 'text-muted-foreground')}>{row.muted ? '≈ ' : ''}{fmtYen(row.value)}</span>
                   </div>
                 ))}
                 <div className="flex items-center justify-between px-3 py-2 text-sm font-bold">
@@ -446,10 +546,19 @@ export default function PayrollCalc() {
             <span>欠勤 {selected.absent_days ?? 0}日</span>
           </div>
 
-          {/* 編集 */}
-          {perms.canManage && (
+          {/* 確定済みは編集不可の注記 */}
+          {perms.canManage && selected.status === '確定' && (
+            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-2xs text-muted-foreground">
+              <Lock className="h-3.5 w-3.5 shrink-0" />
+              この明細は確定済みのため編集できません。締め解除・再計算で変更してください。
+            </div>
+          )}
+
+          {/* 編集（確定前のみ） */}
+          {perms.canManage && selected.status !== '確定' && (
             <div className="space-y-2 rounded-xl border bg-card p-3">
               <div className="text-xs font-bold">調整（手当・控除）</div>
+              <div className="text-2xs text-muted-foreground">手当を変更すると雇用保険・所得税も連動して再計算されます。</div>
               <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
                 {([
                   ['通勤手当', 'commute_allowance'],
@@ -482,12 +591,12 @@ export default function PayrollCalc() {
           )}
         </div>
         <DialogFooter>
-          {perms.canManage && (
+          {perms.canManage && selected.status !== '確定' && (
             <Button variant="outline" size="sm" onClick={handleRecalc} disabled={saving}>
               <RefreshCw className="h-3.5 w-3.5" />この従業員を再計算
             </Button>
           )}
-          {perms.canManage && (
+          {perms.canManage && selected.status !== '確定' && (
             <Button size="sm" onClick={handleSaveDetail} disabled={saving}>保存</Button>
           )}
           <Button variant="ghost" size="sm" onClick={closeDetail}>閉じる</Button>
@@ -576,7 +685,10 @@ export default function PayrollCalc() {
         {/* 注意バナー */}
         <div className="flex items-start gap-2 rounded-lg border bg-amber-50 p-3 text-2xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>保険料率・所得税は概算です（PAYROLL_RATES）。実運用時は最新の料率表・源泉徴収税額表(甲欄)に差し替えてください。</span>
+          <span>
+            適用料率セット <b>{rates.from}〜</b>（健保{pct(rates.healthInsurance + rates.childSupport)}・厚年{pct(rates.pension)}・雇用{pct(rates.employmentInsurance)}／協会けんぽ東京・折半後）。
+            保険料率・所得税は概算です。実運用時は最新の料率表・源泉徴収税額表(甲欄)で検証してください。
+          </span>
         </div>
 
         {/* 実行ステータスカード */}
@@ -591,7 +703,7 @@ export default function PayrollCalc() {
                 <Button
                   size="sm"
                   className="bg-green-600 text-white hover:bg-green-700"
-                  disabled={running || loading}
+                  disabled={running || loading || runStatus === '締め'}
                   onClick={handleRun}
                 >
                   <Calculator className="h-3.5 w-3.5" />{running ? '計算中…' : '給与計算を実行'}
@@ -612,6 +724,17 @@ export default function PayrollCalc() {
                 >
                   <Lock className="h-3.5 w-3.5" />締め
                 </Button>
+                {/* 締め解除：締め後の修正が必要になった場合の巻き戻し（管理者のみ） */}
+                {perms.canConfigure && runStatus === '締め' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={handleReopen}
+                  >
+                    <LockOpen className="h-3.5 w-3.5" />締め解除
+                  </Button>
+                )}
               </div>
             )}
           </div>

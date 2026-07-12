@@ -1,7 +1,7 @@
 // ============================================================
 // 労務管理の定数・権限・ユーティリティ
 // ============================================================
-import type { AttendanceRecord, Employee } from './types'
+import type { AttendanceRecord, Employee, LaborSettings } from './types'
 
 // --- 従業員マスタの選択肢 ---
 export const EMPLOYMENT_TYPES = ['正社員', '契約社員', 'アルバイト', 'パート', '業務委託', '役員'] as const
@@ -157,6 +157,30 @@ export function fmtTime(ts?: string | null): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/**
+ * その日の所定労働時間（分）を求める。残業＝所定超過の基準に使う。
+ * 従業員に所定始業・終業が両方あれば「(終業−始業)−休憩」を採用（時短勤務者も正しく算出）。
+ * 休憩は emp.standard_break_minutes → settings.standard_break_minutes → 60分 の順で採用し、下限0。
+ * 所定時刻が無い/不正値（split で NaN）なら labor_settings.scheduled_daily_minutes（既定480＝8h）へフォールバック。
+ */
+export function scheduledMinutesFor(emp?: Employee | null, settings?: LaborSettings | null): number {
+  const start = emp?.standard_work_start
+  const end = emp?.standard_work_end
+  if (start && end) {
+    const [sh, sm] = start.split(':').map(Number)
+    const [eh, em] = end.split(':').map(Number)
+    if (![sh, sm, eh, em].some((n) => Number.isNaN(n))) {
+      let span = eh * 60 + em - (sh * 60 + sm) // 拘束時間（分）
+      // 所定が日を跨ぐ夜勤（例 22:00→翌06:00）は span が負/0になるため +24h 補正。
+      // 補正しないと所定=0となり実働全部が残業計上され、割増賃金の過払いを招く。
+      if (span <= 0) span += 24 * 60
+      const brk = emp?.standard_break_minutes ?? settings?.standard_break_minutes ?? 60
+      return Math.max(0, span - brk)
+    }
+  }
+  return settings?.scheduled_daily_minutes ?? 480
+}
+
 const LATE_NIGHT_START = 22 // 22:00
 const LATE_NIGHT_END = 5 // 05:00
 
@@ -178,11 +202,21 @@ export function computeAttendance(
   if (rec.clock_in_at && rec.clock_out_at) {
     const s = new Date(rec.clock_in_at)
     const e = new Date(rec.clock_out_at)
+    // 休憩の実時刻があれば、深夜帯に取った休憩分を深夜労働から除外する（休憩は労働時間でないため）。
+    const bs = rec.break_start_at ? new Date(rec.break_start_at).getTime() : null
+    const be = rec.break_end_at ? new Date(rec.break_end_at).getTime() : null
+    const hasBreakSpan = bs != null && be != null && be > bs
     for (let t = s.getTime(); t < e.getTime(); t += 60000) {
       const hr = new Date(t).getHours()
-      if (hr >= LATE_NIGHT_START || hr < LATE_NIGHT_END) lateNightMinutes++
+      const isNight = hr >= LATE_NIGHT_START || hr < LATE_NIGHT_END
+      if (!isNight) continue
+      if (hasBreakSpan && t >= (bs as number) && t < (be as number)) continue // 深夜帯の休憩は労働でない
+      lateNightMinutes++
     }
   }
+  // 休憩の実時刻が無く total_break_minutes のみの場合は個別除外できないため、
+  // 実働を上限にクランプして休憩を深夜割増に計上する過大払いを防ぐ（労基法37条 深夜割増）。
+  lateNightMinutes = Math.min(lateNightMinutes, workMinutes)
   return { workMinutes, overtimeMinutes, lateNightMinutes, breakMinutes: breakMin }
 }
 

@@ -18,7 +18,7 @@ import { useAuth } from '@/context/AuthContext'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { EmployeeApi, MyNumberApi, LaborAuditApi } from '@/lib/api'
 import {
-  laborPerms, MYNUMBER_HOLDER_TYPES, MYNUMBER_COLLECTION_STATUSES, procedureStatusColor,
+  laborPerms, MYNUMBER_HOLDER_TYPES, MYNUMBER_COLLECTION_STATUSES, procedureStatusColor, todayStr,
 } from '@/lib/labor'
 import type { Employee, MyNumber as MyNumberType } from '@/lib/types'
 
@@ -39,6 +39,27 @@ function toDateInput(ts?: string | null): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts.slice(0, 10)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * 区切り・全角を除去した数字の総桁数。マスク番号の「下4桁超（＝番号本体）」検知に使う。
+ * JSの \d はASCIIのみ。全角数字（０-９）や 1234-5678-9012 等の区切り表記を見逃さないよう
+ * NFKC正規化してから数字だけを数える（番号法: 特定個人情報の平文保存防止）。
+ */
+function digitCount(s?: string | null): number {
+  if (!s) return 0
+  return (s.normalize('NFKC').match(/\d/g) ?? []).length
+}
+
+/**
+ * 自由記述欄にマイナンバー本体（区切り込み12桁以上の連続数字）が紛れていないか。
+ * NFKC正規化で全角を半角化し、数字間に単一の区切り(空白/ハイフン/ドット)のみを許して
+ * 「1234-5678-9012」「1234 5678 9012」「１２３４５６７８９０１２」を検知。
+ * 語句を挟んだ別々の番号（内線1234・部屋5678 等）は誤検知しない。
+ */
+function containsMyNumberLike(s?: string | null): boolean {
+  if (!s) return false
+  return /\d(?:[\s\-.]?\d){11,}/.test(s.normalize('NFKC'))
 }
 
 interface MnForm {
@@ -105,6 +126,17 @@ export default function MyNumber() {
   const empMap = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees])
   const activeEmployees = useMemo(() => employees.filter((e) => e.status === '在籍中'), [employees])
 
+  // 退職者レコードの編集時に Select の選択肢が空になるバグ防止:
+  // 現在編集中の従業員が在籍一覧に無ければ選択肢へ補完する
+  const dialogEmployees = useMemo(() => {
+    const list = [...activeEmployees]
+    if (form.employee_id && !list.some((e) => e.id === form.employee_id)) {
+      const emp = empMap.get(form.employee_id)
+      if (emp) list.push(emp)
+    }
+    return list
+  }, [activeEmployees, form.employee_id, empMap])
+
   const filtered = useMemo(() => rows.filter((r) => {
     if (statusFilter !== ALL && (r.collection_status ?? '') !== statusFilter) return false
     return true
@@ -148,6 +180,25 @@ export default function MyNumber() {
   async function handleSave() {
     if (!perms.canConfigure) return
     if (!form.employee_id) { toast.error('従業員を選択してください'); return }
+
+    // 番号法違反防止: マスク番号は下4桁のみ許容。数字が5桁以上ならフル番号平文保存とみなし保存中止
+    // （全角・区切り表記も digitCount で正規化して数えるためすり抜け不可）
+    const maskedDigits = form.masked_number.normalize('NFKC').replace(/\D/g, '')
+    if (maskedDigits.length > 4) {
+      toast.error(`マスク番号に数字が${maskedDigits.length}桁あります。番号本体は保存できません。下4桁のみに（候補: ****-****-${maskedDigits.slice(-4)}）`)
+      return
+    }
+    // 自由記述欄にマイナンバー本体（区切り込み12桁以上の連続数字）が紛れ込むのを防止
+    const freeText: Array<readonly [string, string]> = [
+      ['利用目的', form.purpose], ['保管場所', form.stored_location], ['メモ', form.note],
+    ]
+    for (const [label, v] of freeText) {
+      if (containsMyNumberLike(v)) {
+        toast.error(`「${label}」に12桁の連続した数字があります。マイナンバー本体は入力しないでください`)
+        return
+      }
+    }
+
     const payload: Partial<MyNumberType> = {
       employee_id: form.employee_id,
       holder_type: form.holder_type,
@@ -183,16 +234,43 @@ export default function MyNumber() {
     }
   }
 
-  async function handleDelete(r: MyNumberType) {
+  // 廃棄フロー: 物理削除せず「廃棄済」へ状態遷移し廃棄日と監査ログを残す（番号法の廃棄記録義務に対応）
+  async function handleDispose(r: MyNumberType) {
     if (!perms.canConfigure) return
-    if (!window.confirm('このマイナンバー情報を削除しますか？')) return
+    if (r.collection_status === '廃棄済') { toast.error('既に廃棄済みです'); return }
+    if (!window.confirm('このマイナンバー情報を廃棄しますか？（収集状況を「廃棄済」にし廃棄日を記録します。物理削除ではありません）')) return
+    const disposed = todayStr()
     try {
-      await MyNumberApi.remove(r.id)
+      await MyNumberApi.update(r.id, { collection_status: '廃棄済', disposed_at: disposed })
       await LaborAuditApi.log({
         actor_user_id: user?.id ?? null, actor_name: displayName, employee_id: r.employee_id,
-        action: 'マイナンバー削除', target_table: 'my_numbers', target_id: r.id, after_data: { deleted: true },
+        action: 'マイナンバー廃棄', target_table: 'my_numbers', target_id: r.id,
+        before_data: { collection_status: r.collection_status ?? null },
+        after_data: { collection_status: '廃棄済', disposed_at: disposed },
       })
-      toast.success('削除しました')
+      toast.success('廃棄済みにしました')
+      load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '廃棄に失敗しました')
+    }
+  }
+
+  // 誤登録の完全削除（廃棄記録を残さない例外操作）: 編集ダイアログ内から2段確認で実行
+  async function handleHardDelete() {
+    if (!perms.canConfigure || !form.id) return
+    if (!window.confirm('誤登録として完全削除します。廃棄記録は残りません。通常は「廃棄」を使用してください。よろしいですか？')) return
+    if (!window.confirm('本当に完全削除しますか？この操作は取り消せません。')) return
+    const targetId = form.id
+    const targetEmp = form.employee_id
+    try {
+      await MyNumberApi.remove(targetId)
+      await LaborAuditApi.log({
+        actor_user_id: user?.id ?? null, actor_name: displayName, employee_id: targetEmp,
+        action: 'マイナンバー完全削除', target_table: 'my_numbers', target_id: targetId,
+        after_data: { deleted: true, reason: '誤登録' },
+      })
+      toast.success('完全削除しました')
+      setDialogOpen(false)
       load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '削除に失敗しました')
@@ -294,7 +372,13 @@ export default function MyNumber() {
                       <td className="px-2 py-1.5 text-muted-foreground">
                         {r.holder_type ?? '—'}{r.holder_name ? ` / ${r.holder_name}` : ''}
                       </td>
-                      <td className="px-2 py-1.5 font-mono text-muted-foreground">{r.masked_number || '—'}</td>
+                      <td className="px-2 py-1.5 font-mono text-muted-foreground">
+                        {r.masked_number || '—'}
+                        {/* 既存データにフル番号（下4桁超）が残っている行を警告表示し再マスクを促す */}
+                        {digitCount(r.masked_number) > 4 && (
+                          <Badge className="ml-1 border-red-300 bg-red-100 text-red-700 dark:border-red-500/40 dark:bg-red-500/15 dark:text-red-300">要マスク</Badge>
+                        )}
+                      </td>
                       <td className="px-2 py-1.5">
                         <Badge className={procedureStatusColor(r.collection_status)}>{r.collection_status ?? '—'}</Badge>
                       </td>
@@ -304,7 +388,12 @@ export default function MyNumber() {
                       <td className="px-2 py-1.5">
                         <div className="flex gap-1">
                           <Button size="sm" variant="ghost" onClick={() => openEdit(r)}>編集</Button>
-                          <Button size="sm" variant="destructive" onClick={() => handleDelete(r)}>削除</Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleDispose(r)}
+                            disabled={r.collection_status === '廃棄済'}
+                          >廃棄</Button>
                         </div>
                       </td>
                     </tr>
@@ -329,7 +418,11 @@ export default function MyNumber() {
               <Select value={form.employee_id} onValueChange={(v) => setField('employee_id', v)}>
                 <SelectTrigger><SelectValue placeholder="従業員を選択" /></SelectTrigger>
                 <SelectContent>
-                  {activeEmployees.map((e) => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+                  {dialogEmployees.map((e) => (
+                    <SelectItem key={e.id} value={e.id}>
+                      {e.name}{e.status !== '在籍中' ? `（${e.status ?? '退職'}）` : ''}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -387,11 +480,19 @@ export default function MyNumber() {
             </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setDialogOpen(false)} disabled={saving}>キャンセル</Button>
-            <Button size="sm" onClick={handleSave} disabled={saving}>
-              {saving ? '保存中…' : '保存'}
-            </Button>
+          <DialogFooter className="sm:justify-between">
+            {/* 完全削除は誤登録時のみの例外操作。通常運用は一覧の「廃棄」を使う */}
+            {form.id ? (
+              <Button variant="ghost" size="sm" onClick={handleHardDelete} disabled={saving} className="text-red-600 hover:text-red-700 dark:text-red-400">
+                誤登録として完全削除
+              </Button>
+            ) : <span />}
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setDialogOpen(false)} disabled={saving}>キャンセル</Button>
+              <Button size="sm" onClick={handleSave} disabled={saving}>
+                {saving ? '保存中…' : '保存'}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
