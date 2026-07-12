@@ -106,6 +106,8 @@ export default function Leads() {
   const [sourceTab, setSourceTab] = useState<'places' | 'instagram' | 'regional' | 'iw' | 'probe'>('places')
   // メインビュー（架電対象リスト / 取得・投入 / 取得元管理 / 連番URL探索 / エラー・ログ / 設定）
   const [mainView, setMainView] = useState<'list' | 'triage' | 'get' | 'manage' | 'probe' | 'errors' | 'settings'>('list')
+  // 取得・投入タブ内のサブビュー（8枚の大型パネル縦積みを4分類に整理。機能は不変・表示の切替のみ）
+  const [getView, setGetView] = useState<'auto' | 'sources' | 'engines' | 'manual'>('auto')
   const [devMode, setDevMode] = useState(false)
   const [drawerCand, setDrawerCand] = useState<LeadCandidate | null>(null)
   const [probeTests, setProbeTests] = useState<Record<string, any>>({})
@@ -1538,7 +1540,7 @@ export default function Leads() {
           <div className="rounded-md bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">
             {mainView === 'list' && '営業電話できる可能性が高い候補です。HOT-A / HOT-B を優先して確認してください。行をクリックすると詳細が開きます。'}
             {mainView === 'triage' && '全ソース横断のトリアージ画面。品質スコア/グレード・業種・都道府県・電話・重複で絞り込み、まとめて投入/除外できます。「今日の架電リスト」で重複を除いた高品質候補を即作成。CSV出力可。'}
-            {mainView === 'get' && '新しい候補を各取得元（96種）から集めて自動でHOT判定→案件投入します。迷ったら上の「🚀 新店ブースト投入」を1回押せば、巡回→投入→HOLD救済まで全自動で実行します。'}
+            {mainView === 'get' && '新しい候補を各取得元（96種）から集めて自動でHOT判定→案件投入します。ふだんは「⚡ 自動・成果」で状態確認だけでOK。迷ったら上の「🚀 新店ブースト投入」を1回押せば、巡回→投入→HOLD救済まで全自動で実行します。'}
             {mainView === 'manage' && '巡回サイト（source_sites）の管理と、新店情報サイトの自動発見・登録を行います。'}
             {mainView === 'probe' && 'じゃらん等の連番URLを確認し、新しく存在する掲載ページ（新規掲載候補）を探します。新規オープン確定ではありません。'}
             {mainView === 'errors' && '取得処理の失敗理由・APIエラー・保存失敗・文字化け・SKIP理由などを確認します。'}
@@ -1811,7 +1813,32 @@ export default function Leads() {
 
           {/* ===== 取得・投入タブ ===== */}
           {mainView === 'get' && (<>
-          {/* ===== 自動巡回パネル ===== */}
+          {/* サブナビ: 8枚の大型パネル縦積みを4分類に整理（迷わない導線。機能は不変・表示の切替のみ） */}
+          <div className="rounded-xl border bg-card p-2">
+            <div className="flex flex-wrap gap-1">
+              {([
+                ['auto', '⚡ 自動・成果', '自動巡回の状態と、投入された案件の確認（ふだんはここだけでOK）'],
+                ['sources', '🧭 取得元 96種', '取得元ごとのON/OFF・個別実行・一括巡回'],
+                ['engines', '🔬 エンジン個別実行', 'Google Places / 地域メディア / Instagram の詳細設定つき実行パネル'],
+                ['manual', '✋ 手動で投入', 'URL貼り付け・チラシ等のテキスト貼り付け・Instagram手動取込'],
+              ] as const).map(([k, lbl]) => (
+                <button key={k} onClick={() => setGetView(k)}
+                  className={cn('rounded-lg px-3 py-1.5 text-xs font-bold transition-colors', getView === k ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-accent')}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <div className="mt-1 px-1 text-[11px] text-muted-foreground">
+              {([
+                ['auto', '自動巡回の状態と、投入された案件の確認ができます。迷ったら画面上部の「🚀 新店ブースト投入」を1回押せば全自動で巡回→投入まで実行します。'],
+                ['sources', '96種の取得元のON/OFFと個別実行。ONの取得元は自動巡回（2時間おき）が勝手に回します。'],
+                ['engines', '主要エンジンを詳細オプション付きで個別実行できます（通常は自動巡回に任せてOK）。'],
+                ['manual', '見つけた店のURL・チラシやリストのテキストを貼るだけで、判定→HOT投入まで自動処理します。'],
+              ] as const).find(([k]) => k === getView)?.[1]}
+            </div>
+          </div>
+          {/* ===== ⚡自動・成果: 自動巡回パネル ===== */}
+          {getView === 'auto' && (
           <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -1871,9 +1898,10 @@ export default function Leads() {
             )}
             <div className="mt-1.5 text-[10px] text-muted-foreground">※Vercel Proのため自動巡回は2時間おき（JST 8〜18時）・1回最大約4分で全取得元を並行処理します。手動巡回・ブーストはいつでも実行できます。</div>
           </div>
+          )}
 
-          {/* ===== 新規取得元レジストリ（27 source_type） ===== */}
-          {discovery && (
+          {/* ===== 🧭取得元96種: 新規取得元レジストリ ===== */}
+          {getView === 'sources' && discovery && (
             <div className="rounded-xl border-2 border-emerald-500/40 bg-card p-3">
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-bold">🧭 新規取得元（{discovery.sources.length}種）— 質の高い新規リスト自動作成</span>
@@ -1917,7 +1945,8 @@ export default function Leads() {
             </div>
           )}
 
-          {/* ===== 最近AI投入された案件（取得元横断・どの案件が追加されたか） ===== */}
+          {/* ===== ⚡自動・成果: 最近AI投入された案件（取得元横断・どの案件が追加されたか） ===== */}
+          {getView === 'auto' && (
           <div className="rounded-xl border-2 border-primary/30 bg-card p-3">
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-bold">🆕 最近AI投入された案件（{recentImported.length}件・新しい順）</span>
@@ -1947,8 +1976,10 @@ export default function Leads() {
               </div>
             )}
           </div>
+          )}
 
-          {/* Google Places API パネル */}
+          {/* ===== 🔬エンジン個別実行: Google Places API パネル ===== */}
+          {getView === 'engines' && (
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2283,8 +2314,10 @@ export default function Leads() {
               </div>
             </div>
           </div>
+          )}
 
-          {/* Instagram新店取得 パネル */}
+          {/* ===== 🔬エンジン個別実行: Instagram新店取得 パネル ===== */}
+          {getView === 'engines' && (
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2353,7 +2386,10 @@ export default function Leads() {
             )}
           </div>
 
-          {/* 地域メディア巡回 パネル */}
+          )}
+
+          {/* ===== 🔬エンジン個別実行: 地域メディア巡回 パネル ===== */}
+          {getView === 'engines' && (
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2554,7 +2590,10 @@ export default function Leads() {
             )}
           </div>
 
-          {/* Instagram複数ハッシュタグ検索・外部ツール確認・手動インポート */}
+          )}
+
+          {/* ===== ✋手動で投入: Instagram複数ハッシュタグ検索・外部ツール確認・手動インポート ===== */}
+          {getView === 'manual' && (
           <div className="rounded-xl border-2 border-fuchsia-500/30 bg-card p-3">
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-bold text-fuchsia-600 dark:text-fuchsia-300">🔎 Instagram複数ハッシュタグ検索（高精度・新店候補）</span>
@@ -2617,7 +2656,10 @@ export default function Leads() {
             </div>
           </div>
 
-          {/* Instagram Web検索 パネル */}
+          )}
+
+          {/* ===== 🔬エンジン個別実行: Instagram Web検索 パネル ===== */}
+          {getView === 'engines' && (
           <div className="rounded-xl border bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2729,6 +2771,7 @@ export default function Leads() {
               </div>
             )}
           </div>
+          )}
 
           </>)}
 
