@@ -24,6 +24,16 @@ import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
+
+/**
+ * 検索APIの「継続不能」エラーか（残高切れ/クォータ/レート超過/認証失敗）。
+ * これらは残高やキーが直るまで全クエリが失敗するため、0件を「正常0件」と扱ってはいけない。
+ * （実際に Serper が "Not enough credits" を返す状態でも status='success' で記録され続け、
+ *   SERP由来のソースが全滅しているのに気づけない事故があったため必ずrunをerrorにする。）
+ */
+export function isProviderFatalError(msg?: string | null): boolean {
+  return /not enough credits|insufficient|quota|rate limit|too many requests|unauthorized|forbidden|invalid api key|api key|HTTP 4(01|03|29)/i.test(String(msg || ''))
+}
 const PREF_RE = /(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[一-龥ぁ-んァ-ヶ0-9０-９丁目番地号－−\-]{2,40}/
 // 新店根拠（HOT必須）: クエリが新店系でも着地ページが古い既存店のことがあるため、本文/タイトルで実際の新店文脈を確認する。
 const NEW_OPEN_RE = /(新規オープン|ニューオープン|グランドオープン|プレオープン|オープンしました|オープンいたしました|オープン予定|オープンいたします|近日オープン|まもなくオープン|もうすぐオープン|本日オープン|明日オープン|移転オープン|リニューアルオープン|開店しました|開店いたしました|開業しました|開業いたしました|開院しました|開院いたしました|開設しました|新規開業|新規開店|開業予定|開院予定|開院のお知らせ|開業のお知らせ|オープンのお知らせ|オープニング|グランドオープン|プレオープン|new[\s_]?open|grand[\s_]?open|now[\s_]?open|coming[\s_]?soon)/i
@@ -215,6 +225,9 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
   // 残り時間（ms）。1回の詳細/補完fetchは最大~8-9秒かかるため、残りが少なければ新規fetchを打ち切って60秒枠を死守する。
   const remain = () => budgetMs - (Date.now() - startMs)
   let stopAll = false
+  // 検索APIの継続不能エラー（残高切れ/クォータ/認証）。1件でも出れば以降のクエリも必ず失敗するため
+  // 即中断し、runを success ではなく error で記録する。
+  let providerFatal = ''
 
   try {
     for (const q of queries) {
@@ -224,7 +237,12 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
       const hotBefore = counts.hot
       const { results, error } = await webSearch(q, perQuery, undefined, timeOpts)
       cost.serper++; counts.serperUsed++; counts.queries++
-      if (error) counts.error++
+      if (error) {
+        counts.error++
+        // 「Not enough credits」等は残高が戻るまで全クエリが失敗する。0件を「正常0件」と誤認すると
+        // SERP由来のソースが全滅しているのに status=success で記録され誰も気づけないため、ここで打ち切る。
+        if (isProviderFatalError(error)) { providerFatal = error; debug.providerFatal = error; stopAll = true; break }
+      }
       counts.results += results.length
       for (const rr of results) {
         if (counts.detailFetched >= maxDetails) break
@@ -494,8 +512,15 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
     }
     await writeCost(admin, cost)
     await persistQueryStats()
-    await admin.from('auto_lead_runs').update({ status: 'success', finished_at: new Date().toISOString(), search_queries_count: counts.queries, fetched_count: counts.detailFetched, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
-    return { ok: true, runId, ...counts, importedCases, debug }
+    // 検索APIが継続不能（残高切れ等）、または全クエリが失敗した実行は「正常0件」ではないので error で残す。
+    // successで記録するとSERP由来のソースが全滅していても運用側が気づけない。
+    const allQueriesFailed = counts.queries > 0 && counts.error >= counts.queries
+    const runFailed = !!providerFatal || allQueriesFailed
+    const failMsg = providerFatal
+      ? `検索API継続不能のため中断（${String(providerFatal).slice(0, 120)}）。残高/APIキーを確認してください`
+      : allQueriesFailed ? `全${counts.queries}クエリが失敗（検索API異常の可能性）` : null
+    await admin.from('auto_lead_runs').update({ status: runFailed ? 'error' : 'success', error_message: failMsg, finished_at: new Date().toISOString(), search_queries_count: counts.queries, fetched_count: counts.detailFetched, hot_count: counts.hot, hold_count: counts.hold, excluded_count: counts.excluded, imported_count: counts.imported }).eq('id', runId).then(() => {}, () => {})
+    return { ok: !runFailed, runId, ...counts, providerFatal: providerFatal || undefined, error: failMsg || undefined, importedCases, debug }
   } catch (e: any) {
     await writeCost(admin, cost)
     await persistQueryStats()

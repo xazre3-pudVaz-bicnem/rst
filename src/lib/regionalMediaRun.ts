@@ -200,7 +200,11 @@ function isOpenCloseContext(o: LinkOpts): boolean {
   return false
 }
 
-const EXCLUDE_PATH = /\/(category|tag|author|page|search|feed|amp|wp-admin|wp-content|wp-json|wp-login|about|contact|privacy|policy|sitemap|ranking|login|mypage|profile|terms|company|recruit)\b/i
+// ナビ/インデックス系パス。記事URLと構造が同じ（例: 開店閉店.comの /area-open/ は実記事 /shinjuku-kokoro/ と
+// 同じ「単一の英字スラッグ」）ため、looksLikeArticle のスラッグ判定だけでは弾けず明示的に除外する。
+// これを許すと一覧の先頭にナビが並び、(a)記事予算を食い潰し (b)差分巡回カーソルがナビURL（不変）に固定され
+// 2回目以降の巡回が即breakして恒久0件になる。
+const EXCLUDE_PATH = /\/(category|tag|author|page|search|feed|amp|wp-admin|wp-content|wp-json|wp-login|about|contact|privacy|policy|sitemap|ranking|login|mypage|profile|terms|company|recruit|area-open|area-close|area-list|shop-list|store-list|[a-z-]*gyousyubetsu|[a-z-]*gyoshubetsu)\b/i
 
 /** パスが個別記事URLっぽいか（号外NETの数字ID・WPの日本語/英字slug 等） */
 function looksLikeArticle(pathname: string): boolean {
@@ -230,8 +234,13 @@ function extractArticleLinks(html: string, base: URL, opts: LinkOpts = {}): { li
     try { abs = new URL(href, base) } catch { continue }
     // 同一ホスト or 同一サイトの別サブドメイン（goguynetの地域別など）
     const sameHost = abs.host === base.host
-    const sameRoot = abs.host.split('.').slice(-2).join('.') === base.host.split('.').slice(-2).join('.')
+    const rootOf = (h: string) => h.split('.').slice(-2).join('.')
+    const sameRoot = rootOf(abs.host) === rootOf(base.host)
     if (!sameHost && !sameRoot) continue
+    // 地域サブドメイン（katsushika.goguynet.jp 等）から見た apex（goguynet.jp）はポータルの
+    // 都道府県ナビの塊で記事ではない。sameRootで通すと /aomori-iwate-miyagi/ 等が一覧先頭を占拠し、
+    // 記事予算の消費と差分巡回カーソルの汚染（＝恒久0件）を招くため除外する。
+    if (!sameHost && sameRoot && abs.host === rootOf(abs.host) && base.host !== rootOf(base.host)) continue
     if (/^(mailto:|tel:|javascript:)/i.test(href)) continue
     const articleLike = looksLikeArticle(abs.pathname)
     const titleOpen = title.length >= 4 && isOpenTitle(title)
@@ -867,13 +876,16 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const hash = urlHash(link.url)
         const { data: exA } = await admin.from('source_articles').select('id').eq('article_url_hash', hash).limit(1)
         if (skipSeen(exA?.[0], null)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読記事は再取得しない
-        if (siteNewest === null) siteNewest = link.url  // 今回処理する最初の新規記事＝次回の停止カーソル
         counts.newArticles++; used++
 
         const aRes = await fetchHtml(link.url, DETAIL_TIMEOUT_MS)
         counts.detailFetches++
         if (aRes.timedOut) { counts.timeouts++; diag.timeouts++ }
         const html = aRes.ok ? aRes.html : null
+        // 取得に成功した最初の新規記事だけを次回の停止カーソルにする（ディレクトリ経路と同じ設計）。
+        // 取得失敗したURLをカーソルにすると、その記事は本文を読めていないのに「読んだ」印になり、
+        // 次回以降そこで即breakして永久に再取得されない（＝恒久0件）。
+        if (siteNewest === null && aRes.ok) siteNewest = link.url
         await sleep(delay)
         // 本文抽出は記事エリア優先: サイドバー/広告/関連記事の電話・住所を誤認しない。
         // extractMainContentが過剰除去したとき（<300字）は全文へフォールバック。
