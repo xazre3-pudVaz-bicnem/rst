@@ -77,7 +77,9 @@ export const INITIAL_SOURCES = [
   { name: '号外NET 足立区', base_url: 'https://adachi.goguynet.jp/', list_url: 'https://adachi.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
   { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // 彩北なび: 店舗ディレクトリ型（一覧 sort=newest → 店舗詳細 /shop/shop.shtml?s=xxxx を巡回）
-  { name: '彩北なび', base_url: 'https://www.saikohkunavi.net/', list_url: 'https://www.saikohkunavi.net/shop/?sort=newest', media_family: 'saikohkunavi', source_type: 'local_directory_new_listing', category_label: '店舗新着', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
+  // ドメインは saihokunavi.net（彩北＝さいほく）。旧登録の www.saikohkunavi.net は綴り誤りで
+  // 実在せず（NXDOMAIN）、巡回が恒久0件になっていた。media_family は既存DB互換のため現行キーを維持。
+  { name: '彩北なび', base_url: 'https://saihokunavi.net/', list_url: 'https://saihokunavi.net/shop/?sort=newest', media_family: 'saikohkunavi', source_type: 'local_directory_new_listing', category_label: '店舗新着', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // HORBY 新規加盟店舗: Angular SPA（api.u-word.com の認証付きAPIで描画）。静的fetchでは0件のため rendering_mode=browser（要レンダリングAPI）。/horby を優先URLに。
   { name: 'HORBY 新規加盟店舗', base_url: 'https://u-word.com/horby', list_url: 'https://u-word.com/horby', media_family: 'horby', source_type: 'marketplace_listing', parser_type: 'horby_new_salon', rendering_mode: 'browser', category_label: '新規加盟店舗', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
   // ===== 追加初期候補（新店/開店閉店/ニューオープンが出やすいサイト） =====

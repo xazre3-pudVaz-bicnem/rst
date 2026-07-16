@@ -13,13 +13,25 @@ import { classifyIndustry } from './industry.js'
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
   industryHints?: RegExp
+  /**
+   * 店名候補の優先順（既定: h2→og→h1→title→一覧タイトル）。
+   * サイトによっては h2 がタブ見出しだったり、og/title が「店名 - 業種 / 市 - サイト名」形式で
+   * 汎用整形では店名が取れないため、media_family 単位で順序を上書きできるようにする。
+   */
+  nameOrder?: Array<'h1' | 'h2' | 'og' | 'title' | 'fallback'>
 }
 
 // media_family ごとの設定（拡張ポイント）
 export const DIRECTORY_CONFIGS: Record<string, DirectoryConfig> = {
+  // 彩北なび。実ドメインは saihokunavi.net（family名の 'saikohkunavi' は既存DB行との互換のため綴りを維持）。
   saikohkunavi: {
     // 例: /shop/shop.shtml?s=2364
-    detailPattern: /\/shop\/shop\.shtml\?s=\d+/i,
+    // ?s=NNNN&e=..&t=.. は同一店の「特集」表示で、店名が「◯◯特集」になり開業日も特集記事の日付を
+    // 拾ってしまう（同じ店が二重に候補化される）。正準形 ?s=NNNN だけを店舗詳細とみなす。
+    detailPattern: /\/shop\/shop\.shtml\?s=\d+$/i,
+    // h2 はタブ見出し「基本情報」、og/title は「店名 - 業種 / 市 - サイト名」で末尾がサイト名になるため
+    // h1（実店名）→ 一覧のリンクテキスト の順で採用する。
+    nameOrder: ['h1', 'fallback'],
   },
 }
 // 既定（未知のディレクトリでも /shop/ 配下の詳細っぽいURLを拾う）
@@ -294,7 +306,7 @@ export function detectIndustryFromText(text: string): string {
   return classifyIndustry(text)
 }
 
-const CHAIN_HINT = /(マクドナルド|スターバックス|スタバ|ケンタッキー|モスバーガー|ガスト|サイゼリヤ|吉野家|すき家|松屋|ドトール|タリーズ|コメダ|丸亀製麺|ユニクロ|GU|セブンイレブン|ファミリーマート|ローソン|QBハウス|ライザップ|チョコザップ|カーブス|ほっともっと|大戸屋|やよい軒|ニトリ|業務スーパー|ドン・?キホーテ|マツモトキヨシ|ウエルシア|スギ薬局)/i
+const CHAIN_HINT = /(マクドナルド|スターバックス|スタバ|ケンタッキー|モスバーガー|ガスト|サイゼリヤ|吉野家|すき家|松屋|ドトール|タリーズ|コメダ|丸亀製麺|ユニクロ|\bGU\b|ＧＵ|セブンイレブン|ファミリーマート|ローソン|QBハウス|ライザップ|チョコザップ|カーブス|ほっともっと|大戸屋|やよい軒|ニトリ|業務スーパー|ドン・?キホーテ|マツモトキヨシ|ウエルシア|スギ薬局)/i
 
 function pickUrl(html: string, re: RegExp): string {
   for (const m of html.matchAll(/href=["']([^"']+)["']/gi)) { if (re.test(m[1])) return m[1] }
@@ -302,7 +314,7 @@ function pickUrl(html: string, re: RegExp): string {
 }
 
 /** 店舗詳細ページHTMLから店名・電話・住所・業種・OPEN日などを抽出。 */
-export function extractDirectoryShopInfo(html: string, fallbackTitle = ''): DirectoryShopInfo {
+export function extractDirectoryShopInfo(html: string, fallbackTitle = '', mediaFamily?: string | null): DirectoryShopInfo {
   const body = stripTags(html)
   const PREF = '北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県'
   // 店名: h2(店名表示) → og:title/h1から『地名のカテゴリ』パンくず＆サイト名を除去した実店名。ナビ/カテゴリは採用しない
@@ -323,18 +335,29 @@ export function extractDirectoryShopInfo(html: string, fallbackTitle = ''): Dire
     if (isCrumb(s)) s = s.replace(/^[^\s]{1,12}[都道府県市区町村][^\s]{0,10}の[^\s]{1,16}?(スポット|グルメ|カフェ|公共施設|施設|美容室|サロン|お店|ニュース|エンタメ|ショップ|教室|サービス)\s*/, '').trim()
     return s.replace(/（[^）]*）\s*$/, '').trim().slice(0, 50)
   }
-  // 優先: h2（実店名のことが多い・パンくびでなければ）→ og:title整形 → h1整形 → title → fallback
+  // 既定は h2（実店名のことが多い）→ og:title整形 → h1整形 → title → 一覧タイトル。
+  // サイト設定 nameOrder があればそれに従う（h2がタブ見出し等のサイト向け）。
+  const nameCands: Record<'h1' | 'h2' | 'og' | 'title' | 'fallback', string> = {
+    h1: cleanCand(h1), h2, og: cleanCand(og), title: cleanCand(tt), fallback: stripTags(fallbackTitle),
+  }
+  // タブ見出し/ナビ語は店名ではない（例: 彩北なびの最初のh2はタブの「基本情報」）
+  const isNavLabel = (s: string) =>
+    /^(ニュース|メニュー|HOME|アクセス|クチコミ|口コミ|お気に入り|TOP|基本情報|店舗情報|スポット情報|詳細情報|クーポン|写真|地図|MAP)/.test(s)
   let shop_name = ''
-  for (const cand of [h2, cleanCand(og), cleanCand(h1), cleanCand(tt), stripTags(fallbackTitle)]) {
-    const s = (cand === h2 ? h2 : cand).trim()
-    if (s && !isCrumb(s) && s.length >= 2 && !/^(ニュース|メニュー|HOME|アクセス|クチコミ|お気に入り|TOP)/.test(s)) { shop_name = s.slice(0, 50); break }
+  for (const k of directoryConfig(mediaFamily).nameOrder ?? ['h2', 'og', 'h1', 'title', 'fallback']) {
+    const s = (nameCands[k] || '').trim()
+    if (s && !isCrumb(s) && s.length >= 2 && !isNavLabel(s)) { shop_name = s.slice(0, 50); break }
   }
   if (!shop_name) shop_name = cleanCand(og) || cleanCand(h1) || stripTags(fallbackTitle).slice(0, 40)
 
   // 電話: tel:リンク → TEL/電話ラベル → 本文中の日本の番号
   let phone = (html.match(/href=["']tel:(\+?[\d-]{9,15})["']/i)?.[1] || '').replace(/^\+81/, '0')
   if (!phone) { const telLabel = body.match(/(?:TEL|ＴＥＬ|電話|でんわ|お問い合わせ)[^\d+]{0,6}(0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4})/i); if (telLabel) phone = telLabel[1] }
-  if (!phone) { for (const m of body.matchAll(/0\d{1,3}[-(\s]?\d{2,4}[-)\s]?\d{3,4}/g)) { if (isJapanPhone(m[0])) { phone = m[0]; break } } }
+  // 素の本文スキャンは最後の手段。区切りに空白を許すと郵便番号をまたいで誤マッチするため、
+  // ハイフン/括弧区切り or 区切りなしの正準形だけを拾う。
+  // 例: TEL欄が「-」（電話なし）の店で「Saitama 360-0816 360-0816 熊谷市…」から "0816 360-0816" を拾い、
+  //     数字だけ見ると0始まり11桁で isJapanPhone を通過し、電話が無い店に偽番号が付いていた。
+  if (!phone) { for (const m of body.matchAll(/0\d{1,3}[-(]?\d{2,4}[-)]?\d{3,4}/g)) { if (isJapanPhone(m[0])) { phone = m[0]; break } } }
   phone = phone.trim()
 
   // 住所: 都道府県アンカー最優先（『アクセス』ラベルはナビ誤爆するので使わない）。住所/所在地ラベル＋都道府県 → 都道府県アンカー → 市区町村+番地

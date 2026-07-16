@@ -458,7 +458,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (siteNewest === null) siteNewest = item.url  // 取得成功した最初の新規＝次回の停止カーソル
           const dHtml = dRes.html
           diag.detailFetched++
-          const info = extractDirectoryShopInfo(dHtml, item.title)
+          const info = extractDirectoryShopInfo(dHtml, item.title, site.media_family)
           // 一覧タイトルのOPEN表記を優先（詳細でOPEN取れない場合の補完）
           const open = info.open.confidence !== 'none' ? info.open : item.open
           if (info.phone) diag.phoneYes++
@@ -707,7 +707,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
               diag.detailFetched++; detailStatus = dRes.rendered ? 'rendered' : 'fetched'; detailRendered = dRes.rendered
               const di = String(site.detail_parser_type) === 'horby_detail'
                 ? (() => { const h = parseHorbyDetail(dRes.html); return { shop_name: h.name, phone: h.phone, address: h.address, industry: cand.industry, official_url: h.official, instagram_url: '', map_url: h.mapUrl, open: cand.open } as any })()
-                : extractDirectoryShopInfo(dRes.html, cand.shopName)
+                : extractDirectoryShopInfo(dRes.html, cand.shopName, site.media_family)
               info = { ...info, shop_name: di.shop_name || cand.shopName, phone: di.phone || cand.phone, address: di.address || cand.address, industry: di.industry || cand.industry, official_url: di.official_url || info.official_url, instagram_url: di.instagram_url || '', map_url: di.map_url || '', open: (di.open && di.open.confidence !== 'none' ? di.open : cand.open) }
               if (!info.phone && LOGIN_GATED_RE.test(dRes.html)) { phoneGated = true; diag.loginGated = (diag.loginGated || 0) + 1 }
             } else { detailStatus = dRes.error ? 'failed' : 'failed'; if (/timeout/i.test(dRes.error || '')) { counts.timeouts++; diag.timeouts++ } }
