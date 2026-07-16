@@ -93,8 +93,11 @@ export function isRealStoreAddress(addr?: string | null): boolean {
   const prefs = s.match(PREF_G) || []
   if (prefs.length >= 2) return false                          // 都道府県が2つ以上＝カテゴリナビ/パンくず
   if (!prefs.length) return false                             // 都道府県が無い
-  // 「・」で複数エリアが並ぶ（見沼区・岩槻区…浦和区・緑 のようなカテゴリ列挙）はNG
-  if ((s.match(/[区市町村]/g) || []).length >= 3) return false
+  // 「・」等で複数エリアが並ぶ（見沼区・岩槻区・浦和区・緑区 のようなカテゴリ列挙）はNG。
+  // ※以前は [区市町村] の総数>=3 で弾いていたが、政令市の正規住所は「市＋区＋◯◯町」で必ず3つに達するため
+  //   さいたま市大宮区桜木町… 等の実住所を巻き込み、主要商圏の個人店が恒久的に投入されなかった。
+  //   列挙の本質は「区切り文字で並ぶこと」なので、区切りを伴う出現のみを数える。
+  if ((s.match(/[区市町村][・、／/]/g) || []).length >= 2) return false
   return true
 }
 

@@ -75,7 +75,10 @@ export const INITIAL_SOURCES = [
   { name: '号外NET 葛飾区', base_url: 'https://katsushika.goguynet.jp/', list_url: 'https://katsushika.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
   { name: '号外NET 江戸川区', base_url: 'https://edogawa.goguynet.jp/', list_url: 'https://edogawa.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
   { name: '号外NET 足立区', base_url: 'https://adachi.goguynet.jp/', list_url: 'https://adachi.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
-  { name: '埼北つうしん', base_url: 'https://saikou-tsushin.com/', list_url: 'https://saikou-tsushin.com/', media_family: 'tsushin', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 70, crawl_interval_hours: 24 },
+  // 埼北つうしん『さいつう』: 埼玉県北部（本庄市・深谷市中心）。実ドメインは sai2.info。
+  // 旧登録の saikou-tsushin.com は無関係サービスの /Login へ飛び、saihoku-tsushin.com は実在しない
+  // （どちらも恒久0件だった）。一覧は「開店・閉店」タグページ（WordPress の /archives/NNNN 記事型）。
+  { name: '埼北つうしん', base_url: 'https://sai2.info/', list_url: 'https://sai2.info/archives/tag/%E9%96%8B%E5%BA%97%E3%83%BB%E9%96%89%E5%BA%97', media_family: 'tsushin', source_type: 'openclose_article', parser_type: 'openclose_article', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
   // 彩北なび: 店舗ディレクトリ型（一覧 sort=newest → 店舗詳細 /shop/shop.shtml?s=xxxx を巡回）
   // ドメインは saihokunavi.net（彩北＝さいほく）。旧登録の www.saikohkunavi.net は綴り誤りで
   // 実在せず（NXDOMAIN）、巡回が恒久0件になっていた。media_family は既存DB互換のため現行キーを維持。

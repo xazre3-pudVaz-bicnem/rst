@@ -228,6 +228,17 @@ INSERT INTO source_sites (name, base_url, list_url, media_family, source_type, p
 VALUES ('じゃらん観光スポット', 'https://www.jalan.net/kankou/', 'https://www.jalan.net/kankou/', 'jalan', 'sequential_id_probe', 'jalan_spot_detail', '店舗新着', false, 60, 24, 'https://www.jalan.net/kankou/spt_guide{ID}/', 12, 231369, 'forward', 20, 20, 10, true, now())
 ON CONFLICT (base_url) DO UPDATE SET source_type='sequential_id_probe', parser_type='jalan_spot_detail', url_template=EXCLUDED.url_template, id_padding=12, scan_direction='forward', probe_batch_size=20, max_probe_per_run=20, max_consecutive_not_found=10, updated_at=now();
 CREATE INDEX IF NOT EXISTS idx_lead_candidates_detail_url ON lead_candidates(source_detail_url);
+-- 埼北つうしん『さいつう』のURL是正: 実在ドメインは sai2.info。
+-- saikou-tsushin.com は無関係サービスの /Login へ飛び、saihoku-tsushin.com は実在しない（恒久0件）。
+UPDATE source_sites SET is_active = false, last_crawl_result = '誤URL（別サービス/実在しないため無効化）'
+  WHERE base_url ILIKE '%saikou-tsushin%' OR base_url ILIKE '%saihoku-tsushin%';
+INSERT INTO source_sites (name, base_url, list_url, media_family, source_type, parser_type, category_label, is_active, reliability_score, crawl_interval_hours, updated_at)
+VALUES ('埼北つうしん', 'https://sai2.info/', 'https://sai2.info/archives/tag/%E9%96%8B%E5%BA%97%E3%83%BB%E9%96%89%E5%BA%97', 'tsushin', 'openclose_article', 'openclose_article', '開店閉店', true, 80, 24, now())
+ON CONFLICT (base_url) DO UPDATE SET
+  list_url = EXCLUDED.list_url, media_family = EXCLUDED.media_family, source_type = EXCLUDED.source_type,
+  parser_type = EXCLUDED.parser_type, category_label = EXCLUDED.category_label, is_active = true,
+  last_crawl_result = NULL, updated_at = now();
+
 -- 彩北なびのURL是正: 実在ドメインは saihokunavi.net（彩北＝さいほく）。
 -- 以前ここで「正: www.saikohkunavi.net」として実サイトを無効化していたが、saikohkunavi.net は
 -- 綴り誤りで実在せず（NXDOMAIN）、巡回が恒久0件だったため反転する。

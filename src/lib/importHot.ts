@@ -227,10 +227,14 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       downgraded++; continue
     }
     // 1.6) 実店舗ではない記事/まとめ・カテゴリ住所・大手チェーン/量販/ショッピングモール → 投入せずHOLD降格
+    // 強語(大手/チェーン)の判定は「店名のみ」に対して行う（targetFilter.ts の規約）。
+    // 本文/スニペットを渡すと「セブンイレブンの向かい」「スタバから徒歩3分」等のランドマーク記述で
+    // 個人店が EXCLUDED＝恒久除外になっていた。他ゲート(importGate.ts / excludeGate.ts)は店名のみで統一済み。
     const gtext = `${c.name || ''} ${c.regional_media_newness_reason || ''} ${c.search_snippet || ''}`
-    const bigStrong = detectBigOrPublicStrong(gtext)
-    const chainDef = detectChain(c.name || '', c.regional_media_newness_reason || '').definite
+    const bigStrong = detectBigOrPublicStrong(c.name || '')
+    const chainDef = detectChain(c.name || '').definite
     const branch = looksLikeBranchStore(c.name)
+    // 多店舗は経営主体の文脈を必須にした強語のみ（MULTI_STORE_RE）なので本文も検査してよい
     const multi = detectMultiStore(gtext)  // 2店舗以上/姉妹店/FC（分類時のみ検査で投入ゲートに無かった＝バイパスしていた）
     if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude) {
       const excludeHard = bigStrong.exclude || chainDef || multi.exclude
