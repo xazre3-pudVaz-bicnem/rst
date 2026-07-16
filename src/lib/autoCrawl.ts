@@ -61,6 +61,14 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   const trigger = opts.trigger || 'cron'
   // Vercel Pro: maxDuration=300s。取得元は並行実行。全体260sで打ち切り（sweep余白込み）。
   const budgetMs = Math.max(20000, Math.min(280000, opts.budgetMs || 260000))
+  // 取得元1件あたりの外側ハード上限（Promise.raceの打ち切り）。sweep用に余白を残す。並行なのでwall-clock≒これ。
+  // ※各取得元の「内部予算」は必ずこれより小さくすること。同値だと内部予算を使い切って最後のDB書き込みを
+  //   終えて戻る時刻が必ずこれを超え、レースは構造上100%外側が勝ってtimeout扱いになる。
+  //   実際に投入していても items は status='skipped'/timeout になり mapCounts に到達せず、集計から全て脱落する
+  //   （実績: regional_media が内部予算220000ms＝sourceHardMsと同値で 55/55回タイムアウト判定）。
+  const sourceHardMs = Math.max(15000, budgetMs - 40000)
+  // 内部予算はハード上限より必ず手前で切る（最後のDB書き込み分の余白）。
+  const innerBudgetMs = Math.max(15000, sourceHardMs - 20000)
   const startMs = Date.now()
   const mapsKey = env.GOOGLE_MAPS_API_KEY || null
 
@@ -105,7 +113,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 60, maxSitesPerDay: focused ? 80 : 60, runBudgetMs: pb(220000, 240000), maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 60, maxSitesPerDay: focused ? 80 : 60, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
   if (wantType('instagram')) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
@@ -176,7 +184,6 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 全取得元を「並行実行」する（以前は順次＋1回3取得元までで、遅い取得元がタイムアウトし残りがdeferred＝
   // 何も投入されない問題があった）。並行なら壁時計は最も遅い1取得元の時間で済み、全取得元が毎回カバーされる。
   // 各取得元は自前の内部予算＋ここのハード上限で二重に打ち切り、60s関数上限を死守する。
-  const sourceHardMs = Math.max(15000, budgetMs - 40000) // sweep用に余白を残す。並行なのでwall-clock≒これ。
   await Promise.allSettled(types.map(async (t) => {
     const itemStart = new Date().toISOString()
     try {

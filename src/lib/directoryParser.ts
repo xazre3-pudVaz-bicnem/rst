@@ -12,6 +12,8 @@ import { classifyIndustry } from './industry.js'
 
 export interface DirectoryConfig {
   detailPattern: RegExp        // 店舗詳細URL（pathname+search）の判定
+  /** 店舗詳細ではないURL（一覧/絞込/クーポン等）。detailPattern に一致してもこれに当たれば除外する。 */
+  excludePattern?: RegExp
   industryHints?: RegExp
   /**
    * 店名候補の優先順（既定: h2→og→h1→title→一覧タイトル）。
@@ -35,8 +37,15 @@ export const DIRECTORY_CONFIGS: Record<string, DirectoryConfig> = {
   },
 }
 // 既定（未知のディレクトリでも /shop/ 配下の詳細っぽいURLを拾う）
+// 一覧/絞込/クーポン等の「店舗詳細ではないURL」を除く。これが無いと:
+//  - まいぷれの業種絞込 /shop/list?c=1 が /(shop)\/[^?]*\??[a-z]*=?\d+/ に完全一致し、
+//    絞込リンク126〜128本がDOM順で店舗カードより先に並ぶため、詳細fetchの5枠を全て食い潰していた
+//    （拾える店名も「全て」「居酒屋・ダイニングバー」等のカテゴリ名になる）
+//  - アミーカ千葉の /detail/179/coupon.html が本体 /detail/179/ と別URLとして二重に候補化されていた
+const DIRECTORY_NON_DETAIL_RE = /\/(list|search|category|categories|genre|area|ranking|coupon|menu|photo|review|map|access)(\/|\.|\?|$)/i
 const DEFAULT_DIRECTORY: DirectoryConfig = {
   detailPattern: /\/(shop|store|tenpo|spot|detail)\/[^?]*\??[a-z]*=?\d+/i,
+  excludePattern: DIRECTORY_NON_DETAIL_RE,
 }
 
 export function directoryConfig(mediaFamily?: string | null): DirectoryConfig {
@@ -284,6 +293,7 @@ export function extractDirectoryListingLinks(html: string, base: URL, mediaFamil
     if (abs.host !== base.host) continue
     const pathAndSearch = abs.pathname + (abs.search || '')
     if (!cfg.detailPattern.test(pathAndSearch)) continue
+    if (cfg.excludePattern?.test(pathAndSearch)) continue // 一覧/絞込/クーポン等は店舗詳細ではない
     const key = abs.toString()
     if (seen.has(key)) continue
     seen.add(key)

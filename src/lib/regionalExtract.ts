@@ -96,7 +96,8 @@ export function extractFromArticle(title0: string, bodyText: string): RegionalEx
   let area = ''
   const bra = title.match(/【([^】]+)】/)
   if (bra) area = AREA_TOKENS.find((t) => bra[1].includes(t)) || ''
-  if (!area) area = AREA_TOKENS.find((t) => text.includes(t)) || ''
+  // ※本文の全文一致は最後の手段（住所を確定させた後）。先に使うとサイトナビや関連記事の地名を拾い、
+  //   実測で仙台の医院の記事が area='渋谷' になっていた。
 
   // 住所: 47都道府県対応（従来は関東4都県のみで、号外NET全国展開後の43道府県の住所が構造的に取れなかった）。
   // 全角数字を半角化してからマッチ（「東京都台東区１−２−３」型の表記に対応）
@@ -112,12 +113,39 @@ export function extractFromArticle(title0: string, bodyText: string): RegionalEx
   for (const m of normText.matchAll(PREF_ADDR_RE)) addrCands.push(m[0])
   const cityOnly = normText.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][^\n。、）)]{1,30}\d/)
   if (cityOnly) addrCands.push(cityOnly[0])
-  const cleanAddr = (s: string) => s.replace(/^〒?\s*(?:\d{3}-?\d{4})?\s*/, '').trim().slice(0, 60)
+  // 先頭の郵便番号を除き、住所の後ろに続く日付や案内文（「… 2025年10月1日（水）オープン」）を切る。
+  const cleanAddr = (s: string) => s
+    .replace(/^〒?\s*(?:\d{3}-?\d{4})?\s*/, '')
+    .replace(/\s*(?:20\d{2}\s*年|\d{1,2}\s*月\d{1,2}\s*日|TEL|ＴＥＬ|電話|営業時間|定休|アクセス).*$/, '')
+    .trim().slice(0, 60)
   const usableAddrs = addrCands.map(cleanAddr).filter((s) => s.length >= 3 && !ADDR_NOISE_RE.test(s))
   const address = usableAddrs.find((s) => /(丁目|番地|\d)/.test(s)) || usableAddrs[0] || ''
 
-  // 開店日: 「○月○日オープン」「2026/6/28」等
-  const dateMatch = text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/) || text.match(/(\d{1,2}月\d{1,2}日)(?:[^\n]{0,6}(?:オープン|開店|開業|オープン予定))/)
+  // エリアの確定: 【…】→ 住所から導出 → （住所が無いときだけ）全文一致。
+  // AREA_TOKENS は駅名も含む固定リストなので、本文の全文一致を許すとサイトナビや関連記事の地名を拾う。
+  // 住所が取れているのにトークン表に無い地域（＝表が関東中心のため地方の市区町村は未収録）だと、
+  // 本文フォールバックが発火して仙台の医院の記事が area='渋谷' になっていた。
+  // → 住所があるなら住所内のトークン、無ければ住所から市区町村を切り出す。本文には落とさない。
+  if (!area && address) {
+    area = AREA_TOKENS.find((t) => address.includes(t))
+      || address.match(/([一-龥ぁ-んァ-ヶ]{1,8}[市区町村])/)?.[1]
+      || ''
+  }
+  if (!area && !address) area = AREA_TOKENS.find((t) => text.includes(t)) || ''
+
+  // 開店日: 「○月○日オープン」「2026/6/28」等。
+  // ※「最初に見つかった日付」を無条件に採ってはいけない。一覧アンカー由来のタイトルには記事の公開日時が
+  //   入る（開店閉店.com「2026-07-06 …」/ 号外NET「… 2026/07/13 10:18」）ため、常に公開日が先に一致し、
+  //   本文にある本当の開業日（例「2025年10月1日（水）オープン」）が使われなかった。
+  //   → オープン語に紐づく日付を最優先し、無い場合のみ素の日付にフォールバックする。
+  const openAnchored =
+    text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)[^\n]{0,12}?(?:オープン|開店|開業|開院|グランドオープン|プレオープン)/) ||
+    text.match(/(?:オープン|開店|開業|開院)(?:日|予定日)?[：:\s]{0,4}(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/) ||
+    text.match(/(\d{1,2}月\d{1,2}日)[^\n]{0,6}?(?:オープン|開店|開業|開院|オープン予定)/) ||
+    text.match(/(?:オープン|開店|開業|開院)(?:日|予定日)?[：:\s]{0,4}(\d{1,2}月\d{1,2}日)/)
+  const dateMatch = openAnchored
+    || text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/)
+    || text.match(/(\d{1,2}月\d{1,2}日)/)
   const open_date = dateMatch ? dateMatch[1] || dateMatch[0] : ''
 
   const industry = classifyIndustry(text)

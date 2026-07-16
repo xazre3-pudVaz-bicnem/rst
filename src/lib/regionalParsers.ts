@@ -100,7 +100,11 @@ export interface BlockCandidate {
 
 /** 日本の電話番号として妥当か（厳格）。00xx・短すぎ・桁数不正・郵便番号/日付混同を排除。 */
 export function isValidJpPhone(raw: string): boolean {
-  const d = String(raw || '').replace(/[^\d]/g, '')
+  let d = String(raw || '').replace(/[^\d]/g, '')
+  // 国際表記 +81-3-1234-5678 / 81 3 1234 5678 は国内形 03-1234-5678 に直してから検証する。
+  // これが無いと isJapanPhone(/^\+?81/ で true) と判定が割れ、正当な日本の店舗が
+  // 「電話番号が不正」としてHOLD降格していた（公式サイトの表記が +81 のケースで発火）。
+  if (/^81\d{9,10}$/.test(d)) d = '0' + d.slice(2)
   if (d.length !== 10 && d.length !== 11) return false
   if (d[0] !== '0') return false
   if (/^(0120|0800|0570)\d{6}$/.test(d)) return true   // フリーダイヤル/ナビダイヤル(10桁)
@@ -140,10 +144,23 @@ export function extractShopFromTitle(title: string): string {
 /** 記事本文エリアだけを抽出（広告/サイドバー/関連記事/カウンター等を除外）。店名・住所・電話の優先抽出に使う。 */
 export function extractMainContent(html: string): string {
   if (!html) return ''
-  const pick = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
-    || html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
-    || html.match(/<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-body|article__body|post_content|単一記事|記事本文|content-inner)[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<footer|<aside)/i)
-  let content = pick ? (pick[1] || '') : html
+  // 候補を全て集め「最も本文らしい（タグを除いた文字数が最大の）もの」を採る。
+  // 以前は優先順で最初にヒットした1件を使っていたため、<article>/<main> が小さなティーザーだけを
+  // 包むサイトでは極小の本文が返り（開店閉店.comで実測21字）、呼び出し側が「300字未満なら全文」の
+  // フォールバックに落ちて、サイドバーの「最近の閉店記事」から店名・住所・開業日を誤抽出していた
+  // （仙台の医院の extracted_area が『渋谷』になる等）。
+  const cands: string[] = []
+  const push = (re: RegExp) => { for (const m of html.matchAll(re)) if (m[1]) cands.push(m[1]) }
+  push(/<article[^>]*>([\s\S]*?)<\/article>/gi)
+  push(/<main[^>]*>([\s\S]*?)<\/main>/gi)
+  push(/<div[^>]*class=["'][^"']*(?:entry-content|post-content|article-body|article__body|post_content|entry_content|single-content|single_content|post-body|td-post-content|記事本文|単一記事|content-inner)[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<footer|<aside)/gi)
+  push(/<div[^>]*id=["'](?:content|main|post|entry|main-content|primary)["'][^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<footer|<aside)/gi)
+  const textLen = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length
+  let content = html
+  if (cands.length) {
+    const best = cands.reduce((a, b) => (textLen(b) > textLen(a) ? b : a))
+    if (textLen(best) >= 200) content = best  // 極小候補は採らず全文側の判断に委ねる
+  }
   // 除外ブロックを削る（best-effort）
   content = content
     .replace(/<(nav|header|footer|aside|script|style|form)[\s\S]*?<\/\1>/gi, ' ')

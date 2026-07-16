@@ -204,7 +204,22 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     }
     // 1.25) 共有電話番号: 同じ番号が多数の候補に出現＝ポータル転送/代行/掲載用番号（店舗直通でない）→ 投入せずHOLD
     {
-      const { count: sharedCands } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).eq('phone_number', phone)
+      // 電話は保存時に正規化されておらず表記が揺れる（'048-123-4567' / '0481234567' / 全角）。
+      // 生文字列の完全一致(.eq)で数えていたため、同じ代行番号でも表記が違えば別番号扱いになり見逃していた。
+      // また extracted_phone にしか電話が無い候補も数えられていなかった。
+      // → 下4桁でDB側を粗く絞り、数字だけにして厳密比較する。
+      const digits = onlyDigits(phone)
+      const last4 = digits.slice(-4)
+      let sharedCands = 0
+      if (last4.length === 4) {
+        const { data: tail } = await admin.from('lead_candidates').select('id,phone_number,extracted_phone')
+          .or(`phone_number.like.%${last4},extracted_phone.like.%${last4}`).limit(300)
+        const ids = new Set<string>()
+        for (const r of ((tail || []) as any[])) {
+          if (onlyDigits(r.phone_number) === digits || onlyDigits(r.extracted_phone) === digits) ids.add(r.id)
+        }
+        sharedCands = ids.size
+      }
       if ((sharedCands || 0) >= 8) {
         await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: `同一電話番号が候補${sharedCands}件で使用（ポータル転送/代行番号の疑い）→HOLD` }).eq('id', c.id)
         downgraded++; continue

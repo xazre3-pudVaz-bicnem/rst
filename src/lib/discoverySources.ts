@@ -272,7 +272,10 @@ export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_pl
 // 専用エンジンで本稼働している source_type（run.ts が newSourceEngines.runEngineSource に振り分ける）。
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
 export const ENGINE_SOURCE_TYPES = [
-  'new_ssl_certificate_domain_scan', 'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
+  // ※'new_ssl_certificate_domain_scan' はここに載せない。defaultEnabled:false で自動巡回のフィルタに毎回弾かれ
+  //   実際には一度も走らないのに、UIで「本稼働」バッジが出て動いているように見えてしまうため（実態は土台のまま）。
+  //   外部API(crt.sh)の確認が済んで defaultEnabled:true にする時に、ここへ戻すこと。
+  'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
   'document_to_lead_import', 'event_vendor_list_import', 'google_news_rss_opening', 'opening_soon_promotion', 'public_open_data_crawl',
   'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
   'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',

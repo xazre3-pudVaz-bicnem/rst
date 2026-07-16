@@ -179,9 +179,11 @@ async function startRun(admin: any, source: string, userId: string | null): Prom
   const { data } = await admin.from('auto_lead_runs').insert({ source, status: 'running', created_by_id: userId }).select('id').single()
   return data?.id ?? null
 }
-async function finishRun(admin: any, runId: string | null, counts: any, status = 'success') {
+/** 実行の終了を記録。status='error' のときは原因を error_message に必ず残す
+ *  （保存していなかったため、毎回同じ地点で落ちる恒久エラーの原因が本番ログから一切追えなかった）。 */
+async function finishRun(admin: any, runId: string | null, counts: any, status = 'success', errorMessage?: string | null) {
   if (!runId) return
-  await admin.from('auto_lead_runs').update({ status, finished_at: new Date().toISOString(), fetched_count: counts.fetched || 0, hot_count: counts.hot || 0, hold_count: counts.hold || 0, excluded_count: counts.excluded || 0, imported_count: counts.imported || 0 }).eq('id', runId).then(() => {}, () => {})
+  await admin.from('auto_lead_runs').update({ status, error_message: errorMessage ? String(errorMessage).slice(0, 500) : null, finished_at: new Date().toISOString(), fetched_count: counts.fetched || 0, hot_count: counts.hot || 0, hold_count: counts.hold || 0, excluded_count: counts.excluded || 0, imported_count: counts.imported || 0 }).eq('id', runId).then(() => {}, () => {})
 }
 
 // ============================================================
@@ -226,7 +228,7 @@ export async function runSslCertScan(admin: any, mapsKey: string | null, opts: {
     }
     await finishRun(admin, runId, counts)
     return { ok: true, ...counts, domainsFound: domains.length }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -249,10 +251,17 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
   const runId = await startRun(admin, sourceType, userId)
   const nowMs = Date.now()
   try {
-    // official_url があり、直近未チェックの候補（HOLD/HOT中心）
     // official_url を持つ非EXCLUDED候補（serpDiscovery等は official_url と website_url を同値で保存するため official_url で足りる）
+    // ※order も cursor も無く limit(400)→slice(0,30) していたため、Supabaseが毎回同じ順序を返す結果
+    //   先頭30件だけを永久に再走査し、残りの候補は一度も見られなかった。
+    //   実行回数ベースでオフセットを回して全候補を巡回する（id昇順＝オフセット送りの前提となる安定順序）。
+    const { count: total } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true })
+      .not('official_url', 'is', null).neq('lead_temperature', 'EXCLUDED')
+    const { count: runCount } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', sourceType)
+    const start = total && total > limit ? ((runCount || 0) * limit) % total : 0
     const { data: rows } = await admin.from('lead_candidates').select('id,name,official_url,website_url,phone_number,address,lead_temperature,imported_to_cases')
-      .not('official_url', 'is', null).neq('lead_temperature', 'EXCLUDED').limit(400)
+      .not('official_url', 'is', null).neq('lead_temperature', 'EXCLUDED')
+      .order('id', { ascending: true }).range(start, start + 399)
     const list = (rows || []).filter((c: any) => (c.official_url || c.website_url) && /^https?:\/\//.test(c.official_url || c.website_url)).slice(0, limit)
     for (const c of list) {
       if (remain() < 9000) break
@@ -309,7 +318,7 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
     }
     await finishRun(admin, runId, { ...counts, hot: counts.promotedHot })
     return { ok: true, ...counts }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -404,7 +413,7 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     }
     await finishRun(admin, runId, { ...counts, hot: counts.promotedHot })
     return { ok: true, ...counts }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -573,7 +582,7 @@ export async function runGoogleNewsRss(admin: any, mapsKey: string | null, opts:
     }
     await finishRun(admin, runId, counts)
     return { ok: true, ...counts, importedCases }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -680,7 +689,7 @@ export async function runOpeningSoonQueue(admin: any, opts: { limit?: number; ru
     }
     await finishRun(admin, runId, { ...counts, hot: counts.promotedHot })
     return { ok: true, ...counts, importedCases }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -931,7 +940,7 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
     }
     await finishRun(admin, runId, counts)
     return { ok: true, ...counts }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // ============================================================
@@ -941,7 +950,14 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
 //   （施設名称/所在地_連結表記/施設電話番号/初回許可年月日/申請区分/廃業年月日…列名は全国共通）。
 //   エンコードはUTF-8 BOM/Shift-JIS/UTF-16LEが混在するため自動判定する。
 // ============================================================
-export interface PermitSource { key: string; label: string; kind: 'taito_monthly' | 'std_registry'; urls: (nowMs: number) => string[]; areaPrefix?: string; telAreaCode?: string }
+export interface PermitSource {
+  key: string; label: string; kind: 'taito_monthly' | 'std_registry'; urls: (nowMs: number) => string[]
+  areaPrefix?: string; telAreaCode?: string
+  /** この台帳専用の鮮度窓（日）。台帳ごとに公開ラグが違うため既定(45日)を上書きできる。
+   *  港区は「ファイル更新は月末なのに収録データは前月末まで」＝公開ラグが約32〜60日あり、
+   *  45日窓だと最新行すら窓の外になって月の大半で新規0件（＝2枠中1枠を空振りで消費）だった。 */
+  recencyDays?: number
+}
 export const PERMIT_SOURCES: PermitSource[] = [
   {
     key: 'taito', label: '台東区 月次新規許可', kind: 'taito_monthly', areaPrefix: '東京都台東区', telAreaCode: '03',
@@ -955,7 +971,9 @@ export const PERMIT_SOURCES: PermitSource[] = [
       return out
     },
   },
-  { key: 'minato', label: '港区 営業許可台帳', kind: 'std_registry', urls: () => ['https://opendata.city.minato.tokyo.jp/dataset/54d8c582-00e2-4730-a23f-4a5befec9ae5/resource/c9d0299e-8e05-4317-877f-83055709e41f/download/food_business_all.csv'] },
+  // 港区は公開ラグが大きい（実測2026-07-16時点: ファイルのLast-Modifiedは6/30だが収録データの最新初回許可日は5/29＝約48日遅れ）。
+  // 既定45日窓では最新行すら窓の外で毎月大半が新規0件になるため、この台帳だけ窓を90日に広げる。
+  { key: 'minato', label: '港区 営業許可台帳', kind: 'std_registry', recencyDays: 90, urls: () => ['https://opendata.city.minato.tokyo.jp/dataset/54d8c582-00e2-4730-a23f-4a5befec9ae5/resource/c9d0299e-8e05-4317-877f-83055709e41f/download/food_business_all.csv'] },
   // ※実測で外したソース（2026-07実査）: 江東/中央/新宿=標準台帳だが年次スナップショット更新で直近45日の新規0件、
   //   中野=日付列なしの独自様式。更新頻度の高い自治体が見つかれば std_registry で1行追加するだけで対応可能。
 ]
@@ -1076,10 +1094,12 @@ export async function runHealthPermitScan(admin: any, mapsKey: string | null, op
     const { count: rc } = await admin.from('auto_lead_runs').select('id', { count: 'exact', head: true }).eq('source', 'public_open_data_crawl')
     const startIdx = ((rc || 0) * 2) % PERMIT_SOURCES.length
     const picked = [PERMIT_SOURCES[startIdx % PERMIT_SOURCES.length], PERMIT_SOURCES[(startIdx + 1) % PERMIT_SOURCES.length]].filter((v, i, a) => a.indexOf(v) === i)
-    const sinceMs = Date.now() - recencyDays * 86400000
     let processed = 0
 
     for (const src of picked) {
+      // 鮮度窓は台帳ごと（公開ラグが自治体で大きく違うため）。指定が無ければ実行時の既定を使う。
+      const srcRecencyDays = Math.max(7, Math.min(180, src.recencyDays ?? recencyDays))
+      const sinceMs = Date.now() - srcRecencyDays * 86400000
       if (remain() < perItemMs + 15000 || processed >= maxItems) break
       // CSV取得（月次ファイルはフォールバック列を順に試す）
       let csvUrl = ''; let buf: Buffer | null = null
@@ -1136,7 +1156,7 @@ export async function runHealthPermitScan(admin: any, mapsKey: string | null, op
     }
     await finishRun(admin, runId, counts)
     return { ok: true, ...counts, importedCases }
-  } catch (e: any) { await finishRun(admin, runId, counts, 'error'); return { ok: false, error: String(e?.message || e), ...counts } }
+  } catch (e: any) { await finishRun(admin, runId, counts, 'error', String(e?.message || e)); return { ok: false, error: String(e?.message || e), ...counts } }
 }
 
 // source_type → エンジン実行の振り分け。run.ts から呼ぶ。未対応(OCR/PDF/Meta API要)は null を返す。

@@ -264,7 +264,10 @@ CREATE INDEX IF NOT EXISTS idx_lead_candidates_article_url ON lead_candidates(so
 CREATE INDEX IF NOT EXISTS idx_lead_candidates_lead_source ON lead_candidates(lead_source);
 `
 
-const SITE_COLS = ['name', 'base_url', 'list_url', 'media_family', 'source_type', 'category_label', 'is_active', 'reliability_score', 'crawl_interval_hours']
+// parser_type / rendering_mode を含めること。落とすと viaPg(SUPABASE_DB_URL 経由) と
+// API経路（api/admin/regional-media/sources.ts は {...s} で全フィールドを渡す）で seed 結果が食い違い、
+// 同じ INITIAL_SOURCES を入れてもパーサ指定やJSレンダリング指定の有無が投入経路で変わってしまう。
+const SITE_COLS = ['name', 'base_url', 'list_url', 'media_family', 'source_type', 'parser_type', 'rendering_mode', 'category_label', 'is_active', 'reliability_score', 'crawl_interval_hours']
 
 async function viaPg() {
   const client = new Client({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } })
@@ -277,14 +280,17 @@ async function viaPg() {
     console.log('• 初期ソースを upsert 中...')
     for (const s of INITIAL_SOURCES) {
       await client.query(
-        `INSERT INTO source_sites (name, base_url, list_url, media_family, source_type, category_label, is_active, reliability_score, crawl_interval_hours, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+        `INSERT INTO source_sites (name, base_url, list_url, media_family, source_type, parser_type, rendering_mode, category_label, is_active, reliability_score, crawl_interval_hours, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
          ON CONFLICT (base_url) DO UPDATE SET
            name=EXCLUDED.name, list_url=EXCLUDED.list_url, media_family=EXCLUDED.media_family,
-           source_type=EXCLUDED.source_type, category_label=EXCLUDED.category_label,
+           source_type=EXCLUDED.source_type, parser_type=EXCLUDED.parser_type,
+           rendering_mode=EXCLUDED.rendering_mode, category_label=EXCLUDED.category_label,
            reliability_score=EXCLUDED.reliability_score, crawl_interval_hours=EXCLUDED.crawl_interval_hours,
            updated_at=now()`,
-        [s.name, normalizeUrl(s.base_url), normalizeUrl(s.list_url), s.media_family, s.source_type, s.category_label, s.is_active, s.reliability_score, s.crawl_interval_hours],
+        [s.name, normalizeUrl(s.base_url), normalizeUrl(s.list_url), s.media_family, s.source_type,
+          (s as { parser_type?: string }).parser_type ?? null, (s as { rendering_mode?: string }).rendering_mode ?? null,
+          s.category_label, s.is_active, s.reliability_score, s.crawl_interval_hours],
       )
     }
     const total = await client.query('SELECT count(*)::int AS c FROM source_sites')
