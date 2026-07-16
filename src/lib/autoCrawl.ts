@@ -138,10 +138,15 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 自動巡回でローテーション実行（これまで手動実行のみで、自動では一度も回っていなかった）。古い順に2件/回。
     const engineTypes = ['google_news_rss_opening', 'public_open_data_crawl', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
       .filter((t) => toggles[t] !== false)
-    const { data: lastE } = await admin.from('auto_lead_runs').select('source,created_date').in('source', engineTypes).order('created_date', { ascending: false }).limit(100)
+    // エンジンtypeと auto_lead_runs.source の名前が食い違うものを正規化してから最終実行時刻を引く。
+    // エキテンは type='portal_published_date_search' だが実行は source='ekiten_discovery' で記録されるため、
+    // 正規化しないと lastByE が常に undefined→0 となり毎回最優先で選ばれ、2枠しかないエンジン枠を永久占有していた
+    // （実績: 30日で44回実行・616クエリ消費・投入0。その裏で保健所オープンデータは7回しか回れていなかった）。
+    const runSourceName = (t: string) => (t === 'portal_published_date_search' ? 'ekiten_discovery' : t)
+    const { data: lastE } = await admin.from('auto_lead_runs').select('source,created_date').in('source', engineTypes.map(runSourceName)).order('created_date', { ascending: false }).limit(100)
     const lastByE = new Map<string, number>()
     for (const r of (lastE || []) as any[]) { if (!lastByE.has(r.source)) lastByE.set(r.source, Date.parse(r.created_date || 0)) }
-    engineTypes.sort((a, b) => (lastByE.get(a) ?? 0) - (lastByE.get(b) ?? 0))
+    engineTypes.sort((a, b) => (lastByE.get(runSourceName(a)) ?? 0) - (lastByE.get(runSourceName(b)) ?? 0))
     for (const et of engineTypes.slice(0, 2)) {
       if (Date.now() - startMs > budgetMs - 60000) break
       try {

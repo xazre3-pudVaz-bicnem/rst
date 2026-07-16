@@ -95,7 +95,11 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
     queries: ['オープニングスタッフ 店舗 電話番号', 'オープニングスタッフ 新規オープン 住所', '新規オープン スタッフ募集 電話', 'オープニングスタッフ 飲食店 開店', 'オープニングスタッフ カフェ 開業', 'オープニングスタッフ 美容室 新規', 'オープニングスタッフ ネイルサロン', 'オープニングスタッフ 整体院', 'オープニングスタッフ エステ 開業', '新規開院 スタッフ募集 歯科', '開業予定 クリニック 求人', 'オープニングスタッフ 動物病院', 'オープニングスタッフ ジム 開業'] },
   { type: 'press_release_search', label: 'プレスリリース', group: 'プレスリリース由来', mode: 'serp', defaultEnabled: true, signalType: 'press_release', freshness: 'month',
     queries: ['site:prtimes.jp 新店舗 オープン', 'site:prtimes.jp 新規オープン 店舗', 'site:prtimes.jp グランドオープン', 'site:prtimes.jp 開業', 'site:prtimes.jp 開院', 'site:atpress.ne.jp 新規オープン', 'site:value-press.com 新店舗 オープン'] },
-  { type: 'portal_published_date_search', label: 'エキテン公開日7日以内', group: '公開日7日以内', mode: 'existing', defaultEnabled: true, signalType: 'portal_published_date', note: '既存のエキテン公開日探索を使用' },
+  // 既定OFF: 検索クエリの `site:ekiten.jp/shop_` が1件もヒットせず構造的に0件（Serper復活後に実測）。
+  //   `site:ekiten.jp/shop_ 公開日`（最も緩い形）でも0件。`site:ekiten.jp 新規オープン` は successful.ekiten.jp の
+  //   集客コラムしか返さず店舗ページではない。実績も30日で616クエリ消費・取得0・投入0。
+  //   復活させるにはクエリの作り直し（店舗ページの実URL形式の再調査）が必要。
+  { type: 'portal_published_date_search', label: 'エキテン公開日7日以内', group: '公開日7日以内', mode: 'existing', defaultEnabled: false, signalType: 'portal_published_date', note: 'クエリが構造的に0件のため無効化（要クエリ再設計）' },
   { type: 'official_site_news_crawl', label: '公式サイト新着情報', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news', freshness: 'month',
     queries: ['"新規オープン" "公式サイト"', '"グランドオープン" "公式"', '"開院のお知らせ"', '"開業のお知らせ"', '"移転オープンのお知らせ"', '"リニューアルオープンのお知らせ"', '"プレオープンのお知らせ"'] },
   { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: true, signalType: 'official_news', note: 'RSS/sitemap/WP REST差分。対象URL登録後に有効化' },
