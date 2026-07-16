@@ -263,8 +263,13 @@ export async function runDomainSignalScan(admin: any, mapsKey: string | null, mo
       let recentIso: string | null = null
       if (mode === 'wordpress') {
         const r = await fetchText(`${origin}/wp-json/wp/v2/posts?per_page=3&orderby=date&order=desc&_fields=date`, 7000, 'application/json')
-        let posts: any[] = []; try { posts = JSON.parse(r.text || '[]') } catch { posts = [] }
-        const latest = posts.map((p) => Date.parse(p.date || 0)).filter((t) => !Number.isNaN(t)).sort((a, b) => b - a)[0]
+        // WordPressでないサイトは404でもJSONの「オブジェクト」を返すことがある（例: tabelog.com の
+        // /wp-json/... は {"status":404,"error":"Not Found"}）。JSON.parseは成功するため catch では守れず、
+        // 直後の posts.map() が TypeError を投げて実行全体が外側catchまで飛び恒久0件になっていた
+        // （実績: 直近7日で11/11回 status=error・fetched=10 で毎回同じ地点で死亡）。配列でなければ空扱いにする。
+        let posts: any[] = []
+        try { const j = JSON.parse(r.text || '[]'); posts = Array.isArray(j) ? j : [] } catch { posts = [] }
+        const latest = posts.map((p) => Date.parse(p?.date || 0)).filter((t) => !Number.isNaN(t)).sort((a, b) => b - a)[0]
         if (latest && (nowMs - latest) <= recencyDays * 86400000) recentIso = new Date(latest).toISOString()
       } else if (mode === 'sitemap') {
         const r = await fetchText(`${origin}/sitemap.xml`, 7000, 'application/xml')

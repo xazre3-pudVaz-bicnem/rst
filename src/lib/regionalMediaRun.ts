@@ -256,6 +256,23 @@ function extractArticleLinks(html: string, base: URL, opts: LinkOpts = {}): { li
   return { links: out, totalLinks, candidateLinks: out.length, keywordHits }
 }
 
+/**
+ * 記事タイトルの決定。原則「長い方（情報量が多い方）」を採るが、一覧アンカーのテキストは
+ * カードの日時やカテゴリ名を内包することがあるため、それらを除いてから比較する。
+ * 号外NETの一覧カードは「記事タイトル 2026/07/13 10:18 開店/閉店」形式で必ず og:title より長くなり、
+ * 混入した「閉店」を detectType が拾って“開店記事なのに閉店記事”と誤判定し、候補すら作られず
+ * 破棄されていた（実測: 開店閉店カテゴリ25枚中17枚＝68%）。
+ * ※裸の「開店」「閉店」は本文タイトルの一部でありうるので落とさない（複合カテゴリ名と日時のみ除去）。
+ */
+function pickBestTitle(metaTitle: string, linkTitle: string): string {
+  const cleaned = String(linkTitle || '')
+    .replace(/\s*\d{4}\/\d{1,2}\/\d{1,2}(\s+\d{1,2}:\d{2})?\s*/g, ' ')   // カードの日時
+    .replace(/\s*(開店\s*[\/・＆&]\s*閉店|閉店\s*[\/・＆&]\s*開店)\s*$/, '') // 末尾のカテゴリ名（複合形のみ）
+    .trim()
+  const m = String(metaTitle || '')
+  return m && m.length >= cleaned.length ? m : (cleaned || m)
+}
+
 function articleMeta(html: string): { published_at: string | null; excerpt: string; title: string } {
   let published_at: string | null = null
   const pub = html.match(/<meta[^>]+property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i)
@@ -893,7 +910,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const mainText = html ? stripTags(extractMainContent(html)) : ''
         const body = mainText.length >= 300 ? mainText : (html ? stripTags(html) : '')
         const meta = html ? articleMeta(html) : { published_at: null, excerpt: '', title: '' }
-        const bestTitle = meta.title && meta.title.length >= link.title.length ? meta.title : (link.title || meta.title)
+        const bestTitle = pickBestTitle(meta.title, link.title)
         let ex = extractFromArticle(bestTitle, body.slice(0, 6000))
         // 記事エリア限定で電話も住所も取れなかった場合は全文で再抽出（店舗情報が<article>外にあるサイトの黙殺防止）
         if (!ex.phone && !ex.address && html && mainText.length >= 300) {
@@ -1193,7 +1210,7 @@ export async function testCrawlSite(site: any, maxArticles = 10, recentDays = 3)
       await sleep(300)
       const body = ah ? stripTags(ah) : ''
       const meta = ah ? articleMeta(ah) : { published_at: null, excerpt: '', title: '' }
-      const bestTitle = meta.title && meta.title.length >= link.title.length ? meta.title : (link.title || meta.title)
+      const bestTitle = pickBestTitle(meta.title, link.title)
       const ex = extractFromArticle(bestTitle, body.slice(0, 4000))
       const pubMs = meta.published_at ? Date.parse(meta.published_at) : NaN
       const within = !Number.isNaN(pubMs) && (now - pubMs) <= recentDays * 86400000

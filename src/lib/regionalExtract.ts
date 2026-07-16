@@ -79,9 +79,20 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
   // 住所: 47都道府県対応（従来は関東4都県のみで、号外NET全国展開後の43道府県の住所が構造的に取れなかった）。
   // 全角数字を半角化してからマッチ（「東京都台東区１−２−３」型の表記に対応）
   const normText = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/[−－]/g, '-')
-  const addrMatch = normText.match(/〒?\s*(?:\d{3}-?\d{4}\s*)?(?:北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\n。、）)]{2,50}/)
-    || normText.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][^\n。、）)]{1,30}\d/)
-  const address = addrMatch ? addrMatch[0].replace(/^〒?\s*(?:\d{3}-?\d{4})?\s*/, '').trim().slice(0, 60) : ''
+  // 住所候補は「先頭一致」で決めない。つうしん系の <title> は
+  // 「記事名 - 松戸つうしん - 千葉県松戸市の地域情報ブログ」形式で、text の先頭は title のため、
+  // 先頭一致だと本文の実住所より先にサイトのタグラインを住所として掴む（同一CMSの全記事で発火し、
+  // 偽住所が案件に投入されるうえ「住所あり」と誤認して外部補完まで抑止されていた）。
+  // → 候補を全件集め、ノイズ（タグライン/カテゴリ文言）を除外し、具体地点（丁目/番地/数字）を持つものを優先する。
+  const PREF_ADDR_RE = /〒?\s*(?:\d{3}-?\d{4}\s*)?(?:北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)[^\n。、）)]{2,50}/g
+  const ADDR_NOISE_RE = /(地域情報|情報ブログ|ブログ|ニュースサイト|情報サイト|ポータル|タウン情報|まとめ|一覧|特集|ランキング|の記事|お知らせ一覧|求人|不動産|で検索)/
+  const addrCands: string[] = []
+  for (const m of normText.matchAll(PREF_ADDR_RE)) addrCands.push(m[0])
+  const cityOnly = normText.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][^\n。、）)]{1,30}\d/)
+  if (cityOnly) addrCands.push(cityOnly[0])
+  const cleanAddr = (s: string) => s.replace(/^〒?\s*(?:\d{3}-?\d{4})?\s*/, '').trim().slice(0, 60)
+  const usableAddrs = addrCands.map(cleanAddr).filter((s) => s.length >= 3 && !ADDR_NOISE_RE.test(s))
+  const address = usableAddrs.find((s) => /(丁目|番地|\d)/.test(s)) || usableAddrs[0] || ''
 
   // 開店日: 「○月○日オープン」「2026/6/28」等
   const dateMatch = text.match(/(20\d{2}[年\/.-]\s?\d{1,2}[月\/.-]\s?\d{1,2}日?)/) || text.match(/(\d{1,2}月\d{1,2}日)(?:[^\n]{0,6}(?:オープン|開店|開業|オープン予定))/)
