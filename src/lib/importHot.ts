@@ -90,6 +90,23 @@ export const BIG_GOOGLE_REVIEWS = 30
 
 // 連番/地域メディア等でGoogleデータが無い候補を、投入前にPlacesで確認する。
 // 口コミ件数だけでなく「最古クチコミが何日前か」も取得し、1ヶ月超なら既存店として弾く（tabelog登録は新しくても店は古いケースを捕捉。例: サケノバ=Google口コミ14件・最古1年前）。
+/**
+ * Places の検索結果が「照会した店舗そのもの」かを確認する。
+ * places:searchText は完全一致が無くても近隣の別店を必ず返すため、照合せずに採用すると
+ * 「まだGoogleに載っていない新店」に別店の口コミ数が付き、確立済みとして除外されてしまう
+ * （＝営業ターゲットである新店を狙い撃ちで落とす）。店名の部分一致＋市区町村の一致で本人確認する。
+ */
+function placeMatchesQuery(name: string, address: string, displayName: string, formattedAddress: string): boolean {
+  const norm = (s: string) => String(s || '').normalize('NFKC').toLowerCase().replace(/[\s　・･,，、.。'’"”\-−ー－_（）()【】[\]]/g, '')
+  const n = norm(name), d = norm(displayName)
+  if (n.length < 2 || d.length < 2) return false
+  if (!d.includes(n) && !n.includes(d)) return false      // 店名がどちらにも含まれない＝別店
+  const a = norm(address), f = norm(formattedAddress)
+  if (!a || !f) return true                                // 住所が無ければ店名一致のみで判断
+  const city = address.match(/[一-龥ぁ-んァ-ヶ]{1,8}[市区町村]/)  // 市区町村が違えば同名の別店
+  return !city || f.includes(norm(city[0]))
+}
+
 export async function placesEstablishmentSignal(mapsKey: string, name: string, address: string): Promise<{ count: number | null; oldestDays: number | null }> {
   try {
     const q = `${name} ${address}`.trim()
@@ -103,6 +120,12 @@ export async function placesEstablishmentSignal(mapsKey: string, name: string, a
     const j: any = await res.json()
     const p = j.places?.[0]
     if (!p) return { count: null, oldestDays: null }
+    // 別店を掴んでいないか本人確認。照合できない＝Google未掲載の可能性が高く新店の重要なサインなので、
+    // 既存店シグナルとしては「不明(null)」を返す（呼び出し側は count!=null のときだけ除外判定する）。
+    // ここで抜けると後続の Place Details 呼び出しも省けるためAPIコストも減る。
+    if (!placeMatchesQuery(name, address, p.displayName?.text || p.displayName || '', p.formattedAddress || '')) {
+      return { count: null, oldestDays: null }
+    }
     const count = Number(p.userRatingCount || 0)
     let oldestDays: number | null = null
     // 口コミがある候補のみ Place Details で最古クチコミ日を取得（0件はそもそも新規の可能性）
