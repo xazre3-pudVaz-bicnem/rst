@@ -47,6 +47,34 @@ export function addressPrefecture(address?: string | null): string | null {
   return m ? m[1] : null
 }
 
+/** AREA_CODE_PREF で実際にヒットした局番を返す（県境MA判定に使う）。 */
+function matchedAreaCode(phone?: string | null): string | null {
+  const d = onlyDigits(phone)
+  if (!d || !d.startsWith('0')) return null
+  if (/^0[789]0/.test(d) || /^050/.test(d) || /^(0120|0800|0570)/.test(d)) return null
+  for (let len = 4; len >= 2; len--) { const code = d.slice(0, len); if (AREA_CODE_PREF[code]) return code }
+  return null
+}
+
+/**
+ * 複数県にまたがる市外局番（MA）と、その候補県。
+ * AREA_CODE_PREF は1局番=1県の決め打ちのため、県境MAでは電話も住所も正しい店が「不一致」と誤判定され
+ * HOLDへ降格していた（降格すると hot_tier が消え、sweepはHOTしか拾わないので自動復帰もしない）。
+ * 実害の確認例: 埼玉県所沢市 04-29xx → 表の'042'に先に当たり東京都判定 / 埼玉県飯能市 042-97x → 東京都 /
+ *   富山市 076-441 → 石川県 / 宇治市 0774 → 滋賀県 / 沼津 055-951・熱海 0557 → 山梨県。
+ * これらは候補県に含まれれば match、含まれなくても mismatch にはせず unknown（＝降格させない）。
+ * 表が不完全な可能性がある領域で、正当な店を落とす方が損失が大きいため。
+ */
+const CROSS_PREF_AREA_CODES: Record<string, string[]> = {
+  '04': ['千葉県', '埼玉県'],
+  '042': ['東京都', '神奈川県', '埼玉県'],
+  '055': ['山梨県', '静岡県'],
+  '0557': ['静岡県'],
+  '076': ['石川県', '富山県'],
+  '077': ['滋賀県', '京都府'],
+  '0774': ['京都府'],
+}
+
 export type PhoneMatch = 'match' | 'mismatch' | 'mobile' | 'unknown'
 /** 電話の市外局番と住所の都道府県が一致するか（質の重要シグナル。不一致＝本社番号/誤データの疑い）。 */
 export function phoneAddressMatch(phone?: string | null, address?: string | null): PhoneMatch {
@@ -54,6 +82,9 @@ export function phoneAddressMatch(phone?: string | null, address?: string | null
   if (d && (/^0[789]0/.test(d) || /^050/.test(d))) return 'mobile'
   const pp = phonePrefecture(phone), ap = addressPrefecture(address)
   if (!pp || !ap) return 'unknown'
+  const code = matchedAreaCode(phone)
+  const spans = code ? CROSS_PREF_AREA_CODES[code] : null
+  if (spans) return spans.includes(ap) ? 'match' : 'unknown' // 県境MAは不一致と断定しない
   return pp === ap ? 'match' : 'mismatch'
 }
 

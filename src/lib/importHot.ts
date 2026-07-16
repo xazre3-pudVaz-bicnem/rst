@@ -7,7 +7,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { onlyDigits, looksLikeArticle, isRealStoreAddress, phoneAddressMatch, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublicStrong, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublicStrong, detectBigOrPublic, detectSameIndustry, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
@@ -259,9 +259,16 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     const branch = looksLikeBranchStore(c.name)
     // 多店舗は経営主体の文脈を必須にした強語のみ（MULTI_STORE_RE）なので本文も検査してよい
     const multi = detectMultiStore(gtext)  // 2店舗以上/姉妹店/FC（分類時のみ検査で投入ゲートに無かった＝バイパスしていた）
-    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude) {
-      const excludeHard = bigStrong.exclude || chainDef || multi.exclude
-      const why = branch ? '支店/チェーン店（○○店）' : multi.exclude ? `2店舗以上/姉妹店/FC(${String(multi.hit).trim()})` : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
+    // 投入ゲート(importGate)と同等にするため、sweepに欠けていた2つを追加。
+    // importGateの冒頭コメントは「スイープは自前で同等チェックを実装済み」と宣言していたが実際は欠落しており、
+    // (1) 同業者（Web制作/広告代理店/集客コンサル＝自社と同業＝見込み客でない）
+    // (2) STRONG_BIG_RE に無い大手/公共（ホールディングス/総合病院/PARCO/ルミネ/生協/SA・PA 等）
+    // が sweep 経由で cases に素通りしていた（HOT_Aなら優先架電キューにも乗る）。
+    const same = detectSameIndustry(c.name || '')
+    const bigPlain = detectBigOrPublic(`${c.name || ''} ${address || ''}`)
+    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude || same.exclude || bigPlain.exclude) {
+      const excludeHard = bigStrong.exclude || chainDef || multi.exclude || same.exclude || bigPlain.exclude
+      const why = same.exclude ? `同業者（${same.hit}）` : bigPlain.exclude ? `大手/公共/大型施設（${bigPlain.hit}）` : branch ? '支店/チェーン店（○○店）' : multi.exclude ? `2店舗以上/姉妹店/FC(${String(multi.hit).trim()})` : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
       await admin.from('lead_candidates').update({ lead_temperature: excludeHard ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: excludeHard, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }

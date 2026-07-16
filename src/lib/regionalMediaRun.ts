@@ -6,7 +6,7 @@
 import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
-import { extractFromArticle, isOpenTitle, urlHash } from './regionalExtract.js'
+import { extractFromArticle, isOpenTitle, urlHash, stripSiteName } from './regionalExtract.js'
 import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate, extractOpeningDateFromText } from './directoryParser.js'
@@ -265,12 +265,18 @@ function extractArticleLinks(html: string, base: URL, opts: LinkOpts = {}): { li
  * ※裸の「開店」「閉店」は本文タイトルの一部でありうるので落とさない（複合カテゴリ名と日時のみ除去）。
  */
 function pickBestTitle(metaTitle: string, linkTitle: string): string {
+  // 記事ページ自身の og:title/<title> が取れていればそれを優先する。
+  // 一覧アンカーはカードの日時・カテゴリ列を内包するのが常で（号外NET「… 2026/07/13 10:18 開店/閉店」、
+  // 開店閉店.com「2026-07-06 宮城, 東北, 病院, 開店情報 【開店】◯◯」）、「長い方」を採ると必ずアンカーが勝ち、
+  // 混入した「閉店」で開店記事が破棄されたり、【開店】が文中に来て店名が取れなくなっていた。
+  const m = stripSiteName(metaTitle)
+  if (m.length >= 8) return m
   const cleaned = String(linkTitle || '')
-    .replace(/\s*\d{4}\/\d{1,2}\/\d{1,2}(\s+\d{1,2}:\d{2})?\s*/g, ' ')   // カードの日時
-    .replace(/\s*(開店\s*[\/・＆&]\s*閉店|閉店\s*[\/・＆&]\s*開店)\s*$/, '') // 末尾のカテゴリ名（複合形のみ）
+    .replace(/^\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}(\s+\d{1,2}:\d{2})?\s*/, '')  // 先頭のカード日付
+    .replace(/\s*\d{4}[-/]\d{1,2}[-/]\d{1,2}(\s+\d{1,2}:\d{2})?\s*/g, ' ') // 文中のカード日時
+    .replace(/\s*(開店\s*[\/・＆&]\s*閉店|閉店\s*[\/・＆&]\s*開店)\s*$/, '')  // 末尾のカテゴリ名（複合形のみ）
     .trim()
-  const m = String(metaTitle || '')
-  return m && m.length >= cleaned.length ? m : (cleaned || m)
+  return cleaned || m
 }
 
 function articleMeta(html: string): { published_at: string | null; excerpt: string; title: string } {

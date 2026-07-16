@@ -42,8 +42,19 @@ export interface RegionalExtract {
   is_mall: boolean
 }
 
+/**
+ * タイトル末尾のサイト名を除く（「【開店】◯◯ | 開店閉店.com」→「【開店】◯◯」）。
+ * サイト名に「閉店」を含む媒体（開店閉店.com）では detectType が CLOSE_WORDS を最優先で拾い、
+ * 開店記事が丸ごと閉店記事として破棄されていた。信頼度90の主力ソースで発火する。
+ */
+export function stripSiteName(title: string): string {
+  const s = String(title || '')
+  const head = s.split(/\s*[|｜]\s*/)[0].trim()
+  return head.length >= 4 ? head : s.trim()
+}
+
 function detectType(title: string): RegionalExtract['detected_type'] {
-  const t = title
+  const t = stripSiteName(title)
   if (CLOSE_WORDS.some((w) => t.includes(w))) return 'close'
   if (REOPEN_WORDS.some((w) => t.includes(w))) return 'reopen'
   if (OPEN_WORDS.some((w) => t.toLowerCase().includes(w.toLowerCase()))) return 'open'
@@ -57,7 +68,8 @@ export function isOpenTitle(title: string): boolean {
   return ty === 'open' || ty === 'reopen'
 }
 
-export function extractFromArticle(title: string, bodyText: string): RegionalExtract {
+export function extractFromArticle(title0: string, bodyText: string): RegionalExtract {
+  const title = stripSiteName(title0) // 末尾のサイト名（「| 開店閉店.com」等）を除いてから解析する
   const text = `${title}\n${bodyText}`
   const detected_type = detectType(title)
 
@@ -66,8 +78,18 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
   const q = title.match(/[『「"]([^』」"]{2,30})[』」"]/)
   if (q) shop_name = q[1].trim()
   if (!shop_name) {
-    const afterBracket = title.replace(/^【[^】]*】/, '').match(/([一-龥ぁ-んァ-ヶa-zA-Z0-9&'’\- ]{2,24})(?:が|で|に)?(?:オープン|開店|開業|開院)/)
+    // 先頭の【…】だけでなく全ての【…】を剥がす。一覧アンカー由来のタイトルは
+    // 「2026-07-06 宮城, 東北, 病院, 開店情報 【開店】仙台みやぎの訪問クリニック」のように
+    // 【開店】が文中に来るため、先頭限定の剥がしでは効かず店名が取れなかった。
+    const afterBracket = title.replace(/【[^】]*】/g, ' ').match(/([一-龥ぁ-んァ-ヶa-zA-Z0-9&'’\- ]{2,24})(?:が|で|に)?(?:オープン|開店|開業|開院)/)
     if (afterBracket) shop_name = afterBracket[1].trim()
+  }
+  if (!shop_name) {
+    // 「【開店】◯◯◯」形式（開店閉店.com等）: 種別ラベルの直後が店名。
+    // オープン語が店名の後ろに来ない体裁のため上の正規表現では拾えず、
+    // 電話・住所が取れていても name='店名未確定' のまま HOT-B で自動投入されていた。
+    const lead = title.match(/【\s*(?:開店|新規開店|新店|オープン|開業|開院|NEW\s*OPEN|ニューオープン)\s*】\s*([^【】|｜]{2,40}?)\s*$/i)
+    if (lead) shop_name = lead[1].trim()
   }
 
   // エリア: 【…】内優先 → 全文最長一致
@@ -104,8 +126,14 @@ export function extractFromArticle(title: string, bodyText: string): RegionalExt
   // 素の正規表現だと郵便番号や価格の数字列を電話と誤認することがあった）
   const phone = extractJpPhone(bodyText)
 
-  const is_chain = CHAIN_HINT.test(text)
-  const is_mall = MALL_HINT.test(text)
+  // チェーン/モール判定は「候補店を指すテキスト（店名＋タイトル）」に限定する。
+  // 記事本文全体に当てると、本文末尾の「こちらの記事もオススメ」や周辺ランドマークの言及
+  // （例:「馬橋駅東口前の松屋の上に…」）に出たチェーン名で、無関係な個人店の開店記事が
+  // 丸ごとEXCLUDEDになっていた（実測: 松戸の個人店「角打食堂 津よし」が関連記事の"松屋"で除外）。
+  // 記事型メディアは周辺ランドマークへの言及が定型なので取りこぼしが広範だった。
+  const chainScope = `${shop_name} ${title}`
+  const is_chain = CHAIN_HINT.test(chainScope)
+  const is_mall = MALL_HINT.test(chainScope)
   const eventWord = EVENT_WORDS.find((w) => title.toLowerCase().includes(w.toLowerCase()))
 
   let is_excluded = false
