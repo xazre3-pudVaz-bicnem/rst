@@ -61,6 +61,7 @@ export default function KpiBar() {
       const appos = appointments.filter(
         (a) =>
           a.sales_rep === rep &&
+          a.case_id && // 案件なしの予定（社内MTG等）はKPIのアポに含めない
           moment(a.appo_at).isBetween(start, end, undefined, '[]'),
       ).length
 

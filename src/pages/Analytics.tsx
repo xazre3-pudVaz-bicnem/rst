@@ -146,7 +146,8 @@ export default function Analytics() {
       const callN = rc.length
       const ansN = rc.filter(isAnswered).length
       const repN = rc.filter(isRepContact).length
-      const appoList = appointments.filter((a) => a.sales_rep === rep && inR(a.appo_at))
+      // 案件に紐づくアポ（コール由来）のみKPIに算入。案件なしの予定（社内MTG等）は除外
+      const appoList = appointments.filter((a) => a.sales_rep === rep && a.case_id && inR(a.appo_at))
       const appoN = appoList.length
       const convN = appoList.filter((a) => DEAL_STATUSES.includes((caseById.get(a.case_id ?? '')?.status ?? '') as never)).length
       const listN = cases.filter((c) => caseCreator(c) === rep && inR(c.created_date)).length

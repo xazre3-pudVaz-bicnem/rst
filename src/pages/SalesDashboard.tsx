@@ -85,7 +85,8 @@ export default function SalesDashboard() {
 
     const uncalled = cases.filter((c) => UNCALLED_STATUSES.includes(c.status as never))
     const todayCalls = callLogs.filter((l) => moment(l.call_at).isBetween(startToday, endToday, undefined, '[]'))
-    const todayAppos = appointments.filter((a) => moment(a.appo_at).isBetween(startToday, endToday, undefined, '[]'))
+    // 本日のアポ数KPIは案件に紐づくアポ（コール由来）のみ。案件なしの予定（社内MTG等）は除外
+    const todayAppos = appointments.filter((a) => a.case_id && moment(a.appo_at).isBetween(startToday, endToday, undefined, '[]'))
 
     const recentUpdated = [...cases].sort((a, b) => b.updated_date.localeCompare(a.updated_date)).slice(0, 8)
     const myCases = cases.filter((c) => c.sales_rep === displayName)
