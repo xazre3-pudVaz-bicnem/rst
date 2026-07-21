@@ -27,6 +27,8 @@ const PERIODS: { value: Period; label: string }[] = [
   { value: 'year', label: '今年' },
   { value: 'all', label: '全期間' },
 ]
+// 時間帯別集計の時間スロット（9時〜20時台）
+const HOUR_SLOTS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 function rangeOf(p: Period): [moment.Moment, moment.Moment] {
   switch (p) {
     case 'today': return [moment().startOf('day'), moment().endOf('day')]
@@ -54,6 +56,7 @@ export default function Analytics() {
   const [scope, setScope] = useState('') // '' = 全員
   const [updatedAt, setUpdatedAt] = useState(() => moment().format('HH:mm:ss'))
   const [live, setLive] = useState(false)
+  const [hourMetric, setHourMetric] = useState<'call' | 'rep' | 'appo'>('call')
   const { names: assignableNames } = useAssignableUsers()
 
   const load = useCallback(async () => {
@@ -165,6 +168,33 @@ export default function Analytics() {
 
     return { rows, total }
   }, [reps, calls, appointments, cases, period, callRep, caseCreator, caseById])
+
+  // ---- 時間帯別（担当者 × 9〜20時台）: コール/代表接触/アポ ----
+  const hourlyByRep = useMemo(() => {
+    const [start, end] = rangeOf(period)
+    const inR = (d: string) => moment(d).isBetween(start, end, undefined, '[]')
+    const blank = () => HOUR_SLOTS.reduce((o, h) => { o[h] = { call: 0, rep: 0, appo: 0 }; return o }, {} as Record<number, { call: number; rep: number; appo: number }>)
+    const byRep = new Map<string, Record<number, { call: number; rep: number; appo: number }>>()
+    const ensure = (rep: string) => { let r = byRep.get(rep); if (!r) { r = blank(); byRep.set(rep, r) } return r }
+    for (const l of calls) {
+      if (!inR(l.call_at)) continue
+      const h = moment(l.call_at).hour(); if (h < 9 || h > 20) continue
+      const cell = ensure(callRep(l))[h]; cell.call++; if (isRepContact(l)) cell.rep++
+    }
+    for (const a of appointments) {
+      if (!a.appo_at || !inR(a.appo_at)) continue
+      const h = moment(a.appo_at).hour(); if (h < 9 || h > 20) continue
+      ensure(a.sales_rep || '未割当')[h].appo++
+    }
+    const rows = [...byRep.entries()].map(([rep, hrs]) => {
+      const tot = HOUR_SLOTS.reduce((t, h) => ({ call: t.call + hrs[h].call, rep: t.rep + hrs[h].rep, appo: t.appo + hrs[h].appo }), { call: 0, rep: 0, appo: 0 })
+      return { rep, hrs, tot }
+    }).filter((r) => r.tot.call + r.tot.appo > 0).sort((a, b) => b.tot.call - a.tot.call || b.tot.appo - a.tot.appo)
+    const colTot = blank(); const grand = { call: 0, rep: 0, appo: 0 }
+    for (const r of rows) for (const h of HOUR_SLOTS) { colTot[h].call += r.hrs[h].call; colTot[h].rep += r.hrs[h].rep; colTot[h].appo += r.hrs[h].appo }
+    for (const h of HOUR_SLOTS) { grand.call += colTot[h].call; grand.rep += colTot[h].rep; grand.appo += colTot[h].appo }
+    return { rows, colTot, grand }
+  }, [calls, appointments, period, callRep])
 
   // ---- 選択スコープのファネル（期間） ----
   const scopeStats = useMemo(() => {
@@ -434,6 +464,60 @@ export default function Analytics() {
                       <td className="py-1 text-right">{pct(table.total.appoN, table.total.callN)}%</td>
                       <td className="py-1 text-right">{table.total.convN}</td>
                       <td className="py-1 text-right">{pct(table.total.convN, table.total.appoN)}%</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 時間帯別（担当者 × 9〜20時台） */}
+            <div className="overflow-x-auto rounded-xl border bg-card p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-xs font-bold">時間帯別 担当者実績（{periodLabel}）</span>
+                <div className="flex gap-1">
+                  {([['call', 'コール'], ['rep', '代表接触'], ['appo', 'アポ']] as const).map(([k, lbl]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setHourMetric(k)}
+                      className={cn(
+                        'rounded-full border px-2 py-0.5 text-2xs',
+                        hourMetric === k ? 'border-primary bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
+                      )}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-2xs text-muted-foreground">（{hourMetric === 'call' ? 'コール数' : hourMetric === 'rep' ? '代表接触数' : 'アポ数'}・9〜20時台）</span>
+              </div>
+              <table className="w-full min-w-[820px] text-2xs">
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th className="py-1 pr-2 text-left">担当者</th>
+                    {HOUR_SLOTS.map((h) => <th key={h} className="py-1 px-1 text-right tabular-nums">{h}時</th>)}
+                    <th className="py-1 pl-2 text-right">計</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hourlyByRep.rows.length === 0 && (
+                    <tr><td colSpan={HOUR_SLOTS.length + 2} className="py-4 text-center text-muted-foreground">この期間の実績はありません</td></tr>
+                  )}
+                  {hourlyByRep.rows.map((r) => (
+                    <tr key={r.rep} className={cn('border-b last:border-0', scope === r.rep && 'bg-primary/5')}>
+                      <td className="py-1 pr-2 font-medium">{r.rep}</td>
+                      {HOUR_SLOTS.map((h) => {
+                        const v = r.hrs[h][hourMetric]
+                        return <td key={h} className={cn('py-1 px-1 text-right tabular-nums', v === 0 ? 'text-muted-foreground/40' : hourMetric === 'appo' ? 'font-bold text-amber-600' : hourMetric === 'call' ? 'font-medium text-blue-600' : '')}>{v || '·'}</td>
+                      })}
+                      <td className="py-1 pl-2 text-right font-bold tabular-nums">{r.tot[hourMetric]}</td>
+                    </tr>
+                  ))}
+                  {hourlyByRep.rows.length > 0 && (
+                    <tr className="border-t-2 font-bold">
+                      <td className="py-1 pr-2">合計</td>
+                      {HOUR_SLOTS.map((h) => <td key={h} className="py-1 px-1 text-right tabular-nums">{hourlyByRep.colTot[h][hourMetric] || '·'}</td>)}
+                      <td className="py-1 pl-2 text-right tabular-nums">{hourlyByRep.grand[hourMetric]}</td>
                     </tr>
                   )}
                 </tbody>
