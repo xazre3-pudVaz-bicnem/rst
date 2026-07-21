@@ -1,12 +1,14 @@
+import { useEffect, useState } from 'react'
 import moment from 'moment'
-import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck } from 'lucide-react'
+import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CallLogApi } from '@/lib/api'
+import { CallLogApi, VisitReportApi } from '@/lib/api'
+import { CONTRACT_PRODUCTS } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
-import type { Case, CallLog } from '@/lib/types'
+import type { Case, CallLog, VisitReport } from '@/lib/types'
 
 interface Props {
   callLogs: CallLog[]
@@ -24,6 +26,15 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
   const logs = selectedCase
     ? callLogs.filter((l) => l.case_id === selectedCase.id)
     : callLogs
+
+  // 選択案件の訪問結果（成約/失注）をコール履歴の下に表示
+  const [visits, setVisits] = useState<VisitReport[]>([])
+  useEffect(() => {
+    let alive = true
+    if (!selectedCase) { setVisits([]); return }
+    VisitReportApi.listByCase(selectedCase.id).then((v) => { if (alive) setVisits(v) }).catch(() => { if (alive) setVisits([]) })
+    return () => { alive = false }
+  }, [selectedCase, callLogs])
 
   async function handleDelete(id: string) {
     if (!(await confirm({ title: 'コール履歴を削除しますか？', confirmLabel: '削除する', danger: true }))) return
@@ -125,6 +136,40 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
             )}
           </div>
         ))}
+
+        {/* 訪問結果（成約/失注） */}
+        {visits.length > 0 && (
+          <div className="mt-3 border-t pt-2">
+            <div className="mb-1 text-2xs font-bold text-muted-foreground">訪問結果</div>
+            {visits.map((v) => (
+              <div key={v.id} className={`mb-1.5 rounded-md border p-2 ${v.result === '成約' ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10' : 'border-red-200 bg-red-50 dark:border-red-500/30 dark:bg-red-500/10'}`}>
+                <div className="flex items-center gap-1 text-xs font-bold">
+                  {v.result === '成約' ? <Handshake className="h-3.5 w-3.5 text-emerald-600" /> : <XCircle className="h-3.5 w-3.5 text-red-500" />}
+                  <span className={v.result === '成約' ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-300'}>{v.result}</span>
+                  {v.result === '失注' && v.lost_reason && <span className="text-2xs font-normal text-muted-foreground">（{v.lost_reason}）</span>}
+                  <span className="ml-auto text-2xs font-normal text-muted-foreground">{moment(v.visited_at).format('MM/DD HH:mm')}</span>
+                </div>
+                {v.result === '成約' && (
+                  <div className="mt-1 space-y-0.5 text-2xs">
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                      {CONTRACT_PRODUCTS.map((p) => {
+                        const price = v[p.key as keyof VisitReport] as number | null | undefined
+                        return price != null ? <span key={p.key} className="rounded bg-emerald-100 px-1 py-0.5 font-medium text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">{p.label} ¥{price.toLocaleString()}</span> : null
+                      })}
+                    </div>
+                    <div className="text-muted-foreground">
+                      合計 <span className="font-bold text-foreground">¥{(v.total_price ?? 0).toLocaleString()}</span>
+                      {v.contract_date && ` / 契約${moment(v.contract_date).format('YYYY/MM/DD')}`}
+                      {v.min_contract_months != null && ` / 最低${v.min_contract_months}ヶ月`}
+                      {v.payment_method && ` / ${v.payment_method}`}
+                    </div>
+                  </div>
+                )}
+                {v.memo && <div className="mt-1 whitespace-pre-wrap text-xs text-foreground">{v.memo}</div>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

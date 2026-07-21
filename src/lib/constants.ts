@@ -143,6 +143,19 @@ export const AGES = ['20代', '30代', '40代', '50代', '60代', '70代以上']
 
 export const GENDERS = ['男', '女'] as const
 
+// ===== 訪問結果 =====
+/** 訪問結果の失注理由 */
+export const LOST_REASONS = ['金額ネック', '期間ネック', '本人検討', '第三者相談', '第三者NG', '不在'] as const
+/** 契約サービス（成約時に金額を入力する対象）。key=DBカラム, label=表示 */
+export const CONTRACT_PRODUCTS = [
+  { key: 'hp_price', label: 'HP制作' },
+  { key: 'maintenance_price', label: '保守管理' },
+  { key: 'seo_price', label: 'SEO' },
+  { key: 'meo_price', label: 'MEO' },
+] as const
+/** 支払方法 */
+export const PAYMENT_METHODS = ['一括', '月額', '分割', '銀行振込', 'クレジットカード', '口座振替'] as const
+
 /** 案件一覧で強調（薄緑背景）にするステータス */
 export const HIGHLIGHT_STATUSES = ['アポ獲得', '契約済み', 'アポ', '仮アポ', '成約', '契約'] as const
 

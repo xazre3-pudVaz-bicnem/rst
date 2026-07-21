@@ -61,6 +61,29 @@ export interface Appointment {
   updated_date: string
 }
 
+// ===== 訪問結果（成約/失注）＋契約詳細 =====
+export interface VisitReport {
+  id: string
+  case_id: string
+  case_name?: string | null
+  appointment_id?: string | null
+  visited_at: string
+  result: '成約' | '失注'
+  lost_reason?: string | null
+  memo?: string | null
+  contract_date?: string | null
+  min_contract_months?: number | null
+  payment_method?: string | null
+  hp_price?: number | null
+  maintenance_price?: number | null
+  seo_price?: number | null
+  meo_price?: number | null
+  total_price?: number | null
+  created_by_id?: string | null
+  created_date?: string
+  updated_date?: string
+}
+
 // ===== AIテレアポ MVP =====
 export type AiCallStatus = '未架電' | '発信中' | '通話完了' | '不在' | '担当者不在' | '興味あり' | '興味なし' | '再架電' | 'NG'
 

@@ -22,6 +22,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { AppointmentApi, CaseApi } from '@/lib/api'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
@@ -30,6 +33,7 @@ import { useConfirm } from '@/components/ui/confirm'
 import { jpError, roundTo15 } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
+import VisitReportModal from '@/components/modals/VisitReportModal'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const ALL = '__all__'
@@ -47,6 +51,9 @@ export default function Appointments() {
 
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Appointment | null>(null)
+  // 訪問結果登録モーダル
+  const [visitCase, setVisitCase] = useState<Case | null>(null)
+  const [visitApptId, setVisitApptId] = useState<string | null>(null)
   const [form, setForm] = useState({
     case_id: '',
     sales_rep: '',
@@ -229,29 +236,25 @@ export default function Appointments() {
                         const c = cases.find((x) => x.id === a.case_id)
                         const phone = c?.phone1
                         return (
-                          <div
-                            key={a.id}
-                            className="m-0.5 rounded-sm bg-primary/15 p-0.5"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              openEdit(a)
-                            }}
-                          >
-                            <button
-                              className="block w-full truncate text-left font-bold text-primary hover:underline"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                navigate(`/?case=${a.case_id}`)
-                              }}
-                            >
-                              {moment(a.appo_at).format('HH:mm')} {a.case_name}
-                            </button>
+                          <div key={a.id} className="m-0.5 rounded-sm bg-primary/15 p-0.5" onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button className="block w-full truncate text-left font-bold text-primary hover:underline">
+                                  {moment(a.appo_at).format('HH:mm')} {a.case_name}
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start">
+                                <DropdownMenuItem onClick={() => navigate(`/?case=${a.case_id}`)}>案件詳細を開く</DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => { setVisitCase(c ?? { id: a.case_id, name: a.case_name } as Case); setVisitApptId(a.id) }}
+                                >
+                                  訪問結果を登録
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => openEdit(a)}>予定を編集</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                             {phone && (
-                              <a
-                                href={`tel:${phone}`}
-                                className="text-[9px] text-muted-foreground hover:underline"
-                                onClick={(e) => e.stopPropagation()}
-                              >
+                              <a href={`tel:${phone}`} className="text-[9px] text-muted-foreground hover:underline" onClick={(e) => e.stopPropagation()}>
                                 {phone}
                               </a>
                             )}
@@ -335,6 +338,14 @@ export default function Appointments() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <VisitReportModal
+        open={!!visitCase}
+        onClose={() => { setVisitCase(null); setVisitApptId(null) }}
+        selectedCase={visitCase}
+        appointmentId={visitApptId}
+        onSaved={load}
+      />
     </div>
   )
 }

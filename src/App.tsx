@@ -15,6 +15,7 @@ const SalesDashboard = lazy(() => import('@/pages/SalesDashboard'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
 const Appointments = lazy(() => import('@/pages/Appointments'))
 const Analytics = lazy(() => import('@/pages/Analytics'))
+const Deals = lazy(() => import('@/pages/Deals'))
 const Users = lazy(() => import('@/pages/Users'))
 const AuditLog = lazy(() => import('@/pages/AuditLog'))
 const Leads = lazy(() => import('@/pages/Leads'))
@@ -68,6 +69,7 @@ export default function App() {
                 <Route path="/sales-dashboard" element={<ProtectedRoute><SalesDashboard /></ProtectedRoute>} />
                 <Route path="/appointments" element={<ProtectedRoute><Appointments /></ProtectedRoute>} />
                 <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+                <Route path="/deals" element={<ProtectedRoute><Deals /></ProtectedRoute>} />
                 <Route path="/leads" element={<ProtectedRoute><Leads /></ProtectedRoute>} />
                 <Route path="/ai-scripts" element={<ProtectedRoute><AiScripts /></ProtectedRoute>} />
                 <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />

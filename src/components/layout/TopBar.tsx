@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut, Bot, Briefcase, ChevronDown } from 'lucide-react'
+import { LayoutDashboard, ListChecks, Calendar, Users, ScrollText, Sparkles, LogOut, Bot, Briefcase, ChevronDown, Handshake } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -70,6 +70,7 @@ export default function TopBar() {
             </svg>,
           )}
           {navItem('/sales-dashboard', '営業ダッシュボード', <LayoutDashboard className="h-3.5 w-3.5" />)}
+          {navItem('/deals', '成約案件', <Handshake className="h-3.5 w-3.5" />)}
           {navItem('/users', 'ユーザー', <Users className="h-3.5 w-3.5" />)}
 
           {/* 労務管理（ドロップダウン） */}

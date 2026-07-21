@@ -9,6 +9,7 @@ import type {
   LeadCandidate,
   Profile,
   Recall,
+  VisitReport,
   SignupRequest,
   Template,
   Employee,
@@ -390,6 +391,41 @@ export const RecallApi = {
   },
   async remove(id: string): Promise<void> {
     const { error } = await supabase.from('recalls').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const VisitReportApi = {
+  async listAll(pageSize = 1000, maxPages = 30): Promise<VisitReport[]> {
+    const all: VisitReport[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const from = page * pageSize
+      const { data, error } = await supabase
+        .from('visit_reports').select('*')
+        .order('visited_at', { ascending: false }).range(from, from + pageSize - 1)
+      if (error) { if (isMissingTable(error)) return all; throw new Error(error.message) }
+      const rows = (data ?? []) as VisitReport[]
+      all.push(...rows)
+      if (rows.length < pageSize) break
+    }
+    return all
+  },
+  async listByCase(caseId: string): Promise<VisitReport[]> {
+    const { data, error } = await supabase
+      .from('visit_reports').select('*').eq('case_id', caseId).order('visited_at', { ascending: false })
+    if (error) { if (isMissingTable(error)) return []; throw new Error(error.message) }
+    return (data ?? []) as VisitReport[]
+  },
+  async create(payload: Partial<VisitReport>): Promise<VisitReport> {
+    const { data, error } = await supabase.from('visit_reports').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<VisitReport>): Promise<void> {
+    const { error } = await supabase.from('visit_reports').update({ ...payload, updated_date: new Date().toISOString() }).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('visit_reports').delete().eq('id', id)
     if (error) throw new Error(error.message)
   },
 }
