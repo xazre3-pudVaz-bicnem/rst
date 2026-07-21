@@ -113,8 +113,15 @@ export default function CaseFormModal({
   }
 
   async function handleSave() {
-    if (!form.name.trim() || !form.address.trim() || !form.phone1.trim() || !form.industry) {
-      toast.error('店舗名・住所・電話番号1・業種は必須です')
+    // 必須項目のうち「実際に空のものだけ」を挙げる（全項目を並べると何が足りないか分からないため）
+    const missing = [
+      !form.name.trim() && '店舗名',
+      !form.address.trim() && '住所',
+      !form.phone1.trim() && '電話番号1',
+      !form.industry && '業種',
+    ].filter(Boolean)
+    if (missing.length) {
+      toast.error(`未入力: ${missing.join('・')}`)
       return
     }
 
