@@ -5,6 +5,7 @@
 // ============================================================
 import { createClient } from '@supabase/supabase-js'
 import { classifyLead } from './leadScoring.js'
+import { fetchSiteLaunchDaysAgo } from './siteAge.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
@@ -645,6 +646,36 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           classified.lead_temperature = 'HOLD'
           classified.should_exclude_from_call_list = false
           classified.exclusion_reason = '電話/openingDate等は不足だが、日本国内・店名・Google Places取得済みのため保留（要確認）。'
+        }
+
+        // === クチコミが無い/曖昧＋Google開業日も無い候補は、公式サイトの立ち上げ日で新店かを判定 ===
+        // クチコミが取れないだけで既存店（HPが何年も前から存在）を新店投入するのを防ぎ、
+        // 逆にHPも最近立った本当の新店は拾う。fetchは該当時のみ・1実行あたり上限つき（APIコスト/時間を抑制）。
+        const reviewsAmbiguous = reviewCount === null || reviewCount === 0
+        const site = p.websiteUri || ''
+        const siteOk = /^https?:\/\//.test(site) && !/instagram\.com|facebook\.com|twitter\.com|x\.com|tiktok\.com|threads\.net|line\.me|lit\.link|linktr/i.test(site)
+        const HP_AGE_MAX = 30
+        const cAny = counts as any
+        if (reviewsAmbiguous && !openingDate && !hardExcludeReason && siteOk
+          && (classified.lead_temperature === 'HOT' || classified.lead_temperature === 'HOLD')
+          && !overBudget() && (cAny.hpAgeChecks || 0) < HP_AGE_MAX) {
+          cAny.hpAgeChecks = (cAny.hpAgeChecks || 0) + 1
+          const launchDaysAgo = await fetchSiteLaunchDaysAgo(site, 8000)
+          if (launchDaysAgo != null) {
+            if (launchDaysAgo > 365) {
+              // HPが1年以上前から存在＝既存店。クチコミが取れなくても新店ではない。
+              classified.lead_temperature = 'EXCLUDED'; classified.hot_tier = null
+              classified.should_exclude_from_call_list = true
+              classified.exclusion_reason = `公式サイトが約${launchDaysAgo}日前から存在（既存店）のため新店ではない`
+              cAny.hpAgeEstablished = (cAny.hpAgeEstablished || 0) + 1
+            } else if (launchDaysAgo <= 90 && classified.lead_temperature === 'HOLD' && !!phone && isJapanPhone(phone) && hasJapanAddr && !orgLike) {
+              // HPも直近90日以内に立った＝新店の裏付け。電話・住所ありならHOLD→HOT-Bへ。
+              classified.lead_temperature = 'HOT'; classified.hot_tier = 'B'
+              classified.should_exclude_from_call_list = false
+              classified.auto_import_reason = `公式サイトが約${launchDaysAgo}日前に公開（新店の裏付け）＋電話・住所あり→HOT-B`
+              cAny.hpAgeNew = (cAny.hpAgeNew || 0) + 1
+            }
+          }
         }
         const temp = classified.lead_temperature as string
 
