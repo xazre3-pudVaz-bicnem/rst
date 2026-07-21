@@ -7,7 +7,7 @@ import { classifyLead } from './leadScoring.js'
 import { DEFAULT_STATUS } from './constants.js'
 import { searchLight, placeDetails, phoneOf, reviewDates, parseOpeningDate } from './googlePlacesRun.js'
 import { extractFromArticle, isOpenTitle, urlHash, stripSiteName } from './regionalExtract.js'
-import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone } from './japanFilter.js'
+import { isForeignAddress, isForeignText, isJapanAddress, isJapanPhone, detectOverseasOpening } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { extractDirectoryListingLinks, extractDirectoryShopInfo, classifyDirectoryCandidate, extractOpeningDateFromText } from './directoryParser.js'
 import { detectParserType, extractNewnessBlocks, parseHorbyCards, parseHorbyDetail, parseGoguynetShopInfo, extractMainContent, sanitizeShopName, extractShopFromTitle, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
@@ -529,6 +529,8 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
           const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 200)}`)
           if (multiD.exclude || looksLikeBranchStore(dName)) { temperature = 'EXCLUDED'; dHotTier = null }
+          // 海外への出店ニュース（日本企業の海外展開＝国内の新店でない）は、本社の日本住所が取れても除外
+          if (detectOverseasOpening(`${item.title || ''} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 300)}`)) { temperature = 'EXCLUDED'; dHotTier = null }
           // 新方針: HOTは電話＋住所必須。店名未確定でも電話＋住所＋新店根拠ありなら HOT-B
           const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
           const cardNew = open.confidence !== 'none' || true  // 店舗ディレクトリ新着＝新規掲載根拠
@@ -999,7 +1001,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         const nameValid = !!shopName
         const nameReason = nameValid ? '' : (sn.reason || '店名抽出失敗')
         // 日本国外は除外（海外住所/海外電話）
+        // 海外への出店ニュース（日本企業の海外展開）は、本社の日本住所が取れても国内の新店ではないので海外扱い
         const isForeign = isForeignAddress(address) || isForeignText(`${ex.shop_name || ''} ${bestTitle || ''}`) || (!!phone && !isJapanPhone(phone))
+          || detectOverseasOpening(`${bestTitle || ''} ${(meta.excerpt || '').slice(0, 300)}`)
         const japanOk = !isForeign && (!!prefecture || isJapanAddress(address) || !!ex.area || isJapanPhone(phone))
         // 新店根拠（店名の有無に依存させない・新方針）
         const articleNew = recentOk || strongOpening || !!ex.open_date

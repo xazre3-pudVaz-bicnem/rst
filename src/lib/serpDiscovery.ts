@@ -8,7 +8,7 @@
 import { webSearch, enrichCandidate } from './instagramWebRun.js'
 import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { hardExcludeReason } from './excludeGate.js'
-import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
+import { isJapanPhone, isJapanAddress, isForeignAddress, detectOverseasOpening } from './japanFilter.js'
 import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { detectChain } from './chainFilter.js'
@@ -406,7 +406,9 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
 
         let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null
         let holdReason = ''
-        if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
+        // 海外への出店ニュース（日本企業の海外展開）は、本社の日本住所が抽出されても国内の新店ではないため除外。
+        const overseasOpen = detectOverseasOpening(`${rr.title || ''} ${rr.snippet || ''}`)
+        if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || overseasOpen || portalNoise || hardEx) temperature = 'EXCLUDED'
         else if (dateHardOld || pageAgeVeryOld) { temperature = 'EXCLUDED'; counts.hpOldExcluded = (counts.hpOldExcluded || 0) + 1 }
         // HOT要件: 電話+実店舗住所+日本+実店舗名確定+新店(新HP)根拠+記事鮮度+電話地域整合。HP取得元はさらに公式URL＋公開7日以内が必須。
         else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && newnessOk && officialOk && recencyOk && !pageAgeOld && !openStale && !pmMismatch && (!prSource || matchedPlaceId)) {
