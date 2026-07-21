@@ -217,14 +217,16 @@ export default function CaseFormModal({
               onBlur={() => blurPhone('phone2')}
             />
           </div>
-          <div className="space-y-1">
-            <Label>電話番号3</Label>
-            <Input
-              value={form.phone3}
-              onChange={(e) => set('phone3', e.target.value)}
-              onBlur={() => blurPhone('phone3')}
-            />
-          </div>
+          {editingCase && (
+            <div className="space-y-1">
+              <Label>電話番号3</Label>
+              <Input
+                value={form.phone3}
+                onChange={(e) => set('phone3', e.target.value)}
+                onBlur={() => blurPhone('phone3')}
+              />
+            </div>
+          )}
           <div className="space-y-1">
             <Label>業種 *</Label>
             <Select value={form.industry || undefined} onValueChange={(v) => set('industry', v)}>
@@ -248,37 +250,41 @@ export default function CaseFormModal({
               onChange={(e) => set('representative', e.target.value)}
             />
           </div>
-          <div className="space-y-1">
-            <Label>営業担当</Label>
-            <Select value={form.sales_rep || undefined} onValueChange={(v) => set('sales_rep', v)}>
-              <SelectTrigger>
-                <SelectValue placeholder="選択" />
-              </SelectTrigger>
-              <SelectContent>
-                {/* 営業担当候補はユーザー管理から。現在値が候補に無くても選択維持 */}
-                {withCurrent(assignableNames, form.sales_rep).map((r) => (
-                  <SelectItem key={r} value={r}>
-                    {r}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2 space-y-1">
-            <Label>ステータス</Label>
-            <Select value={form.status} onValueChange={(v) => set('status', v)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STATUSES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {editingCase && (
+            <div className="space-y-1">
+              <Label>営業担当</Label>
+              <Select value={form.sales_rep || undefined} onValueChange={(v) => set('sales_rep', v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="選択" />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* 営業担当候補はユーザー管理から。現在値が候補に無くても選択維持 */}
+                  {withCurrent(assignableNames, form.sales_rep).map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {editingCase && (
+            <div className="col-span-2 space-y-1">
+              <Label>ステータス</Label>
+              <Select value={form.status} onValueChange={(v) => set('status', v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-1">
             <Label>HP1</Label>
             <Input value={form.hp1} onChange={(e) => set('hp1', e.target.value)} />
@@ -287,10 +293,12 @@ export default function CaseFormModal({
             <Label>HP2</Label>
             <Input value={form.hp2} onChange={(e) => set('hp2', e.target.value)} />
           </div>
-          <div className="col-span-2 space-y-1">
-            <Label>営業時間</Label>
-            <Input value={form.business_hours} onChange={(e) => set('business_hours', e.target.value)} placeholder="例: 11:00〜22:00（不明なら空欄）" />
-          </div>
+          {editingCase && (
+            <div className="col-span-2 space-y-1">
+              <Label>営業時間</Label>
+              <Input value={form.business_hours} onChange={(e) => set('business_hours', e.target.value)} placeholder="例: 11:00〜22:00（不明なら空欄）" />
+            </div>
+          )}
           <div className="col-span-2 space-y-1">
             <Label>メモ</Label>
             <Textarea value={form.memo} onChange={(e) => set('memo', e.target.value)} rows={2} />
