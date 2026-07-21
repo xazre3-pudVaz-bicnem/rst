@@ -1058,23 +1058,27 @@ export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: 
   const header = rows[0].map((h) => zenToHan(h).replace(/\s|"/g, ''))
   const col = (...names: string[]) => { for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i } return -1 }
   // 列マップ（台東型/標準データセット様式/BODIK美容所様式に対応・列名で特定＝位置固定にしない）
-  const cName = col('施設名称', '屋号')
+  const cName = col('施設名称', '屋号', '名称')
   const cAddr = col('所在地_連結表記', '営業所所在地', '施設所在地')
   const cAddr2 = col('施設方書', '営業所方書')
-  const cTel = col('施設電話番号', '営業所TEL', 'TEL1', 'TEL')
+  const cTel = col('施設電話番号', '営業所TEL', 'TEL1', '電話番号', 'TEL')
   const cKind = col('営業の種類', '業種')
   const cFirst = col('初回許可年月日')
-  const cStart = col('許可開始日', '許可年月日', '許可日')
+  const cStart = col('許可開始日', '許可年月日', '許可日', '確認年月日')
   const cClosed = col('廃業年月日')
   const cApply = col('申請区分')
   const cOp = col('法人名', '営業者名')
-  const cNo = col('許可番号')
+  const cNo = col('許可番号', '確認番号')
+  // 法人代表者氏名/法人名/法人番号のいずれかが埋まっていれば法人経営＝複数店舗が多いため除外する（サービス業の営業対象は個人事業主）
+  const cLegal = col('法人代表者氏名', '法人番号', '法人名称')
   if (cName < 0 || cAddr < 0 || cStart < 0) return { rows: rows.length - 1, fresh: [], error: `必須列が見つからない（header: ${header.slice(0, 8).join(',')}）` }
 
   const fresh: FreshPermitRow[] = []
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i]
     if (cClosed >= 0 && zenToHan(r[cClosed] || '')) continue  // 廃業済み
+    // 法人経営は除外（サービス業の法人は複数店舗展開が多く、営業対象は個人事業主）。法人代表者氏名/法人番号が埋まっていれば法人。
+    if (cLegal >= 0 && zenToHan(r[cLegal] || '')) continue
     const kind = zenToHan(r[cKind] || '')
     if (src.industry === 'salon') {
       if (kind && !/(美容|理容)/.test(kind)) continue  // 美容所/理容所以外は除外
@@ -1084,7 +1088,7 @@ export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: 
     let freshOk = false; let evMs = NaN
     if (Number.isFinite(firstMs)) { freshOk = firstMs >= sinceMs; evMs = firstMs }
     else if (cApply >= 0 && /新規/.test(zenToHan(r[cApply] || ''))) { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
-    else if (src.kind === 'taito_monthly' || src.kind === 'monthly_new') { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
+    else if (src.kind === 'taito_monthly' || src.kind === 'monthly_new' || src.industry === 'salon') { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
     if (!freshOk || !Number.isFinite(evMs)) continue
     const name = zenToHan(r[cName] || '').replace(/["']/g, '').slice(0, 60)
     let addr = zenToHan(r[cAddr] || '').replace(/\s+/g, '')
