@@ -102,7 +102,9 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'portal_published_date_search', label: 'エキテン公開日7日以内', group: '公開日7日以内', mode: 'existing', defaultEnabled: false, signalType: 'portal_published_date', note: 'クエリが構造的に0件のため無効化（要クエリ再設計）' },
   { type: 'official_site_news_crawl', label: '公式サイト新着情報', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news', freshness: 'month',
     queries: ['"新規オープン" "公式サイト"', '"グランドオープン" "公式"', '"開院のお知らせ"', '"開業のお知らせ"', '"移転オープンのお知らせ"', '"リニューアルオープンのお知らせ"', '"プレオープンのお知らせ"'] },
-  { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: true, signalType: 'official_news', note: 'RSS/sitemap/WP REST差分。対象URL登録後に有効化' },
+  // 既定OFF: 実行配線がまだ無い（autoCrawl/runEngineSource のどこからも呼ばれない）。ONだと稼働中に見えて誤解を招くため。
+  //   sitemap差分は sitemap_recent_url_scan、RSSは google_news_rss_opening が実稼働でカバー済み。実装時にONへ戻す。
+  { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: false, signalType: 'official_news', note: '未実装（sitemap_recent_url_scan / google_news_rss_opening で代替中）。対象URL登録＋実装後に有効化' },
   { type: 'construction_opening_signal_search', label: '看板・内装・開業準備ワード', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'construction_signal', freshness: 'month',
     queries: ['看板がつきました オープン', '内装工事中 オープン予定', '店舗準備中 オープン', '開店準備中', '物件決まりました 店舗', 'まもなくオープン', 'プレオープン準備中', '予約受付開始 新店'] },
   { type: 'chamber_commerce_new_member_crawl', label: '商工会議所・商店街 新入会員', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'chamber_new_member',
