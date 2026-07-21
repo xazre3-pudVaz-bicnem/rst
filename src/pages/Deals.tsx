@@ -5,7 +5,7 @@ import { Handshake, Pencil, Trash2 } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -41,8 +41,8 @@ export default function Deals() {
   useEffect(() => { load() }, [load])
 
   const totals = useMemo(() => {
-    const t = { count: reports.length, sum: 0 as number }
-    for (const r of reports) t.sum += r.total_price ?? 0
+    const t = { count: reports.length, initial: 0, monthly: 0 }
+    for (const r of reports) { const { initial, monthly } = contractTotals(r); t.initial += initial; t.monthly += monthly }
     return t
   }, [reports])
 
@@ -59,7 +59,7 @@ export default function Deals() {
           <Handshake className="h-5 w-5 text-emerald-600" />
           <h1 className="text-lg font-bold">成約案件管理</h1>
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
-            {totals.count}件 / 合計 {yen(totals.sum)}
+            {totals.count}件 / 初期 {yen(totals.initial)} ・ 月額 {yen(totals.monthly)}/月
           </span>
         </div>
 
@@ -69,8 +69,9 @@ export default function Deals() {
               <tr className="border-b bg-muted/40 text-muted-foreground">
                 <th className="px-2 py-2 text-left">店舗名</th>
                 <th className="px-2 py-2 text-left">契約日</th>
-                {CONTRACT_PRODUCTS.map((p) => <th key={p.key} className="px-2 py-2 text-right">{p.label}</th>)}
-                <th className="px-2 py-2 text-right">合計</th>
+                {CONTRACT_PRODUCTS.map((p) => <th key={p.key} className="px-2 py-2 text-right">{p.label}<span className="block text-[9px] font-normal opacity-70">{p.kind === 'initial' ? '初期' : '月額'}</span></th>)}
+                <th className="px-2 py-2 text-right">初期費用計</th>
+                <th className="px-2 py-2 text-right">月額計</th>
                 <th className="px-2 py-2 text-right">最低契約期間</th>
                 <th className="px-2 py-2 text-left">支払方法</th>
                 <th className="px-2 py-2 text-left">メモ</th>
@@ -78,9 +79,9 @@ export default function Deals() {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={CONTRACT_PRODUCTS.length + 7}><SkeletonRows count={5} /></td></tr>}
+              {loading && <tr><td colSpan={CONTRACT_PRODUCTS.length + 8}><SkeletonRows count={5} /></td></tr>}
               {!loading && reports.length === 0 && (
-                <tr><td colSpan={CONTRACT_PRODUCTS.length + 7} className="py-8 text-center text-muted-foreground">成約案件はまだありません（訪問予定から訪問結果を「成約」で登録すると表示されます）</td></tr>
+                <tr><td colSpan={CONTRACT_PRODUCTS.length + 8} className="py-8 text-center text-muted-foreground">成約案件はまだありません（訪問予定から訪問結果を「成約」で登録すると表示されます）</td></tr>
               )}
               {reports.map((r) => (
                 <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
@@ -95,7 +96,8 @@ export default function Deals() {
                     const v = r[p.key as keyof VisitReport] as number | null | undefined
                     return <td key={p.key} className={`px-2 py-1.5 text-right tabular-nums ${v != null ? 'font-medium text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground/40'}`}>{yen(v)}</td>
                   })}
-                  <td className="px-2 py-1.5 text-right font-bold tabular-nums">{yen(r.total_price)}</td>
+                  <td className="px-2 py-1.5 text-right font-bold tabular-nums">{yen(contractTotals(r).initial || null)}</td>
+                  <td className="px-2 py-1.5 text-right font-bold tabular-nums text-emerald-700 dark:text-emerald-400">{(() => { const m = contractTotals(r).monthly; return m ? `${yen(m)}/月` : '—' })()}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.min_contract_months != null ? `${r.min_contract_months}ヶ月` : '—'}</td>
                   <td className="px-2 py-1.5">{r.payment_method || '—'}</td>
                   <td className="px-2 py-1.5 max-w-[220px] truncate text-muted-foreground" title={r.memo || ''}>{r.memo || '—'}</td>

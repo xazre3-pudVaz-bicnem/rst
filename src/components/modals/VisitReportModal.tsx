@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS } from '@/lib/constants'
+import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { jpError } from '@/lib/utils'
@@ -72,7 +72,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
     }
   }, [open, editing])
 
-  const total = CONTRACT_PRODUCTS.reduce((t, p) => t + (num(prices[p.key] ?? '') ?? 0), 0)
+  const priceNums = Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0]))
+  const { initial: initialTotal, monthly: monthlyTotal } = contractTotals(priceNums)
+  const total = initialTotal + monthlyTotal
 
   async function handleSave() {
     if (!selectedCase) return
@@ -173,7 +175,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               <div className="grid grid-cols-2 gap-2">
                 {CONTRACT_PRODUCTS.map((p) => (
                   <div key={p.key} className="space-y-1">
-                    <Label className="text-2xs">{p.label}（円）</Label>
+                    <Label className="text-2xs">{p.label}（{p.kind === 'initial' ? '初期' : '月額'}・円）</Label>
                     <Input
                       inputMode="numeric"
                       placeholder="—"
@@ -183,7 +185,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                   </div>
                 ))}
               </div>
-              <div className="text-right text-2xs text-muted-foreground">合計（入力額の単純合算）: <span className="font-bold text-foreground">{total.toLocaleString()}円</span></div>
+              <div className="flex justify-end gap-3 text-2xs text-muted-foreground">
+                <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span></span>
+                <span>月額合計: <span className="font-bold text-foreground">{monthlyTotal.toLocaleString()}円/月</span></span>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <Label className="text-2xs">契約日</Label>

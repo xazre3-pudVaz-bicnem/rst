@@ -146,13 +146,23 @@ export const GENDERS = ['男', '女'] as const
 // ===== 訪問結果 =====
 /** 訪問結果の失注理由 */
 export const LOST_REASONS = ['金額ネック', '期間ネック', '本人検討', '第三者相談', '第三者NG', '不在'] as const
-/** 契約サービス（成約時に金額を入力する対象）。key=DBカラム, label=表示 */
+/** 契約サービス（成約時に金額を入力する対象）。key=DBカラム, label=表示, kind=初期費用/月額 */
 export const CONTRACT_PRODUCTS = [
-  { key: 'hp_price', label: 'HP制作' },
-  { key: 'maintenance_price', label: '保守管理' },
-  { key: 'seo_price', label: 'SEO' },
-  { key: 'meo_price', label: 'MEO' },
+  { key: 'hp_price', label: 'HP制作', kind: 'initial' },
+  { key: 'maintenance_price', label: '保守管理', kind: 'monthly' },
+  { key: 'seo_price', label: 'SEO', kind: 'monthly' },
+  { key: 'meo_price', label: 'MEO', kind: 'monthly' },
 ] as const
+
+/** 契約金額を初期費用合計・月額合計に分けて集計する。 */
+export function contractTotals(r: Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], number | null | undefined>>): { initial: number; monthly: number } {
+  let initial = 0, monthly = 0
+  for (const p of CONTRACT_PRODUCTS) {
+    const v = Number(r[p.key] ?? 0) || 0
+    if (p.kind === 'initial') initial += v; else monthly += v
+  }
+  return { initial, monthly }
+}
 /** 支払方法 */
 export const PAYMENT_METHODS = ['一括', '月額', '分割', '銀行振込', 'クレジットカード', '口座振替'] as const
 

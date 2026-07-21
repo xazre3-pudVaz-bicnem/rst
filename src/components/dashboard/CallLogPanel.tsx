@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi, VisitReportApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
@@ -154,11 +154,11 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                     <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                       {CONTRACT_PRODUCTS.map((p) => {
                         const price = v[p.key as keyof VisitReport] as number | null | undefined
-                        return price != null ? <span key={p.key} className="rounded bg-emerald-100 px-1 py-0.5 font-medium text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">{p.label} ¥{price.toLocaleString()}</span> : null
+                        return price != null ? <span key={p.key} className="rounded bg-emerald-100 px-1 py-0.5 font-medium text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">{p.label}{p.kind === 'monthly' ? '(月)' : ''} ¥{price.toLocaleString()}</span> : null
                       })}
                     </div>
                     <div className="text-muted-foreground">
-                      合計 <span className="font-bold text-foreground">¥{(v.total_price ?? 0).toLocaleString()}</span>
+                      {(() => { const { initial, monthly } = contractTotals(v); return (<>初期 <span className="font-bold text-foreground">¥{initial.toLocaleString()}</span> ・ 月額 <span className="font-bold text-foreground">¥{monthly.toLocaleString()}/月</span></>) })()}
                       {v.contract_date && ` / 契約${moment(v.contract_date).format('YYYY/MM/DD')}`}
                       {v.min_contract_months != null && ` / 最低${v.min_contract_months}ヶ月`}
                       {v.payment_method && ` / ${v.payment_method}`}
