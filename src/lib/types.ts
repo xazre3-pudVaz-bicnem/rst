@@ -75,6 +75,8 @@ export interface VisitReport {
   min_contract_months?: number | null
   payment_method?: string | null
   hp_price?: number | null
+  hp_payment_type?: '一括' | '分割' | null
+  hp_installments?: number | null
   maintenance_price?: number | null
   seo_price?: number | null
   meo_price?: number | null

@@ -5,7 +5,7 @@ import { Handshake, Pencil, Trash2 } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -94,7 +94,14 @@ export default function Deals() {
                   <td className="px-2 py-1.5">{r.contract_date ? moment(r.contract_date).format('YYYY/MM/DD') : '—'}</td>
                   {CONTRACT_PRODUCTS.map((p) => {
                     const v = r[p.key as keyof VisitReport] as number | null | undefined
-                    return <td key={p.key} className={`px-2 py-1.5 text-right tabular-nums ${v != null ? 'font-medium text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground/40'}`}>{yen(v)}</td>
+                    const split = p.key === 'hp_price' ? hpSplitInfo(r) : null
+                    return (
+                      <td key={p.key} className={`px-2 py-1.5 text-right tabular-nums ${v != null ? 'font-medium text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground/40'}`}>
+                        {yen(v)}
+                        {split && <span className="block text-[9px] font-normal text-muted-foreground">分割 ¥{split.monthly.toLocaleString()}×{split.months}回</span>}
+                        {p.key === 'hp_price' && v != null && !split && <span className="block text-[9px] font-normal text-muted-foreground">一括</span>}
+                      </td>
+                    )
                   })}
                   <td className="px-2 py-1.5 text-right font-bold tabular-nums">{yen(contractTotals(r).initial || null)}</td>
                   <td className="px-2 py-1.5 text-right font-bold tabular-nums text-emerald-700 dark:text-emerald-400">{(() => { const m = contractTotals(r).monthly; return m ? `${yen(m)}/月` : '—' })()}</td>

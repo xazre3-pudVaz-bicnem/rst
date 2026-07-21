@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals } from '@/lib/constants'
+import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { jpError } from '@/lib/utils'
@@ -48,6 +48,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const [contractDate, setContractDate] = useState('')
   const [minMonths, setMinMonths] = useState('')
   const [payment, setPayment] = useState('')
+  const [hpPayType, setHpPayType] = useState<'一括' | '分割'>('一括')
+  const [hpInstallments, setHpInstallments] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -60,6 +62,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setMinMonths(editing.min_contract_months != null ? String(editing.min_contract_months) : '')
       setPayment(editing.payment_method ?? '')
       setPrices(Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, editing[p.key as keyof VisitReport] != null ? String(editing[p.key as keyof VisitReport]) : ''])))
+      setHpPayType(editing.hp_payment_type === '分割' ? '分割' : '一括')
+      setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
     } else {
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
@@ -69,12 +73,19 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setContractDate(moment().format('YYYY-MM-DD'))
       setMinMonths('')
       setPayment('')
+      setHpPayType('一括')
+      setHpInstallments('')
     }
   }, [open, editing])
 
-  const priceNums = Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0]))
+  const priceNums = {
+    ...Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0])),
+    hp_payment_type: hpPayType,
+    hp_installments: num(hpInstallments),
+  }
   const { initial: initialTotal, monthly: monthlyTotal } = contractTotals(priceNums)
   const total = initialTotal + monthlyTotal
+  const hpSplit = hpSplitInfo(priceNums)
 
   async function handleSave() {
     if (!selectedCase) return
@@ -96,6 +107,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           min_contract_months: num(minMonths),
           payment_method: payment || null,
           hp_price: num(prices.hp_price ?? ''),
+          hp_payment_type: num(prices.hp_price ?? '') ? hpPayType : null,
+          hp_installments: hpPayType === '分割' ? num(hpInstallments) : null,
           maintenance_price: num(prices.maintenance_price ?? ''),
           seo_price: num(prices.seo_price ?? ''),
           meo_price: num(prices.meo_price ?? ''),
@@ -175,7 +188,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               <div className="grid grid-cols-2 gap-2">
                 {CONTRACT_PRODUCTS.map((p) => (
                   <div key={p.key} className="space-y-1">
-                    <Label className="text-2xs">{p.label}（{p.kind === 'initial' ? '初期' : '月額'}・円）</Label>
+                    <Label className="text-2xs">{p.label}（{p.key === 'hp_price' ? '初期/分割' : (p.kind as string) === 'initial' ? '初期' : '月額'}・円）</Label>
                     <Input
                       inputMode="numeric"
                       placeholder="—"
@@ -185,6 +198,28 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                   </div>
                 ))}
               </div>
+              {/* HP制作の支払い: 一括 / 分割 */}
+              {num(prices.hp_price ?? '') != null && (
+                <div className="flex flex-wrap items-center gap-2 rounded bg-emerald-100/60 px-2 py-1 dark:bg-emerald-500/15">
+                  <span className="text-2xs font-medium">HP制作の支払い</span>
+                  {(['一括', '分割'] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setHpPayType(t)}
+                      className={`rounded-full border px-2 py-0.5 text-2xs ${hpPayType === t ? 'border-emerald-600 bg-emerald-600 text-white' : 'text-muted-foreground hover:bg-accent'}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                  {hpPayType === '分割' && (
+                    <div className="flex items-center gap-1">
+                      <Input inputMode="numeric" placeholder="回数" className="h-7 w-16 text-2xs" value={hpInstallments} onChange={(e) => setHpInstallments(e.target.value)} />
+                      <span className="text-2xs text-muted-foreground">回{hpSplit ? `（¥${hpSplit.monthly.toLocaleString()}/月）` : ''}</span>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="flex justify-end gap-3 text-2xs text-muted-foreground">
                 <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span></span>
                 <span>月額合計: <span className="font-bold text-foreground">{monthlyTotal.toLocaleString()}円/月</span></span>

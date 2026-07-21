@@ -31,3 +31,7 @@ CREATE POLICY rst_all_authenticated ON visit_reports FOR ALL TO authenticated US
 CREATE INDEX IF NOT EXISTS idx_visit_reports_case ON visit_reports(case_id);
 CREATE INDEX IF NOT EXISTS idx_visit_reports_result ON visit_reports(result);
 CREATE INDEX IF NOT EXISTS idx_visit_reports_visited ON visit_reports(visited_at DESC);
+
+-- HP制作の支払い方法（一括/分割）と分割回数
+ALTER TABLE visit_reports ADD COLUMN IF NOT EXISTS hp_payment_type TEXT;   -- '一括' | '分割'
+ALTER TABLE visit_reports ADD COLUMN IF NOT EXISTS hp_installments INTEGER; -- 分割回数（月数）

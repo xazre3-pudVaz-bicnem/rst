@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi, VisitReportApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
@@ -154,7 +154,10 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                     <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                       {CONTRACT_PRODUCTS.map((p) => {
                         const price = v[p.key as keyof VisitReport] as number | null | undefined
-                        return price != null ? <span key={p.key} className="rounded bg-emerald-100 px-1 py-0.5 font-medium text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">{p.label}{p.kind === 'monthly' ? '(月)' : ''} ¥{price.toLocaleString()}</span> : null
+                        if (price == null) return null
+                        const split = p.key === 'hp_price' ? hpSplitInfo(v) : null
+                        const tag = p.key === 'hp_price' ? (split ? `(分割¥${split.monthly.toLocaleString()}×${split.months})` : '(一括)') : p.kind === 'monthly' ? '(月)' : ''
+                        return <span key={p.key} className="rounded bg-emerald-100 px-1 py-0.5 font-medium text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">{p.label}{tag} ¥{price.toLocaleString()}</span>
                       })}
                     </div>
                     <div className="text-muted-foreground">

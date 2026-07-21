@@ -154,12 +154,30 @@ export const CONTRACT_PRODUCTS = [
   { key: 'meo_price', label: 'MEO', kind: 'monthly' },
 ] as const
 
-/** 契約金額を初期費用合計・月額合計に分けて集計する。 */
-export function contractTotals(r: Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], number | null | undefined>>): { initial: number; monthly: number } {
+type ContractLike = Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], number | null | undefined>>
+  & { hp_payment_type?: '一括' | '分割' | null; hp_installments?: number | null }
+
+/** HP制作を分割払いにした場合の内訳（月額と回数）。一括/未設定なら null。 */
+export function hpSplitInfo(r: ContractLike): { monthly: number; months: number; total: number } | null {
+  const hp = Number(r.hp_price ?? 0) || 0
+  const n = Number(r.hp_installments ?? 0) || 0
+  if (hp > 0 && r.hp_payment_type === '分割' && n > 0) return { monthly: Math.round(hp / n), months: n, total: hp }
+  return null
+}
+
+/** 契約金額を初期費用合計・月額合計に分けて集計する。
+ *  HP制作は「一括」なら初期費用、「分割」なら1回あたり(HP額÷回数)を月額に計上する。 */
+export function contractTotals(r: ContractLike): { initial: number; monthly: number } {
   let initial = 0, monthly = 0
+  const split = hpSplitInfo(r)
   for (const p of CONTRACT_PRODUCTS) {
     const v = Number(r[p.key] ?? 0) || 0
-    if (p.kind === 'initial') initial += v; else monthly += v
+    if (!v) continue
+    if (p.key === 'hp_price') {
+      if (split) monthly += split.monthly   // 分割：月々の分割額を月額へ
+      else initial += v                      // 一括：初期費用へ
+    } else if ((p.kind as string) === 'initial') initial += v
+    else monthly += v
   }
   return { initial, monthly }
 }
