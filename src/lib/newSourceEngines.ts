@@ -951,12 +951,18 @@ export async function runLeadScoring(admin: any, mode: string, opts: { limit?: n
 //   エンコードはUTF-8 BOM/Shift-JIS/UTF-16LEが混在するため自動判定する。
 // ============================================================
 export interface PermitSource {
-  key: string; label: string; kind: 'taito_monthly' | 'std_registry'; urls: (nowMs: number) => string[]
+  key: string; label: string; kind: 'taito_monthly' | 'std_registry' | 'monthly_new'; urls: (nowMs: number) => string[]
   areaPrefix?: string; telAreaCode?: string
   /** この台帳専用の鮮度窓（日）。台帳ごとに公開ラグが違うため既定(45日)を上書きできる。
    *  港区は「ファイル更新は月末なのに収録データは前月末まで」＝公開ラグが約32〜60日あり、
    *  45日窓だと最新行すら窓の外になって月の大半で新規0件（＝2枠中1枠を空振りで消費）だった。 */
   recencyDays?: number
+  /** 列区切り。BODIK美容所CSV等はTAB区切り＋各セル""囲みの変則。既定はカンマ。 */
+  delimiter?: ',' | '\t'
+  /** 対象業種。'salon'は食品業種フィルタを外し美容所/理容所を受理する。既定は'food'。 */
+  industry?: 'food' | 'salon'
+  /** CKAN(BODIK等)から「最新の新規リソースCSV」を動的解決する。resource UUIDが毎月変わるため。 */
+  ckan?: { pkgId: string; match: string }
 }
 export const PERMIT_SOURCES: PermitSource[] = [
   {
@@ -974,6 +980,11 @@ export const PERMIT_SOURCES: PermitSource[] = [
   // 港区は公開ラグが大きい（実測2026-07-16時点: ファイルのLast-Modifiedは6/30だが収録データの最新初回許可日は5/29＝約48日遅れ）。
   // 既定45日窓では最新行すら窓の外で毎月大半が新規0件になるため、この台帳だけ窓を90日に広げる。
   { key: 'minato', label: '港区 営業許可台帳', kind: 'std_registry', recencyDays: 90, urls: () => ['https://opendata.city.minato.tokyo.jp/dataset/54d8c582-00e2-4730-a23f-4a5befec9ae5/resource/c9d0299e-8e05-4317-877f-83055709e41f/download/food_business_all.csv'] },
+  // 目黒区 美容所（新規開設・月次）。BODIK公開・TAB区切り・許可日は和暦・住所は区名以下＝areaPrefixで補完。
+  // 電話は空/市外局番なし表記が多いためtelAreaCode='03'で補完（不足時はPlacesで裏取り）。
+  // 公開ラグが大きい（実査2026-07時点で最新は2026-03分）ため鮮度窓150日。他区もBODIKの pkgId を足すだけで追加可能。
+  { key: 'meguro_salon', label: '目黒区 美容所（新規開設）', kind: 'monthly_new', industry: 'salon', delimiter: '\t', areaPrefix: '東京都目黒区', telAreaCode: '03', recencyDays: 150,
+    ckan: { pkgId: 'f5569102-a9da-435f-aa43-d95c21dcd3c3', match: 'hairdressingshop_new_' }, urls: () => [] },
   // ※実測で外したソース（2026-07実査）: 江東/中央/新宿=標準台帳だが年次スナップショット更新で直近45日の新規0件、
   //   中野=日付列なしの独自様式。更新頻度の高い自治体が見つかれば std_registry で1行追加するだけで対応可能。
 ]
@@ -1015,7 +1026,23 @@ function parseCsvRows(text: string, maxRows = 100000): string[][] {
 }
 
 const zenToHan = (s: string) => String(s || '').replace(/[０-９Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/　/g, ' ').replace(/[−－‐]/g, '-').trim()
-const parsePermitDate = (s: string) => { const m = zenToHan(s).match(/(20\d{2})[/.年-]\s?(\d{1,2})[/.月-]\s?(\d{1,2})/); return m ? Date.parse(`${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}T00:00:00+09:00`) : NaN }
+const parsePermitDate = (s: string) => {
+  const z = zenToHan(s)
+  // 和暦（令和N年M月D日 / R08.04.01 等）→ 西暦
+  const r = z.match(/(?:令和|R)\s?(\d{1,2})[年.\-/]\s?(\d{1,2})[月.\-/]\s?(\d{1,2})/)
+  if (r) { const y = 2018 + Number(r[1]); return Date.parse(`${y}-${String(r[2]).padStart(2, '0')}-${String(r[3]).padStart(2, '0')}T00:00:00+09:00`) }
+  const m = z.match(/(20\d{2})[/.年-]\s?(\d{1,2})[/.月-]\s?(\d{1,2})/)
+  return m ? Date.parse(`${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}T00:00:00+09:00`) : NaN
+}
+
+/** TAB区切り＋各セル""囲み（行全体も"囲みうる）のBODIK様式を rows(string[][]) に。 */
+function parseTsvRows(text: string): string[][] {
+  return text.split(/\r?\n/).filter((l) => l.trim()).map((line) => {
+    let s = line.trim()
+    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1)
+    return s.split('\t').map((c) => c.replace(/^"+|"+$/g, '').replace(/""/g, '"').trim())
+  })
+}
 // 対象業種（来店型の飲食/食品製造）。販売・自販機・運搬・催事・移動営業はMEO/HP営業の対象外
 const PERMIT_INDUSTRY_OK_RE = /(飲食店営業|喫茶|菓子製造|アイスクリーム|そうざい|調理|パン|めん類)/
 const PERMIT_INDUSTRY_NG_RE = /(販売|自動販売機|自動車|運搬|集乳|冷凍|倉庫|催事|移動)/
@@ -1025,18 +1052,19 @@ export interface FreshPermitRow { name: string; addr: string; tel: string; kind:
  *  新規判定: 初回許可年月日が直近 ＞ （初回列なし）申請区分=新規かつ許可開始日が直近 ＞ 台東月次（全行その月の許可）。
  *  更新許可（初回が古く許可開始日だけ新しい行）を新店と誤認しないための優先順位。 */
 export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: number): { rows: number; fresh: FreshPermitRow[]; error: string } {
-  const rows = parseCsvRows(decodeGovCsv(buf))
+  const decoded = decodeGovCsv(buf)
+  const rows = src.delimiter === '\t' ? parseTsvRows(decoded) : parseCsvRows(decoded)
   if (rows.length < 2) return { rows: 0, fresh: [], error: 'CSVが空/解析不能' }
   const header = rows[0].map((h) => zenToHan(h).replace(/\s|"/g, ''))
   const col = (...names: string[]) => { for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i } return -1 }
-  // 列マップ（台東型と標準データセット様式の両対応・列名で特定＝位置固定にしない）
+  // 列マップ（台東型/標準データセット様式/BODIK美容所様式に対応・列名で特定＝位置固定にしない）
   const cName = col('施設名称', '屋号')
-  const cAddr = col('所在地_連結表記', '営業所所在地')
+  const cAddr = col('所在地_連結表記', '営業所所在地', '施設所在地')
   const cAddr2 = col('施設方書', '営業所方書')
-  const cTel = col('施設電話番号', '営業所TEL')
+  const cTel = col('施設電話番号', '営業所TEL', 'TEL1', 'TEL')
   const cKind = col('営業の種類', '業種')
   const cFirst = col('初回許可年月日')
-  const cStart = col('許可開始日', '許可年月日')
+  const cStart = col('許可開始日', '許可年月日', '許可日')
   const cClosed = col('廃業年月日')
   const cApply = col('申請区分')
   const cOp = col('法人名', '営業者名')
@@ -1048,13 +1076,15 @@ export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: 
     const r = rows[i]
     if (cClosed >= 0 && zenToHan(r[cClosed] || '')) continue  // 廃業済み
     const kind = zenToHan(r[cKind] || '')
-    if (kind && (!PERMIT_INDUSTRY_OK_RE.test(kind) || PERMIT_INDUSTRY_NG_RE.test(kind))) continue
+    if (src.industry === 'salon') {
+      if (kind && !/(美容|理容)/.test(kind)) continue  // 美容所/理容所以外は除外
+    } else if (kind && (!PERMIT_INDUSTRY_OK_RE.test(kind) || PERMIT_INDUSTRY_NG_RE.test(kind))) continue
     const firstMs = cFirst >= 0 ? parsePermitDate(r[cFirst] || '') : NaN
     const startMs2 = parsePermitDate(r[cStart] || '')
     let freshOk = false; let evMs = NaN
     if (Number.isFinite(firstMs)) { freshOk = firstMs >= sinceMs; evMs = firstMs }
     else if (cApply >= 0 && /新規/.test(zenToHan(r[cApply] || ''))) { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
-    else if (src.kind === 'taito_monthly') { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
+    else if (src.kind === 'taito_monthly' || src.kind === 'monthly_new') { freshOk = Number.isFinite(startMs2) && startMs2 >= sinceMs; evMs = startMs2 }
     if (!freshOk || !Number.isFinite(evMs)) continue
     const name = zenToHan(r[cName] || '').replace(/["']/g, '').slice(0, 60)
     let addr = zenToHan(r[cAddr] || '').replace(/\s+/g, '')
@@ -1103,7 +1133,24 @@ export async function runHealthPermitScan(admin: any, mapsKey: string | null, op
       if (remain() < perItemMs + 15000 || processed >= maxItems) break
       // CSV取得（月次ファイルはフォールバック列を順に試す）
       let csvUrl = ''; let buf: Buffer | null = null
-      for (const u of src.urls(Date.now())) {
+      // CKAN(BODIK)ソースは package_show から「最新の新規リソースCSV」を解決してURLにする（resource UUIDが毎月変わるため）。
+      let urlList = src.urls(Date.now())
+      if (src.ckan) {
+        try {
+          const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 15000)
+          const pr = await fetch(`https://data.bodik.jp/api/3/action/package_show?id=${src.ckan.pkgId}`, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+          clearTimeout(to)
+          if (pr.ok) {
+            const j: any = await pr.json()
+            const res: any[] = j?.result?.resources || []
+            const news = res.map((r) => String(r?.url || '')).filter((u) => u.includes(src.ckan!.match) && /\.csv$/i.test(u))
+            // ファイル名末尾の日付(YYYYMMDD)で最新を採用
+            news.sort((a, b) => (a.match(/(\d{8})[^/]*\.csv$/)?.[1] || '').localeCompare(b.match(/(\d{8})[^/]*\.csv$/)?.[1] || ''))
+            if (news.length) urlList = [news[news.length - 1]]
+          }
+        } catch { /* 解決失敗時は空 → skip */ }
+      }
+      for (const u of urlList) {
         try {
           const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 15000)
           const r = await fetch(u, { headers: { 'User-Agent': UA, Accept: 'text/csv,*/*' }, signal: ctrl.signal, redirect: 'follow' })
