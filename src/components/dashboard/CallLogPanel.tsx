@@ -108,7 +108,7 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
             )}
 
             {l.memo && (
-              <div className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{l.memo}</div>
+              <div className="mt-1 whitespace-pre-wrap text-sm text-foreground">{l.memo}</div>
             )}
 
             {l.appo_at && (

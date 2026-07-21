@@ -11,8 +11,9 @@ import {
 } from '@/components/ui/select'
 import { AppointmentApi, CaseApi, CallLogApi, RecallApi, ProfileApi } from '@/lib/api'
 import {
-  SALES_REPS, DEAL_STATUSES, DOC_SENT_STATUSES, PROSPECT_STATUSES, LOST_STATUSES,
+  DEAL_STATUSES, DOC_SENT_STATUSES, PROSPECT_STATUSES, LOST_STATUSES,
 } from '@/lib/constants'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { isCall, isAnswered, isRepContact, pct } from '@/lib/kpi'
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient'
 import { cn } from '@/lib/utils'
@@ -53,6 +54,7 @@ export default function Analytics() {
   const [scope, setScope] = useState('') // '' = 全員
   const [updatedAt, setUpdatedAt] = useState(() => moment().format('HH:mm:ss'))
   const [live, setLive] = useState(false)
+  const { names: assignableNames } = useAssignableUsers()
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -106,12 +108,13 @@ export default function Analytics() {
 
   // 全担当者（固定リスト＋データ上の担当を統合）
   const reps = useMemo(() => {
-    const set = new Set<string>(SALES_REPS as readonly string[])
+    // 営業担当プルダウンと同じ実名（ユーザー管理profiles）を基点にする。ダミーのSALES_REPSは使わない。
+    const set = new Set<string>(assignableNames)
     calls.forEach((l) => set.add(callRep(l)))
     appointments.forEach((a) => a.sales_rep && set.add(a.sales_rep))
     cases.forEach((c) => set.add(caseCreator(c)))
     return [...set].filter(Boolean)
-  }, [calls, appointments, cases, callRep, caseCreator])
+  }, [assignableNames, calls, appointments, cases, callRep, caseCreator])
 
   // ---- ペース（コール数の各時間窓） scope 対応 ----
   const pace = useMemo(() => {

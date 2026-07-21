@@ -28,7 +28,6 @@ import {
   GENDERS,
   NO_CONTACT_RESULTS,
   RECEIVER_ATTRS,
-  STATUSES,
 } from '@/lib/constants'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { generateSummary } from '@/lib/summary'
@@ -323,19 +322,20 @@ export default function CallLogFormModal({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>性別</Label>
-              <Select value={gender || NONE} onValueChange={(v) => setGender(v === NONE ? '' : v)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="選択" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>（なし）</SelectItem>
-                  {GENDERS.map((g) => (
-                    <SelectItem key={g} value={g}>
-                      {g}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex gap-2">
+                {GENDERS.map((g) => (
+                  <Button
+                    key={g}
+                    type="button"
+                    size="sm"
+                    variant={gender === g ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => setGender((cur) => (cur === g ? '' : g))}
+                  >
+                    {g}
+                  </Button>
+                ))}
+              </div>
             </div>
             <div className="space-y-1">
               <Label>年齢</Label>
@@ -399,37 +399,6 @@ export default function CallLogFormModal({
               </div>
             </div>
           )}
-
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label>変更後ステータス</Label>
-              <Select value={newStatus || NONE} onValueChange={(v) => setNewStatus(v === NONE ? '' : v)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="変更なし" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>変更なし</SelectItem>
-                  {STATUSES.map((s) => (
-                    <SelectItem key={s} value={s}>{s}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label>記録者</Label>
-              <Select value={logRep || NONE} onValueChange={(v) => setLogRep(v === NONE ? '' : v)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="選択" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>（なし）</SelectItem>
-                  {withCurrent(assignableNames, logRep).map((r) => (
-                    <SelectItem key={r} value={r}>{r}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
 
           <div className="space-y-1">
             <Label>再コール予定（任意）</Label>

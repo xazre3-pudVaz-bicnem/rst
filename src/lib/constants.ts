@@ -240,8 +240,6 @@ export const DEFAULT_TEMPLATES: { category: string; title: string; body: string;
   { category: 'memo', title: '折返し待ち', body: '折返しの連絡を待つ。', status: '折返し待ち' },
   { category: 'memo', title: '現在不要', body: '現時点では不要とのこと。', status: '失注' },
   { category: 'memo', title: '他社利用中', body: '他社サービス利用中。契約更新時期に再アプローチ。', status: '見込み' },
-  { category: 'memo', title: '予算が合わない', body: '予算が合わず。条件を変えて再提案検討。' },
-  { category: 'memo', title: '決裁者確認待ち', body: '決裁者の確認待ち。' },
   { category: 'memo', title: 'アポ獲得', body: '訪問アポイントを獲得。', status: 'アポ獲得' },
 ]
 
