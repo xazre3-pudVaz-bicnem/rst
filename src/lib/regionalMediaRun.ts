@@ -526,8 +526,8 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const dc = classifyDirectoryCandidate({ shop_name: dName, phone, address, open, isJapan }, mode)
           let temperature = dc.temperature
           let dHotTier = dc.hot_tier
-          // 多店舗展開/フランチャイズは確立済み大型 → EXCLUDED
-          const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 200)}`)
+          // 多店舗展開/フランチャイズ/姉妹店は確立済みグループ → EXCLUDED（記事タイトルの「〜の姉妹レストラン」等も見る）
+          const multiD = detectMultiStore(`${dName} ${info.shop_name || ''} ${item.title || ''} ${(info.excerpt || '').slice(0, 200)}`)
           if (multiD.exclude || looksLikeBranchStore(dName)) { temperature = 'EXCLUDED'; dHotTier = null }
           // 海外への出店ニュース（日本企業の海外展開＝国内の新店でない）は、本社の日本住所が取れても除外
           if (detectOverseasOpening(`${item.title || ''} ${info.shop_name || ''} ${(info.excerpt || '').slice(0, 300)}`)) { temperature = 'EXCLUDED'; dHotTier = null }
