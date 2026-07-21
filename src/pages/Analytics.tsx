@@ -148,7 +148,7 @@ export default function Analytics() {
       const repN = rc.filter(isRepContact).length
       const appoList = appointments.filter((a) => a.sales_rep === rep && inR(a.appo_at))
       const appoN = appoList.length
-      const convN = appoList.filter((a) => DEAL_STATUSES.includes((caseById.get(a.case_id)?.status ?? '') as never)).length
+      const convN = appoList.filter((a) => DEAL_STATUSES.includes((caseById.get(a.case_id ?? '')?.status ?? '') as never)).length
       const listN = cases.filter((c) => caseCreator(c) === rep && inR(c.created_date)).length
       return {
         rep, listN, callN, ansN, repN, appoN, convN,

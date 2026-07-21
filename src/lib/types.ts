@@ -46,8 +46,9 @@ export interface Case {
 
 export interface Appointment {
   id: string
-  case_id: string
-  case_name: string
+  // 案件に紐づかない予定（社内MTG等）も登録できるため null 許容
+  case_id?: string | null
+  case_name?: string | null
   address?: string | null
   sales_rep?: string | null
   appo_at: string

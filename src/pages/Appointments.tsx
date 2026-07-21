@@ -56,6 +56,7 @@ export default function Appointments() {
   const [visitApptId, setVisitApptId] = useState<string | null>(null)
   const [form, setForm] = useState({
     case_id: '',
+    title: '',
     sales_rep: '',
     appo_at: '',
     memo: '',
@@ -94,6 +95,7 @@ export default function Appointments() {
     setEditing(null)
     setForm({
       case_id: '',
+      title: '',
       sales_rep: rep,
       appo_at: moment(currentDate).hour(hour).minute(0).format('YYYY-MM-DDTHH:mm'),
       memo: '',
@@ -104,7 +106,9 @@ export default function Appointments() {
   function openEdit(a: Appointment) {
     setEditing(a)
     setForm({
-      case_id: a.case_id,
+      case_id: a.case_id ?? '',
+      // 案件なし予定は case_name を件名として編集できるようにする
+      title: a.case_id ? '' : (a.case_name ?? ''),
       sales_rep: a.sales_rep ?? '',
       appo_at: moment(a.appo_at).format('YYYY-MM-DDTHH:mm'),
       memo: a.memo ?? '',
@@ -113,21 +117,21 @@ export default function Appointments() {
   }
 
   async function handleSave() {
-    if (!form.case_id) {
-      toast.error('案件を選択してください')
-      return
-    }
     if (!form.appo_at) {
       toast.error('日時を入力してください')
       return
     }
-    const c = cases.find((x) => x.id === form.case_id)
-    if (!c) return
+    const c = form.case_id ? cases.find((x) => x.id === form.case_id) : null
+    // 案件なしのときは件名（用件）を必須にする
+    if (!c && !form.title.trim()) {
+      toast.error('案件を選択するか、件名を入力してください')
+      return
+    }
     try {
       const payload: Partial<Appointment> = {
-        case_id: c.id,
-        case_name: c.name,
-        address: c.address,
+        case_id: c ? c.id : null,
+        case_name: c ? c.name : form.title.trim(),
+        address: c ? c.address : null,
         sales_rep: form.sales_rep || null,
         appo_at: moment(roundTo15(form.appo_at)).toISOString(),
         memo: form.memo || null,
@@ -244,12 +248,16 @@ export default function Appointments() {
                                 </button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="start">
-                                <DropdownMenuItem onClick={() => navigate(`/?case=${a.case_id}`)}>案件詳細を開く</DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => { setVisitCase(c ?? { id: a.case_id, name: a.case_name } as Case); setVisitApptId(a.id) }}
-                                >
-                                  訪問結果を登録
-                                </DropdownMenuItem>
+                                {a.case_id && (
+                                  <>
+                                    <DropdownMenuItem onClick={() => navigate(`/?case=${a.case_id}`)}>案件詳細を開く</DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={() => { setVisitCase(c ?? { id: a.case_id!, name: a.case_name ?? '' } as Case); setVisitApptId(a.id) }}
+                                    >
+                                      訪問結果を登録
+                                    </DropdownMenuItem>
+                                  </>
+                                )}
                                 <DropdownMenuItem onClick={() => openEdit(a)}>予定を編集</DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
@@ -278,12 +286,13 @@ export default function Appointments() {
           </DialogHeader>
           <div className="space-y-2">
             <div className="space-y-1">
-              <Label>案件</Label>
-              <Select value={form.case_id || undefined} onValueChange={(v) => setForm((f) => ({ ...f, case_id: v }))}>
+              <Label>案件（任意）</Label>
+              <Select value={form.case_id || NONE} onValueChange={(v) => setForm((f) => ({ ...f, case_id: v === NONE ? '' : v }))}>
                 <SelectTrigger>
                   <SelectValue placeholder="案件を選択" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={NONE}>（案件なし・その他の予定）</SelectItem>
                   {cases.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {c.name}
@@ -292,6 +301,16 @@ export default function Appointments() {
                 </SelectContent>
               </Select>
             </div>
+            {!form.case_id && (
+              <div className="space-y-1">
+                <Label>件名</Label>
+                <Input
+                  value={form.title}
+                  onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                  placeholder="例: 社内MTG / 内見同行 / 出張"
+                />
+              </div>
+            )}
             <div className="space-y-1">
               <Label>担当者</Label>
               <Select value={form.sales_rep || NONE} onValueChange={(v) => setForm((f) => ({ ...f, sales_rep: v === NONE ? '' : v }))}>
