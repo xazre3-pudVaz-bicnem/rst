@@ -18,9 +18,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { CaseApi, AuditApi } from '@/lib/api'
-import { INDUSTRIES, STATUSES, DEFAULT_STATUS, PRIORITIES, TAG_PRESETS } from '@/lib/constants'
+import { INDUSTRIES, STATUSES, DEFAULT_STATUS } from '@/lib/constants'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
-import { normalizePhone, phoneDigits, normalizeUrl, jpError, cn } from '@/lib/utils'
+import { normalizePhone, phoneDigits, normalizeUrl, jpError } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import type { Case } from '@/lib/types'
@@ -62,9 +62,9 @@ export default function CaseFormModal({
   const { users: assignableUsers, names: assignableNames } = useAssignableUsers()
   const toast = useToast()
   const [form, setForm] = useState({ ...EMPTY })
+  // 優先度・タグは新規登録フォームからは非表示。編集時の既存値は保持して再送する。
   const [priority, setPriority] = useState('')
   const [tags, setTags] = useState<string[]>([])
-  const [tagInput, setTagInput] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -94,17 +94,7 @@ export default function CaseFormModal({
       setPriority('')
       setTags([])
     }
-    setTagInput('')
   }, [editingCase, open, displayName])
-
-  function toggleTag(t: string) {
-    setTags((ts) => (ts.includes(t) ? ts.filter((x) => x !== t) : [...ts, t]))
-  }
-  function addTag() {
-    const t = tagInput.trim()
-    if (t && !tags.includes(t)) setTags((ts) => [...ts, t])
-    setTagInput('')
-  }
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -290,56 +280,6 @@ export default function CaseFormModal({
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>優先度</Label>
-            <Select value={priority || undefined} onValueChange={setPriority}>
-              <SelectTrigger>
-                <SelectValue placeholder="未設定" />
-              </SelectTrigger>
-              <SelectContent>
-                {PRIORITIES.map((p) => (
-                  <SelectItem key={p} value={p}>{p}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2 space-y-1">
-            <Label>タグ</Label>
-            <div className="flex flex-wrap gap-1">
-              {TAG_PRESETS.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => toggleTag(t)}
-                  className={cn(
-                    'rounded-full border px-2 py-0.5 text-2xs',
-                    tags.includes(t) ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground',
-                  )}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-1">
-              <Input
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag() } }}
-                placeholder="自由タグを追加してEnter"
-                className="h-7"
-              />
-              <Button type="button" variant="outline" size="sm" onClick={addTag}>追加</Button>
-            </div>
-            {tags.filter((t) => !TAG_PRESETS.includes(t as never)).length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {tags.filter((t) => !TAG_PRESETS.includes(t as never)).map((t) => (
-                  <button key={t} type="button" onClick={() => toggleTag(t)} className="rounded-full border border-primary bg-primary px-2 py-0.5 text-2xs text-primary-foreground">
-                    {t} ✕
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="space-y-1">
             <Label>HP1</Label>
             <Input value={form.hp1} onChange={(e) => set('hp1', e.target.value)} />
           </div>
@@ -348,20 +288,8 @@ export default function CaseFormModal({
             <Input value={form.hp2} onChange={(e) => set('hp2', e.target.value)} />
           </div>
           <div className="col-span-2 space-y-1">
-            <Label>Instagram</Label>
-            <Input value={form.instagram} onChange={(e) => set('instagram', e.target.value)} />
-          </div>
-          <div className="col-span-2 space-y-1">
             <Label>営業時間</Label>
             <Input value={form.business_hours} onChange={(e) => set('business_hours', e.target.value)} placeholder="例: 11:00〜22:00（不明なら空欄）" />
-          </div>
-          <div className="col-span-2 space-y-1">
-            <Label>情報源URL（改行区切り）</Label>
-            <Textarea
-              value={form.source_urls}
-              onChange={(e) => set('source_urls', e.target.value)}
-              rows={2}
-            />
           </div>
           <div className="col-span-2 space-y-1">
             <Label>メモ</Label>
