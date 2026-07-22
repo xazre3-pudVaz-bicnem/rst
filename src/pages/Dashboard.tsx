@@ -294,7 +294,11 @@ export default function Dashboard() {
       // 詳細検索
       if (criteria) {
         if (criteria.name && !c.name.includes(criteria.name)) return false
-        if (criteria.address && !(c.address ?? '').includes(criteria.address)) return false
+        // 住所はスペース区切りでOR検索（例:「東京 埼玉 千葉」で3都県のいずれかに一致すれば表示）
+        if (criteria.address) {
+          const terms = criteria.address.split(/[\s　]+/).filter(Boolean)
+          if (terms.length && !terms.some((t) => (c.address ?? '').includes(t))) return false
+        }
         const pq = phoneDigits(criteria.phone)
         if (pq && ![c.phone1, c.phone2, c.phone3].map(phoneDigits).some((d) => d.includes(pq))) return false
         if (criteria.industries?.length && !criteria.industries.includes(c.industry ?? '')) return false

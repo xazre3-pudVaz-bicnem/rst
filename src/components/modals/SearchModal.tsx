@@ -84,8 +84,8 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
             <Input value={c.name} onChange={(e) => set('name', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <Label>住所</Label>
-            <Input value={c.address} onChange={(e) => set('address', e.target.value)} />
+            <Label>住所<span className="ml-1 text-2xs font-normal text-muted-foreground">スペース区切りでOR検索（例: 東京 埼玉 千葉）</span></Label>
+            <Input value={c.address} onChange={(e) => set('address', e.target.value)} placeholder="東京 埼玉 千葉 神奈川" />
           </div>
           <div className="space-y-1">
             <Label>電話番号（ハイフン有無問わず）</Label>
