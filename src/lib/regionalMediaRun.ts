@@ -360,9 +360,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     let sq = admin.from('source_sites').select('*').eq('is_active', true).neq('source_type', 'sequential_id_probe')
     if (runMode === 'selected' && selectedSiteIds.length) sq = sq.in('id', selectedSiteIds)
     if (excludeSiteIds.length) sq = sq.not('id', 'in', `(${excludeSiteIds.join(',')})`)  // 全サイト巡回: 既に処理済みを除外して次バッチへ
-    // 優先順位: 信頼度が高い → 最終巡回が古い（最終的に全件を巡回。順番付けのみ）
-    if (runMode === 'priority' || runMode === 'all') sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
-    else sq = sq.order('last_crawled_at', { ascending: true, nullsFirst: true })
+    // 選定順:
+    //  - all（自動巡回）: 「最終巡回が古い順」＝ラウンドロビンで全サイトを確実に一巡させる（信頼度は同着時のタイブレークのみ）。
+    //    以前は reliability DESC 主キーだったため、上位(score≥75)92サイトで毎回の枠(60)を食い潰し、
+    //    号外NET(score70)の270サイトに順番が一度も回らず13日以上未巡回だった。
+    //  - priority（手動の優先実行）: 従来どおり信頼度の高い順。
+    if (runMode === 'priority') sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
+    else sq = sq.order('last_crawled_at', { ascending: true, nullsFirst: true }).order('reliability_score', { ascending: false })
     const { data: sites } = await sq.limit(maxSites)
     const list = sites || []
     const failedSites: { id: string; name: string; reason: string }[] = []
