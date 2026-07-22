@@ -18,12 +18,13 @@ import {
 } from '@/components/ui/select'
 import { INDUSTRIES, STATUSES } from '@/lib/constants'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
+import { cn } from '@/lib/utils'
 
 export interface SearchCriteria {
   name: string
   address: string
   phone: string
-  industry: string
+  industries: string[]   // 複数選択（空＝すべて）
   sales_rep: string
   status: string
   uncalledOnly: boolean
@@ -34,9 +35,19 @@ export interface SearchCriteria {
 }
 
 const EMPTY: SearchCriteria = {
-  name: '', address: '', phone: '', industry: '', sales_rep: '', status: '',
+  name: '', address: '', phone: '', industries: [], sales_rep: '', status: '',
   uncalledOnly: false, overdueRecallOnly: false, hasRecall: 'any',
   lastCallFrom: '', lastCallTo: '',
+}
+
+/** 旧形式（industry:string 単一）で保存されたcriteriaを新形式(industries:string[])へ正規化。 */
+export function normalizeCriteria(c: SearchCriteria | null): SearchCriteria | null {
+  if (!c) return c
+  const anyC = c as unknown as { industry?: string; industries?: string[] }
+  if (!Array.isArray(anyC.industries)) {
+    return { ...c, industries: anyC.industry ? [anyC.industry] : [] }
+  }
+  return c
 }
 
 const ALL = '__all__'
@@ -54,9 +65,11 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
   const [c, setC] = useState<SearchCriteria>({ ...EMPTY })
   const set = (k: keyof SearchCriteria, v: string | boolean) =>
     setC((p) => ({ ...p, [k]: v === ALL ? '' : v }))
+  const toggleIndustry = (i: string) =>
+    setC((p) => ({ ...p, industries: p.industries.includes(i) ? p.industries.filter((x) => x !== i) : [...p.industries, i] }))
 
   useEffect(() => {
-    if (open) setC(initial ?? { ...EMPTY })
+    if (open) setC(normalizeCriteria(initial) ?? { ...EMPTY })
   }, [open, initial])
 
   return (
@@ -79,14 +92,30 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
             <Input value={c.phone} onChange={(e) => set('phone', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <Label>業種</Label>
-            <Select value={c.industry || ALL} onValueChange={(v) => set('industry', v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>すべて</SelectItem>
-                {INDUSTRIES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center justify-between">
+              <Label>業種（複数選択可）{c.industries.length > 0 && <span className="ml-1 text-2xs text-muted-foreground">{c.industries.length}件選択中</span>}</Label>
+              {c.industries.length > 0 && (
+                <button type="button" className="text-2xs text-muted-foreground hover:underline" onClick={() => setC((p) => ({ ...p, industries: [] }))}>クリア</button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {INDUSTRIES.map((i) => {
+                const on = c.industries.includes(i)
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => toggleIndustry(i)}
+                    className={cn(
+                      'rounded-full border px-2 py-0.5 text-2xs',
+                      on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-card text-muted-foreground hover:bg-accent',
+                    )}
+                  >
+                    {i}
+                  </button>
+                )
+              })}
+            </div>
           </div>
           <div className="space-y-1">
             <Label>営業担当</Label>

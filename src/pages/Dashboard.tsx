@@ -11,7 +11,7 @@ import MobileCallPanel from '@/components/dashboard/MobileCallPanel'
 import KpiPaceChips from '@/components/dashboard/KpiPaceChips'
 import AutoSearchRunner from '@/components/dashboard/AutoSearchRunner'
 import CaseFormModal from '@/components/modals/CaseFormModal'
-import SearchModal, { type SearchCriteria } from '@/components/modals/SearchModal'
+import SearchModal, { normalizeCriteria, type SearchCriteria } from '@/components/modals/SearchModal'
 import CallLogFormModal from '@/components/modals/CallLogFormModal'
 import RecallFormModal from '@/components/modals/RecallFormModal'
 import ImportModal from '@/components/modals/ImportModal'
@@ -83,7 +83,8 @@ const LS_SAVED_VIEWS = 'rst_saved_views'
 function loadSavedViews(): SavedView[] {
   try {
     const raw = localStorage.getItem(LS_SAVED_VIEWS)
-    if (raw) return JSON.parse(raw)
+    // 旧形式(criteria.industry:単一)で保存されたビューを新形式(industries:配列)へ正規化
+    if (raw) return (JSON.parse(raw) as SavedView[]).map((v) => ({ ...v, criteria: normalizeCriteria(v.criteria) }))
   } catch (_) { /* noop */ }
   return []
 }
@@ -296,7 +297,7 @@ export default function Dashboard() {
         if (criteria.address && !(c.address ?? '').includes(criteria.address)) return false
         const pq = phoneDigits(criteria.phone)
         if (pq && ![c.phone1, c.phone2, c.phone3].map(phoneDigits).some((d) => d.includes(pq))) return false
-        if (criteria.industry && c.industry !== criteria.industry) return false
+        if (criteria.industries?.length && !criteria.industries.includes(c.industry ?? '')) return false
         if (criteria.sales_rep && c.sales_rep !== criteria.sales_rep) return false
         if (criteria.status && c.status !== criteria.status) return false
         if (criteria.uncalledOnly && !UNCALLED_STATUSES.includes(c.status as never)) return false
