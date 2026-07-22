@@ -11,6 +11,7 @@ import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { Button } from '@/components/ui/button'
 import { SkeletonCards, SkeletonRows } from '@/components/ui/skeleton'
 import { CaseApi, CallLogApi, RecallApi, AppointmentApi } from '@/lib/api'
+import { isCall } from '@/lib/kpi'
 import { useAuth } from '@/context/AuthContext'
 import {
   APPO_STATUSES, UNCALLED_STATUSES, PROSPECT_STATUSES, statusColor,
@@ -87,7 +88,8 @@ export default function SalesDashboard() {
     })
 
     const uncalled = cases.filter((c) => UNCALLED_STATUSES.includes(c.status as never))
-    const todayCalls = callLogs.filter((l) => moment(l.call_at).isBetween(startToday, endToday, undefined, '[]'))
+    // 本日の架電数は実際の架電のみ（ステータス変更ログ・再コール完了・通話メモは除外）。不在・接触は含む
+    const todayCalls = callLogs.filter((l) => isCall(l) && moment(l.call_at).isBetween(startToday, endToday, undefined, '[]'))
     // 本日のアポ数KPIは案件に紐づくアポ（コール由来）のみ。案件なしの予定（社内MTG等）は除外
     const todayAppos = appointments.filter((a) => a.case_id && moment(a.appo_at).isBetween(startToday, endToday, undefined, '[]'))
 

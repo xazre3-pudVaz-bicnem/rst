@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { CaseApi, CallLogApi, AppointmentApi } from '@/lib/api'
+import { isCall } from '@/lib/kpi'
 import { SALES_REPS } from '@/lib/constants'
 import type { Appointment, Case, CallLog } from '@/lib/types'
 
@@ -56,7 +57,8 @@ export default function KpiBar() {
         if (l.sales_rep) return l.sales_rep === rep
         return caseById.get(l.case_id)?.sales_rep === rep
       })
-      const calls = logs.length
+      // 実際の架電のみ（ステータス変更ログ・再コール完了・通話メモは除外）。不在・接触は含む
+      const calls = logs.filter(isCall).length
       const contacts = logs.filter((l) => l.contact_type === '接触').length
       const appos = appointments.filter(
         (a) =>
