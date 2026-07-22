@@ -53,8 +53,7 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
     }))
   }, [cases, callLogs, appointments, visitReports, targets, salesRep, month])
 
-  // 目標が全く設定されていなければ非表示
-  if (rows.every((r) => r.monthly === 0)) return null
+  const noTargets = rows.every((r) => r.monthly === 0)
 
   return (
     <div className="ml-auto flex items-center gap-1.5">
@@ -64,7 +63,11 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
         return (
           <span
             key={r.key}
-            title={`${r.label}: 当月 ${r.actual} / 今日までに必要 ${r.pace}（月間目標 ${r.monthly}）`}
+            title={
+              r.monthly === 0
+                ? `${r.label}: 当月 ${r.actual}（目標未設定 — 営業ダッシュボードの「月次KPI目標」で設定）`
+                : `${r.label}: 当月 ${r.actual} / 今日までに必要 ${r.pace}（月間目標 ${r.monthly}）`
+            }
             className={cn(
               'rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums',
               r.monthly === 0
@@ -74,10 +77,11 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
                   : 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
             )}
           >
-            {r.label} <b>{r.actual}</b>/{r.pace}
+            {r.label} <b>{r.actual}</b>/{r.monthly === 0 ? '—' : r.pace}
           </span>
         )
       })}
+      {noTargets && <span className="text-[9px] text-muted-foreground">目標は営業ダッシュボードで設定</span>}
     </div>
   )
 }

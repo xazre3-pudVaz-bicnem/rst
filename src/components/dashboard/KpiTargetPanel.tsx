@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import moment from 'moment'
 import { Target, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { useToast } from '@/components/ui/toast'
+import { jpError } from '@/lib/utils'
 import { VisitReportApi, KpiTargetApi } from '@/lib/api'
 import {
   KPI_METRICS, monthKey, dailyTarget, paceTarget, findTarget, kpiActuals,
@@ -22,6 +24,7 @@ const OVERALL = '' // 全体行の sales_rep
 
 /** 月次KPI目標（コール/アポ/行動/契約）の設定＋当月ペース表示。全体と営業マン毎。 */
 export default function KpiTargetPanel({ cases, callLogs, appointments, assignableNames, canWrite = true }: Props) {
+  const toast = useToast()
   const [month, setMonth] = useState(() => monthKey())
   const [metric, setMetric] = useState<KpiMetricKey>('call')
   const [targets, setTargets] = useState<KpiTarget[]>([])
@@ -75,7 +78,10 @@ export default function KpiTargetPanel({ cases, callLogs, appointments, assignab
         [targetKey]: value,
       })
       await loadTargets()
-    } catch { /* 失敗時は次回反映 */ }
+      toast.success(`${rep === OVERALL ? '全体' : rep} の${metricDef.label}目標を保存しました`)
+    } catch (e) {
+      toast.error('KPI目標の保存に失敗しました: ' + jpError(e))
+    }
   }
 
   const months = Array.from({ length: 12 }, (_, i) => i + 1)
