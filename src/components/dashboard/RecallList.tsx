@@ -120,6 +120,7 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
       <div className="flex items-center justify-between border-b bg-card p-2">
         <span className="text-sm font-bold">
           再コール予定 {total > 0 && <span className="text-muted-foreground">({total})</span>}
+          <span className="ml-1 text-[9px] font-normal text-muted-foreground">全員共有</span>
         </span>
         <Button size="sm" onClick={onAdd} disabled={!canWrite}>
           <Plus className="h-3.5 w-3.5" />登録
@@ -176,6 +177,9 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
                           </span>
                           {c && <span className={cn('shrink-0 rounded-sm px-1 text-[9px]', statusColor(c.status))}>{c.status}</span>}
                           <span className="truncate text-xs font-medium">{r.case_name}</span>
+                          {c?.sales_rep && (
+                            <span className="shrink-0 rounded-sm bg-muted px-1 text-[9px] text-muted-foreground">{c.sales_rep}</span>
+                          )}
                           {c?.phone1 && (
                             <a
                               href={`tel:${c.phone1}`}
