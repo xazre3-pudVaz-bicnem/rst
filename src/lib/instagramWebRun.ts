@@ -676,7 +676,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0, gateBlocked: 0, oldPostHold: 0, followerUnknownHold: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
-    openingDateCount: 0, futureOpeningCount: 0, nameLooseRescue: 0,
+    openingDateCount: 0, futureOpeningCount: 0, nameLooseRescue: 0, followerUnknownProceed: 0,
   }
   const debug: any = { mode: 'nationwide', provider: searchProvider(), useAnthropic, queries: [] as string[], queryResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
@@ -1046,14 +1046,12 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
               }
             }
           }
-          if (followersKnown == null) {
-            // フォロワー数が確認できない（ログイン壁/ハンドル不明）候補は投入しない＝1000人以上のすり抜けを根絶
-            await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', candidateId)
-            counts.followerUnknownHold = (counts.followerUnknownHold || 0) + 1
-            counts.hot = Math.max(0, counts.hot - 1); counts.hold++
-            if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
-            continue
-          }
+          // フォロワー数が確認できない（ログイン壁/ハンドル不明）場合でも一律HOLDにはしない。
+          // Instagramはログイン壁が常態でフォロワーを読めないことが多く、以前は「未確認=HOLD」で
+          // HOT候補の大半（実測160件/12日）を握りつぶしていた。確立店の捕捉は下流の投入ゲート
+          // （Google口コミ30件/最古30日超＝既存店・チェーン・大手・多店舗）に委ねて投入まで進める。
+          // bio に大手/多店舗語があるケースは上のブロックで既にEXCLUDED済み。
+          if (followersKnown == null) counts.followerUnknownProceed = (counts.followerUnknownProceed || 0) + 1
           if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
             await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)
             counts.followerExcluded = (counts.followerExcluded || 0) + 1
