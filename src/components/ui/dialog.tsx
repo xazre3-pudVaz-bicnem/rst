@@ -14,6 +14,7 @@ const DialogOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
+    data-dialog-overlay="true"
     className={cn('fixed inset-0 z-50 bg-black/50', className)}
     {...props}
   />
@@ -28,12 +29,14 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
-      // モーダルは「×」「キャンセル」「保存」「ESC」など明示操作でのみ閉じる。
-      // 外側クリック/フォーカス移動では閉じない（開いているSelectを閉じた際の
-      // 誤検知でモーダルごと閉じる不具合を根本的に防ぐ）。ESCは既定どおり有効。
-      onPointerDownOutside={(e) => e.preventDefault()}
-      onInteractOutside={(e) => e.preventDefault()}
-      onFocusOutside={(e) => e.preventDefault()}
+      // 背景オーバーレイの直接クリックは「キャンセル」と同じ扱いで閉じる。
+      // 一方、Select等のポータルを閉じた際のクリックやフォーカス移動では閉じない
+      // （開いているSelectを閉じただけでモーダルごと閉じる誤検知を防ぐ）。ESCは既定どおり有効。
+      onInteractOutside={(e) => {
+        const target = ((e as any).detail?.originalEvent?.target ?? null) as HTMLElement | null
+        // 背景オーバーレイ上のクリックのみ閉じる。それ以外（Selectのポータル/フォーカス移動等）は閉じない。
+        if (!(target && target.closest('[data-dialog-overlay="true"]'))) e.preventDefault()
+      }}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 border bg-background p-4 shadow-lg rounded-lg max-h-[92vh] overflow-y-auto',
         className,
