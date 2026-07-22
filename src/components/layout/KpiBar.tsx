@@ -7,9 +7,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { CaseApi, CallLogApi, AppointmentApi } from '@/lib/api'
+import { CaseApi, CallLogApi, AppointmentApi, ProfileApi } from '@/lib/api'
 import { isCall } from '@/lib/kpi'
-import { SALES_REPS } from '@/lib/constants'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import type { Appointment, Case, CallLog } from '@/lib/types'
 
 type Period = 'month' | 'day'
@@ -27,15 +27,18 @@ export default function KpiBar() {
   const [cases, setCases] = useState<Case[]>([])
   const [callLogs, setCallLogs] = useState<CallLog[]>([])
   const [appointments, setAppointments] = useState<Appointment[]>([])
+  const [profileById, setProfileById] = useState<Map<string, string>>(new Map())
   const [loaded, setLoaded] = useState(false)
+  const { names: assignableNames } = useAssignableUsers()
 
   useEffect(() => {
     if (!open || loaded) return
-    Promise.all([CaseApi.list(1000), CallLogApi.list(2000), AppointmentApi.list(1000)])
-      .then(([c, l, a]) => {
+    Promise.all([CaseApi.list(1000), CallLogApi.list(2000), AppointmentApi.list(1000), ProfileApi.list()])
+      .then(([c, l, a, ps]) => {
         setCases(c)
         setCallLogs(l)
         setAppointments(a)
+        setProfileById(new Map(ps.map((p) => [p.id, p.full_name || ''])))
         setLoaded(true)
       })
       .catch((e) => console.error('[KPI]', e))
@@ -50,12 +53,12 @@ export default function KpiBar() {
 
     const caseById = new Map(cases.map((c) => [c.id, c]))
 
-    return SALES_REPS.map((rep) => {
-      // ログの sales_rep、無ければ案件の担当で判定
+    return assignableNames.map((rep) => {
+      // コールは「叩いた本人(記録者=created_by_id)」に帰属。未割当案件への架電も本人に計上。
       const logs = callLogs.filter((l) => {
         if (!moment(l.call_at).isBetween(start, end, undefined, '[]')) return false
-        if (l.sales_rep) return l.sales_rep === rep
-        return caseById.get(l.case_id)?.sales_rep === rep
+        const caller = (l.created_by_id && profileById.get(l.created_by_id)) || l.sales_rep || caseById.get(l.case_id)?.sales_rep || ''
+        return caller === rep
       })
       // 実際の架電のみ（ステータス変更ログ・再コール完了・通話メモは除外）。不在・接触は含む
       const calls = logs.filter(isCall).length
@@ -69,7 +72,7 @@ export default function KpiBar() {
 
       return { rep, calls, contacts, appos }
     })
-  }, [cases, callLogs, appointments, period])
+  }, [cases, callLogs, appointments, profileById, assignableNames, period])
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>

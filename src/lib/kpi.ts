@@ -91,6 +91,8 @@ interface KpiSource {
   appointments: Appointment[]
   visitReports: VisitReport[]
   caseById: Map<string, Case>
+  /** profile.id → 表示名(full_name)。コールを「叩いた本人(created_by_id)」に帰属するために使う。 */
+  profileById?: Map<string, string>
 }
 
 /**
@@ -107,9 +109,11 @@ export function kpiActuals(month: string, salesRep: string, src: KpiSource, toda
     return m.isSameOrAfter(first) && m.isSameOrBefore(end)
   }
   const caseRepOf = (caseId?: string | null) => (caseId ? src.caseById.get(caseId)?.sales_rep ?? '' : '')
+  // コールは「叩いた本人(記録者=created_by_id)」に帰属。未割当案件への架電も本人の実績に乗せる。
+  const callerOf = (l: CallLog) => (l.created_by_id && src.profileById?.get(l.created_by_id)) || l.sales_rep || caseRepOf(l.case_id)
   const match = (rep: string) => !salesRep || rep === salesRep
 
-  const call = src.callLogs.filter((l) => isCall(l) && inRange(l.call_at) && match(l.sales_rep || caseRepOf(l.case_id))).length
+  const call = src.callLogs.filter((l) => isCall(l) && inRange(l.call_at) && match(callerOf(l))).length
   const appo = src.appointments.filter((a) => a.case_id && inRange(a.appo_at) && match(a.sales_rep || caseRepOf(a.case_id))).length
   const visits = src.visitReports.filter((v) => inRange(v.visited_at) && match(caseRepOf(v.case_id)))
   const action = visits.length

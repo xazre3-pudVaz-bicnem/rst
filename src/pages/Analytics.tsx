@@ -100,9 +100,11 @@ export default function Analytics() {
   const profileName = useMemo(() => new Map(profiles.map((p) => [p.id, p.full_name || ''])), [profiles])
   const calls = useMemo(() => callLogs.filter(isCall), [callLogs])
 
+  // コールは「叩いた本人（記録者=created_by_id）」に帰属。未割当案件への架電も本人の実績に乗せる。
+  // 記録者が取れない古いログのみ sales_rep→案件担当 にフォールバック。
   const callRep = useCallback(
-    (l: CallLog) => l.sales_rep || caseById.get(l.case_id)?.sales_rep || '未割当',
-    [caseById],
+    (l: CallLog) => profileName.get(l.created_by_id ?? '') || l.sales_rep || caseById.get(l.case_id)?.sales_rep || '未割当',
+    [caseById, profileName],
   )
   const caseCreator = useCallback(
     (c: Case) => profileName.get(c.created_by_id ?? '') || c.sales_rep || '未割当',

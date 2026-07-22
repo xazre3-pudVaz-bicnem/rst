@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import moment from 'moment'
-import { AppointmentApi, VisitReportApi, KpiTargetApi } from '@/lib/api'
+import { AppointmentApi, VisitReportApi, KpiTargetApi, ProfileApi } from '@/lib/api'
 import {
   KPI_METRICS, monthKey, kpiActuals, paceTarget, findTarget, targetCounts,
 } from '@/lib/kpi'
@@ -22,19 +22,22 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [visitReports, setVisitReports] = useState<VisitReport[]>([])
   const [targets, setTargets] = useState<KpiTarget[]>([])
+  const [profileById, setProfileById] = useState<Map<string, string>>(new Map())
   const month = monthKey()
 
   useEffect(() => {
     let alive = true
     ;(async () => {
       try {
-        const [a, v, t] = await Promise.all([
+        const [a, v, t, ps] = await Promise.all([
           AppointmentApi.list(1000),
           VisitReportApi.listAll(),
           KpiTargetApi.listByMonth(month),
+          ProfileApi.list(),
         ])
         if (!alive) return
         setAppointments(a); setVisitReports(v); setTargets(t)
+        setProfileById(new Map(ps.map((p) => [p.id, p.full_name || ''])))
       } catch { /* バーの補助表示なので失敗しても黙って空 */ }
     })()
     return () => { alive = false }
@@ -42,7 +45,7 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
 
   const rows = useMemo(() => {
     const caseById = new Map(cases.map((c) => [c.id, c]))
-    const actual = kpiActuals(month, salesRep, { callLogs, appointments, visitReports, caseById }, moment())
+    const actual = kpiActuals(month, salesRep, { callLogs, appointments, visitReports, caseById, profileById }, moment())
     const target = targetCounts(findTarget(targets, salesRep))
     return KPI_METRICS.map((m) => ({
       key: m.key,
@@ -51,7 +54,7 @@ export default function KpiPaceChips({ callLogs, cases, salesRep }: Props) {
       pace: paceTarget(target[m.key], month),
       monthly: target[m.key],
     }))
-  }, [cases, callLogs, appointments, visitReports, targets, salesRep, month])
+  }, [cases, callLogs, appointments, visitReports, targets, profileById, salesRep, month])
 
   const noTargets = rows.every((r) => r.monthly === 0)
 

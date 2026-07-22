@@ -4,7 +4,7 @@ import { Target, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
 import { jpError } from '@/lib/utils'
-import { VisitReportApi, KpiTargetApi } from '@/lib/api'
+import { VisitReportApi, KpiTargetApi, ProfileApi } from '@/lib/api'
 import {
   KPI_METRICS, monthKey, dailyTarget, paceTarget, findTarget, kpiActuals,
   type KpiMetricKey,
@@ -29,6 +29,7 @@ export default function KpiTargetPanel({ cases, callLogs, appointments, assignab
   const [metric, setMetric] = useState<KpiMetricKey>('call')
   const [targets, setTargets] = useState<KpiTarget[]>([])
   const [visitReports, setVisitReports] = useState<VisitReport[]>([])
+  const [profileById, setProfileById] = useState<Map<string, string>>(new Map())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   const year = Number(month.slice(0, 4))
@@ -43,6 +44,7 @@ export default function KpiTargetPanel({ cases, callLogs, appointments, assignab
   useEffect(() => {
     let alive = true
     VisitReportApi.listAll().then((v) => { if (alive) setVisitReports(v) }).catch(() => { /* noop */ })
+    ProfileApi.list().then((ps) => { if (alive) setProfileById(new Map(ps.map((p) => [p.id, p.full_name || '']))) }).catch(() => { /* noop */ })
     return () => { alive = false }
   }, [])
 
@@ -58,11 +60,11 @@ export default function KpiTargetPanel({ cases, callLogs, appointments, assignab
 
   const caseById = useMemo(() => new Map(cases.map((c) => [c.id, c])), [cases])
   const actualsByRep = useMemo(() => {
-    const src = { callLogs, appointments, visitReports, caseById }
+    const src = { callLogs, appointments, visitReports, caseById, profileById }
     const map: Record<string, ReturnType<typeof kpiActuals>> = {}
     for (const rep of [OVERALL, ...assignableNames]) map[rep] = kpiActuals(month, rep, src, moment())
     return map
-  }, [callLogs, appointments, visitReports, caseById, assignableNames, month])
+  }, [callLogs, appointments, visitReports, caseById, profileById, assignableNames, month])
 
   async function commit(rep: string) {
     if (!canWrite) return
