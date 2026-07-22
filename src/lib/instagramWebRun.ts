@@ -676,7 +676,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
     hot: 0, hotA: 0, hotB: 0, hold: 0, excluded: 0, imported: 0, saved: 0, saveError: 0, error: 0, fallback: 0, dup: 0, serperError: 0, bingError: 0, followerExcluded: 0, gateBlocked: 0, oldPostHold: 0, followerUnknownHold: 0,
     areaKnown: 0, areaUnknown: 0, industryKnown: 0, industryUnknown: 0,
     enrichTried: 0, enrichSucceeded: 0, enrichPhone: 0, enrichAddress: 0, enrichQueries: 0,
-    openingDateCount: 0, futureOpeningCount: 0,
+    openingDateCount: 0, futureOpeningCount: 0, nameLooseRescue: 0,
   }
   const debug: any = { mode: 'nationwide', provider: searchProvider(), useAnthropic, queries: [] as string[], queryResults: [] as any[], sample: null, saveErrors: [] as string[] }
   let errorMessage = ''
@@ -912,6 +912,16 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
         // 投稿日ゲート: 検索はqdr:mで直近1ヶ月に限定済みだが、日付が読めて35日超の投稿はHOTにしない（古いオープン投稿の再拾い防止）
         const postAge = postDaysAgo(r)
         if (temperature === 'HOT' && postAge != null && postAge > 35) { temperature = 'HOLD'; hotTier = null; counts.oldPostHold = (counts.oldPostHold || 0) + 1 }
+        // ゲート緩和（要望）: 電話＋住所＋新店根拠＋国内が揃い scoreCandidate が HOT 相当なら、
+        // 店名未確定でも・投稿がやや古め(〜90日)でも HOT-B として拾う（名前は架電時に確定）。
+        // sc.tier=HOT は既に「有効電話＋十分な素点」を満たす。大手/多店舗/高フォロワー/海外/チェーン疑いは
+        // この時点で既にEXCLUDED/HOLD側に落ちているため対象にならない。
+        if (temperature === 'HOLD' && (sc.tier === 'HOT_A' || sc.tier === 'HOT_B') && igNew
+            && !foreignFinal && !bigIW.exclude && !bigEstablishedIW
+            && !(postAge != null && postAge > 90)) {
+          temperature = 'HOT'; hotTier = 'B'
+          counts.nameLooseRescue++
+        }
         if (temperature === 'HOT') { counts.hot++; q.hot++; if (hotTier === 'A') counts.hotA = (counts.hotA || 0) + 1; else counts.hotB = (counts.hotB || 0) + 1 }
         else if (temperature === 'EXCLUDED') { counts.excluded++; q.excluded++ }
         else { counts.hold++; q.hold++ }
@@ -962,6 +972,7 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
           hot_check_result: hotReject.hot_check_result, hot_missing_requirements: hotReject.hot_missing_requirements,
           hot_blocking_reason: hotReject.hot_blocking_reason, hot_required_score: hotReject.hot_required_score,
           lead_temperature: temperature, hot_tier: hotTier, recommended_status: sc.tier,
+          name_unconfirmed_hot: temperature === 'HOT' && (name === '店名未確定' || name.startsWith('@')),
           is_new_instagram: true, is_new_gbp: placeMatched,
           should_exclude_from_call_list: temperature === 'EXCLUDED',
           owner_reachability_score: finalPhone ? 65 : 30,
