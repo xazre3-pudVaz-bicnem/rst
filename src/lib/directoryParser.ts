@@ -35,6 +35,12 @@ export const DIRECTORY_CONFIGS: Record<string, DirectoryConfig> = {
     // h1（実店名）→ 一覧のリンクテキスト の順で採用する。
     nameOrder: ['h1', 'fallback'],
   },
+  // いばナビ（茨城の地域情報サイト）。詳細は /shop/{id}（正準形のみ。/coupon /review は除外）。
+  // h2/h1 はキャッチコピー（「〜がOPEN！」）なので、店名は <title>「店名[市/ジャンル]｜…いばナビ」から取る。
+  ibanavi: {
+    detailPattern: /\/shop\/\d+$/i,
+    nameOrder: ['title', 'h1', 'fallback'],
+  },
 }
 // 既定（未知のディレクトリでも /shop/ 配下の詳細っぽいURLを拾う）
 // 一覧/絞込/クーポン等の「店舗詳細ではないURL」を除く。これが無いと:
@@ -343,7 +349,8 @@ export function extractDirectoryShopInfo(html: string, fallbackTitle = '', media
       s = (nonCrumb.length ? nonCrumb[nonCrumb.length - 1] : parts[parts.length - 1]) || s
     }
     if (isCrumb(s)) s = s.replace(/^[^\s]{1,12}[都道府県市区町村][^\s]{0,10}の[^\s]{1,16}?(スポット|グルメ|カフェ|公共施設|施設|美容室|サロン|お店|ニュース|エンタメ|ショップ|教室|サービス)\s*/, '').trim()
-    return s.replace(/（[^）]*）\s*$/, '').trim().slice(0, 50)
+    // 末尾の「[地域/ジャンル]」「【…】」「（…）」カテゴリタグを除去（例: そば処 大吉[古河市/和食] → そば処 大吉）
+    return s.replace(/[[【（][^\]】）]*[\]】）]\s*$/, '').replace(/（[^）]*）\s*$/, '').trim().slice(0, 50)
   }
   // 既定は h2（実店名のことが多い）→ og:title整形 → h1整形 → title → 一覧タイトル。
   // サイト設定 nameOrder があればそれに従う（h2がタブ見出し等のサイト向け）。
