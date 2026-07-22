@@ -10,6 +10,8 @@ import { DEFAULT_STATUS } from './constants.js'
 import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPresets.js'
 import { buildLeadQueries } from './leadQueries.js'
 import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
+import { detectChain } from './chainFilter.js'
+import { looksLikeBranchStore, detectBigOrPublicStrong } from './targetFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { getHotCities } from './hotspots.js'
@@ -554,7 +556,10 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         if (existing && !fullyEvaluated) counts.reEvaluated++  // openingDate/Details/ロジック未評価 → 再評価対象
 
         // 明確な除外（Detailsを取らずEXCLUDED保存＝APIコスト削減・記録は残す）
+        // ローカルの CHAIN_HINT/BRANCH_HINT は語彙が狭く「カインズ」等の大手や「〇〇店」支店を取りこぼす。
+        // 共有の堅牢な検出器を併用し、HP公開日昇格ゲート(下流)でチェーン/支店/大手が素通りするのを防ぐ。
         const chainish = CHAIN_HINT.test(name) || MALL_HINT.test(hay) || BRANCH_HINT.test(name)
+          || detectChain(name).definite || looksLikeBranchStore(name) || detectBigOrPublicStrong(name).exclude
         const orgLike = isOrgNonStore(name)
         const closedPermLight = businessStatusLight === 'CLOSED_PERMANENTLY'
         // 口コミ多数(>warmMax)かつ FUTURE_OPENING でない＝既存店。openingDateはlightで分からないため詳細は取らずEXCLUDED保存
