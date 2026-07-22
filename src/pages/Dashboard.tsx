@@ -8,6 +8,7 @@ import CaseDetail from '@/components/dashboard/CaseDetail'
 import CallLogPanel from '@/components/dashboard/CallLogPanel'
 import RecallList from '@/components/dashboard/RecallList'
 import MobileCallPanel from '@/components/dashboard/MobileCallPanel'
+import KpiPaceChips from '@/components/dashboard/KpiPaceChips'
 import AutoSearchRunner from '@/components/dashboard/AutoSearchRunner'
 import CaseFormModal from '@/components/modals/CaseFormModal'
 import SearchModal, { type SearchCriteria } from '@/components/modals/SearchModal'
@@ -663,6 +664,8 @@ export default function Dashboard() {
             <span className="text-[9px] text-muted-foreground">スマホでQR読取</span>
           </div>
         )}
+        {/* 右側: 当月KPIペース（自分の担当分。目標未設定なら非表示） */}
+        <KpiPaceChips callLogs={callLogs} cases={cases} salesRep={displayName || ''} />
       </div>
 
       {showLoading ? (

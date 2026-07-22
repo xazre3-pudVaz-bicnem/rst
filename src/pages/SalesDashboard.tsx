@@ -6,6 +6,8 @@ import {
 } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import TemplatesModal from '@/components/modals/TemplatesModal'
+import KpiTargetPanel from '@/components/dashboard/KpiTargetPanel'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { Button } from '@/components/ui/button'
 import { SkeletonCards, SkeletonRows } from '@/components/ui/skeleton'
 import { CaseApi, CallLogApi, RecallApi, AppointmentApi } from '@/lib/api'
@@ -20,6 +22,7 @@ import type { Appointment, Case, CallLog, Recall } from '@/lib/types'
 export default function SalesDashboard() {
   const navigate = useNavigate()
   const { displayName } = useAuth()
+  const { names: assignableNames } = useAssignableUsers()
   const [cases, setCases] = useState<Case[]>([])
   const [callLogs, setCallLogs] = useState<CallLog[]>([])
   const [recalls, setRecalls] = useState<Recall[]>([])
@@ -224,6 +227,14 @@ export default function SalesDashboard() {
                 {data.todayCalls.length >= goal ? ' 🎉 目標達成！' : ` あと ${goal - data.todayCalls.length} 件`}
               </div>
             </div>
+
+            {/* 月次KPI目標（コール/アポ/行動/契約・全体と営業マン毎） */}
+            <KpiTargetPanel
+              cases={cases}
+              callLogs={callLogs}
+              appointments={appointments}
+              assignableNames={assignableNames}
+            />
 
             {/* KPIカード */}
             <div className="grid grid-cols-2 gap-2 md:grid-cols-5">

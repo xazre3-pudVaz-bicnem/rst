@@ -87,6 +87,18 @@ export interface VisitReport {
   updated_date?: string
 }
 
+// 月次KPI目標。sales_rep='' = 全体、氏名 = 営業マン毎
+export interface KpiTarget {
+  id?: string
+  month: string            // 'YYYY-MM'
+  sales_rep: string        // '' = 全体
+  call_target: number      // コール（架電）
+  appo_target: number      // アポ
+  action_target: number    // 行動（訪問実施）
+  contract_target: number  // 契約（成約）
+  updated_date?: string
+}
+
 // ===== AIテレアポ MVP =====
 export type AiCallStatus = '未架電' | '発信中' | '通話完了' | '不在' | '担当者不在' | '興味あり' | '興味なし' | '再架電' | 'NG'
 

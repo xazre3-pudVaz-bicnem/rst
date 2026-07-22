@@ -10,6 +10,7 @@ import type {
   Profile,
   Recall,
   VisitReport,
+  KpiTarget,
   SignupRequest,
   Template,
   Employee,
@@ -426,6 +427,21 @@ export const VisitReportApi = {
   },
   async remove(id: string): Promise<void> {
     const { error } = await supabase.from('visit_reports').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+export const KpiTargetApi = {
+  /** 指定月の全行（全体＝sales_rep='' と 各営業マン）を取得。 */
+  async listByMonth(month: string): Promise<KpiTarget[]> {
+    const { data, error } = await supabase.from('kpi_targets').select('*').eq('month', month)
+    if (error) { if (isMissingTable(error)) return []; throw new Error(error.message) }
+    return (data ?? []) as KpiTarget[]
+  },
+  /** 月×担当の目標を upsert（無ければ作成、あれば更新）。sales_rep='' は全体。 */
+  async upsert(row: Partial<KpiTarget> & { month: string; sales_rep: string }): Promise<void> {
+    const payload = { ...row, updated_date: new Date().toISOString() }
+    const { error } = await supabase.from('kpi_targets').upsert(payload, { onConflict: 'month,sales_rep' })
     if (error) throw new Error(error.message)
   },
 }
