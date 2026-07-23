@@ -92,19 +92,8 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
   async function complete(r: Recall) {
     try {
       await RecallApi.update(r.id, { done: true })
-      // call_logs にも履歴を残す
-      const c = caseById.get(r.case_id)
-      await CallLogApi.create({
-        case_id: r.case_id,
-        case_name: r.case_name,
-        call_at: new Date().toISOString(),
-        contact_type: '非接触',
-        result: '再コール予定 完了',
-        memo: r.memo ?? null,
-        summary: '再コール完了',
-        sales_rep: c?.sales_rep ?? null,
-        created_by_id: user?.id ?? null,
-      })
+      // ※以前はここで「再コール完了」のコール履歴を作っていたが、実際の架電ではなく
+      //   コール履歴が埋まるだけなので作らない（完了は recalls.done と監査ログに残る）。
       AuditApi.log({ action: 'recall_done', entity: 'recall', entity_id: r.id, entity_name: r.case_name, actor_id: user?.id ?? null, actor_name: displayName })
       toast.success('再コールを完了にしました')
       onChanged()

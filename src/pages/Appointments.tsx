@@ -217,13 +217,14 @@ export default function Appointments() {
 
       {/* タイムライングリッド */}
       <div className="flex-1 overflow-auto">
-        <table className="border-collapse text-2xs">
+        {/* table-fixed + w-full で画面幅いっぱいに広げ、時間列を均等割りにする（バーの2時間幅を正確にするためにも均等が必要） */}
+        <table className="w-full table-fixed border-collapse text-2xs">
           {/* 縦軸=営業担当 / 横軸=時間 */}
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
-              <th className="sticky left-0 z-20 w-28 min-w-28 border bg-muted/50 p-1">担当</th>
+              <th className="sticky left-0 z-20 w-24 border bg-muted/50 p-1">担当</th>
               {HOURS.map((h) => (
-                <th key={h} className="w-28 min-w-28 border bg-muted/50 p-1 font-medium text-muted-foreground">
+                <th key={h} className="border bg-muted/50 p-1 font-medium text-muted-foreground">
                   {h}:00
                 </th>
               ))}
@@ -232,7 +233,7 @@ export default function Appointments() {
           <tbody>
             {reps.map((r) => (
               <tr key={r || '__none__'}>
-                <td className="sticky left-0 z-10 w-28 min-w-28 border bg-muted/30 p-1 text-center font-medium">
+                <td className="sticky left-0 z-10 w-24 border bg-muted/30 p-1 text-center font-medium">
                   {r || '担当未設定'}
                 </td>
                 {HOURS.map((h) => {
@@ -246,7 +247,7 @@ export default function Appointments() {
                   return (
                     <td
                       key={h}
-                      className="relative h-14 w-28 min-w-28 cursor-pointer border align-top hover:bg-accent/40"
+                      className="relative h-14 cursor-pointer border align-top hover:bg-accent/40"
                       onClick={() => openNew(r, h)}
                     >
                       {cellAppos.map((a) => {
@@ -255,9 +256,10 @@ export default function Appointments() {
                         return (
                           <div
                             key={a.id}
-                            // 訪問は所要2時間として、開始セルから隣の列まで横に伸ばす（列は1時間刻みのまま）
-                            style={{ width: `calc(${VISIT_SPAN_HOURS * 100}% - 4px)` }}
-                            className="relative z-10 m-0.5 rounded-sm border border-primary/30 bg-primary/15 p-0.5"
+                            // 訪問は所要2時間。列は1時間刻みのまま、バーだけ「ちょうど2列分」に伸ばす。
+                            // border-collapse では隣接セルが境界線1pxを共有するため +1px して端をぴったり合わせる。
+                            style={{ width: `calc(${VISIT_SPAN_HOURS * 100}% + 1px)` }}
+                            className="relative z-10 my-0.5 rounded-sm border border-primary/30 bg-primary/15 p-0.5"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <DropdownMenu>

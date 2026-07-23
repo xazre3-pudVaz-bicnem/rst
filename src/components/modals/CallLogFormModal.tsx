@@ -154,14 +154,18 @@ export default function CallLogFormModal({
         }
         if (editingLog) await CallLogApi.update(editingLog.id, logPayload)
         else await CallLogApi.create(logPayload)
+        // 解放＝案件を手放す操作なので、残っている再コール予定も消す（この案件を追わなくなるため）。
+        // ※新たに再コール日時を入力した場合は、消したうえで作り直す（下のcreate）。
+        await RecallApi.doneByCase(selectedCase.id)
         if (recallAt) await RecallApi.create({ case_id: selectedCase.id, case_name: selectedCase.name, target_at: moment(roundTo15(recallAt)).toISOString(), created_by_id: user?.id ?? null })
         // ステータスは反映しつつ担当者だけ解除
         await CaseApi.update(selectedCase.id, { ...(statusChanged ? { status: effectiveStatus } : {}), sales_rep: null })
-        toast.success('コール履歴を保存し、案件を解放しました（担当者を解除・履歴は保持）')
+        toast.success('コール履歴を保存し、案件を解放しました（担当者を解除・再コール予定も削除）')
       } else {
-        // 入力が無ければ担当者の割当解除のみ（既存の履歴・ステータスは変更しない）
+        // 入力が無くても解放時は再コール予定を残さない
+        await RecallApi.doneByCase(selectedCase.id)
         await CaseApi.update(selectedCase.id, { sales_rep: null })
-        toast.success('案件を解放しました（担当者を解除。コール履歴・ステータスは保持）')
+        toast.success('案件を解放しました（担当者を解除・再コール予定も削除。コール履歴は保持）')
       }
       onSaved()
       onClose()

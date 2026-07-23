@@ -394,6 +394,11 @@ export const RecallApi = {
     const { error } = await supabase.from('recalls').delete().eq('id', id)
     if (error) throw new Error(error.message)
   },
+  /** 指定案件の未完了の再コール予定をまとめて完了にする（案件を解放したら予定も残さない）。 */
+  async doneByCase(caseId: string): Promise<void> {
+    const { error } = await supabase.from('recalls').update({ done: true }).eq('case_id', caseId).eq('done', false)
+    if (error) throw new Error(error.message)
+  },
 }
 
 export const VisitReportApi = {
