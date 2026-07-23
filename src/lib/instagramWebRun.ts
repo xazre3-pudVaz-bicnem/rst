@@ -1046,12 +1046,16 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
               }
             }
           }
-          // フォロワー数が確認できない（ログイン壁/ハンドル不明）場合でも一律HOLDにはしない。
-          // Instagramはログイン壁が常態でフォロワーを読めないことが多く、以前は「未確認=HOLD」で
-          // HOT候補の大半（実測160件/12日）を握りつぶしていた。確立店の捕捉は下流の投入ゲート
-          // （Google口コミ30件/最古30日超＝既存店・チェーン・大手・多店舗）に委ねて投入まで進める。
-          // bio に大手/多店舗語があるケースは上のブロックで既にEXCLUDED済み。
-          if (followersKnown == null) counts.followerUnknownProceed = (counts.followerUnknownProceed || 0) + 1
+          // フォロワー数が確認できない（ログイン壁/ハンドル不明）候補は投入しない。
+          // ※一度「未確認でも投入ゲートに委ねる」に緩めたが、フォロワー2848人・bioに【グループ店舗】を
+          //   持つ確立店が投入される実害が出たため差し戻した。IGの確立度はGoogle口コミでは捕捉できない。
+          if (followersKnown == null) {
+            await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', candidateId)
+            counts.followerUnknownHold = (counts.followerUnknownHold || 0) + 1
+            counts.hot = Math.max(0, counts.hot - 1); counts.hold++
+            if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
+            continue
+          }
           if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
             await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)
             counts.followerExcluded = (counts.followerExcluded || 0) + 1

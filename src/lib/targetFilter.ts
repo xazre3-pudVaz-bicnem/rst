@@ -35,10 +35,25 @@ const BIG_OR_PUBLIC_RE = new RegExp(
 // 「跡地に」等で誤爆する）。
 const CLOSURE_NEWS_RE = /(休業|閉店|閉業|廃業|営業終了|営業を終了|閉館|閉院|撤退|中止|終了しました|していました)/
 
-/** 「◯◯が休業していました」等の閉店/休業ニュース見出しか（＝新店ではない）。店名/タイトル専用。 */
-export function detectClosureNews(nameOrTitle?: string | null): { exclude: boolean; hit: string; reason: string } {
+// 記事タイトル/本文向けの厳しめ語（「していました」「中止」等の緩い語は使わない）
+const CLOSURE_TEXT_RE = /(閉店|休業|閉業|廃業|営業終了|営業を終了|閉院|閉館|営業を終了|閉店しま|閉店いた)/
+// 新店記事なら必ず出る開店語（閉店語と併記なら「◯◯閉店、跡地に△△オープン」型＝新店側が対象なので除外しない）
+const OPENING_WORD_RE = /(オープン|開店|開業|開院|新装開店|グランドオープン|リニューアルオープン)/
+
+/**
+ * 閉店/休業ニュースか（＝新規オープンではない）。
+ * mode='name': 店名がそのまま見出しのケース（「◯◯が休業していました」）。
+ * mode='text': 記事タイトル/本文。開店語が併記されていれば新店記事の可能性があるので除外しない。
+ */
+export function detectClosureNews(nameOrTitle?: string | null, mode: 'name' | 'text' = 'name'): { exclude: boolean; hit: string; reason: string } {
   const s = String(nameOrTitle || '').trim()
   if (!s || s === '店名未確定') return { exclude: false, hit: '', reason: '' }
+  if (mode === 'text') {
+    if (OPENING_WORD_RE.test(s)) return { exclude: false, hit: '', reason: '' }
+    const m = s.match(CLOSURE_TEXT_RE)
+    if (m) return { exclude: true, hit: m[0], reason: `閉店/休業の記事（${m[0]}）＝新規オープンではないため対象外` }
+    return { exclude: false, hit: '', reason: '' }
+  }
   const m = s.match(CLOSURE_NEWS_RE)
   if (m) return { exclude: true, hit: m[0], reason: `閉店/休業の記事見出し（${m[0]}）＝新規オープンではないため対象外` }
   return { exclude: false, hit: '', reason: '' }

@@ -11,7 +11,7 @@ import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
-import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
+import { placesEstablishmentSignal, placesLookupByPhone, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
 export interface GateInput {
   name: string; phone: string; address: string
@@ -58,6 +58,12 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   }
   // 3) 電話×住所の地域整合（固定電話の市外局番と都道府県の不一致=別店舗/本社番号の誤抽出）
   if (phoneAddressMatch(phone, address) === 'mismatch') return hold(`電話(${phone})と住所の地域不一致（誤抽出/本社番号の疑い・投入ゲート)`)
+  // 3.9) 記事タイトル/本文が閉店・休業ニュースなら除外（開店語が併記されていれば新店記事とみなし除外しない）
+  //      例:「トモズ元住吉店が7月26日で閉店。」が店名未確定のまま新店として投入されるのを防ぐ
+  {
+    const closedText = detectClosureNews(g.text, 'text')
+    if (closedText.exclude) return exclude(`${closedText.reason}（投入ゲート）`)
+  }
   // 4) 店名: 閉店/休業ニュース見出し・チェーン/支店(○○店)/大手・公共/多店舗
   if (name && name !== '店名未確定') {
     // 「◯◯が休業していました」等の閉店/休業記事が新店として投入されるのを防ぐ
@@ -117,6 +123,31 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
       ])
       if (est.count != null && est.count >= BIG_GOOGLE_REVIEWS) return exclude(`Google口コミ${est.count}件(30件以上=確立済み)のため対象外（投入ゲート）`)
       if (est.oldestDays != null && est.oldestDays > 30) return hold(`Google最古クチコミ${est.oldestDays}日前(1ヶ月超=既存店)のため投入対象外（投入ゲート）`)
+    } catch { /* noop */ }
+  }
+
+  // 8) 店名未確定の候補は上の店名系チェック(4)も既存店ガード(7)も全て素通りしてしまう。
+  //    電話番号でGoogle Placesを逆引きして実店名・口コミ数を取得し、同じ関門にかける。
+  //    （実害: 駿河屋◯◯店/トモズ元住吉店＝大手チェーン支店、口コミ193件の既存ジム 等が投入されていた）
+  if ((!name || name === '店名未確定') && g.mapsKey && phone && Date.now() < budgetEnd - 8000) {
+    try {
+      const looked = await Promise.race([
+        placesLookupByPhone(g.mapsKey, phone),
+        new Promise<{ name: string; address: string; count: null; oldestDays: null }>((rs) => setTimeout(() => rs({ name: '', address: '', count: null, oldestDays: null }), 7000)),
+      ])
+      const rn = String(looked.name || '').trim()
+      if (rn) {
+        if (detectClosureNews(rn).exclude) return exclude(`電話逆引きの店名「${rn}」が閉店/休業ニュース見出しのため対象外（投入ゲート）`)
+        if (detectChain(rn, g.text || '').definite) return exclude(`電話逆引きで大手チェーン「${rn}」と判明したため対象外（投入ゲート）`)
+        if (looksLikeBranchStore(rn)) return exclude(`電話逆引きで支店名「${rn}」と判明したため対象外（投入ゲート）`)
+        const bg = detectBigOrPublic(`${rn} ${address}`)
+        if (bg.exclude) return exclude(`電話逆引き「${rn}」が${bg.hit}（大手/公共/大型施設）のため対象外（投入ゲート）`)
+        const bgs = detectBigOrPublicStrong(rn)
+        if (bgs.exclude) return exclude(`電話逆引き「${rn}」が${bgs.hit}（大手）のため対象外（投入ゲート）`)
+        if (detectMultiStore(rn).exclude) return exclude(`電話逆引き「${rn}」が多店舗/FCのため対象外（投入ゲート）`)
+      }
+      if (looked.count != null && looked.count >= BIG_GOOGLE_REVIEWS) return exclude(`電話逆引きでGoogle口コミ${looked.count}件(30件以上=確立済み)のため対象外（投入ゲート）`)
+      if (looked.oldestDays != null && looked.oldestDays > 30) return hold(`電話逆引きでGoogle最古クチコミ${looked.oldestDays}日前(1ヶ月超=既存店)のため投入対象外（投入ゲート）`)
     } catch { /* noop */ }
   }
 

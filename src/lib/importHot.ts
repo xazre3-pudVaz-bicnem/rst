@@ -107,6 +107,38 @@ function placeMatchesQuery(name: string, address: string, displayName: string, f
   return !city || f.includes(norm(city[0]))
 }
 
+/**
+ * 電話番号から Google Places を逆引きし、実店名・口コミ数・最古クチコミ日を得る。
+ * 「店名未確定」候補は店名ベースの判定（チェーン/支店/大手）も既存店ガードも全て素通りするため、
+ * 電話で実体を特定して判定するのに使う（実害例: 駿河屋◯◯店・口コミ193件の既存ジムが投入された）。
+ */
+export async function placesLookupByPhone(mapsKey: string, phone: string): Promise<{ name: string; address: string; count: number | null; oldestDays: number | null }> {
+  const empty = { name: '', address: '', count: null as number | null, oldestDays: null as number | null }
+  try {
+    const q = String(phone || '').trim()
+    if (!q || !mapsKey) return empty
+    const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': mapsKey, 'X-Goog-FieldMask': 'places.id,places.userRatingCount,places.displayName,places.formattedAddress' },
+      body: JSON.stringify({ textQuery: q, languageCode: 'ja', regionCode: 'JP', maxResultCount: 1 }),
+    })
+    if (!res.ok) return empty
+    const j: any = await res.json()
+    const p = j.places?.[0]
+    if (!p) return empty
+    const name = String(p.displayName?.text || p.displayName || '')
+    const address = String(p.formattedAddress || '')
+    const count = Number(p.userRatingCount || 0)
+    let oldestDays: number | null = null
+    if (p.id && count > 0) {
+      const det = await placeDetails(mapsKey, p.id)
+      const oldest = det ? reviewDates(det).oldest : null
+      if (oldest) { const d = Math.floor((Date.now() - Date.parse(oldest)) / 86400000); if (Number.isFinite(d)) oldestDays = d }
+    }
+    return { name, address, count, oldestDays }
+  } catch { return empty }
+}
+
 export async function placesEstablishmentSignal(mapsKey: string, name: string, address: string): Promise<{ count: number | null; oldestDays: number | null }> {
   try {
     const q = `${name} ${address}`.trim()

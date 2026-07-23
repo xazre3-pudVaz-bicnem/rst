@@ -3,7 +3,7 @@ import moment from 'moment'
 import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CallLogApi, VisitReportApi } from '@/lib/api'
+import { CallLogApi, VisitReportApi, ProfileApi } from '@/lib/api'
 import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -26,6 +26,16 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
   const logs = selectedCase
     ? callLogs.filter((l) => l.case_id === selectedCase.id)
     : callLogs
+
+  // 記録者表示用（created_by_id→氏名）。不在/非接触は案件担当が空でも記録者を出すため必須。
+  const [profileById, setProfileById] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    let alive = true
+    ProfileApi.list().then((ps) => { if (alive) setProfileById(new Map(ps.map((p) => [p.id, p.full_name || '']))) }).catch(() => { /* noop */ })
+    return () => { alive = false }
+  }, [])
+  /** 実際に記録した人。created_by_id 優先、無ければログのsales_rep。 */
+  const recorderOf = (l: CallLog) => (l.created_by_id && profileById.get(l.created_by_id)) || l.sales_rep || ''
 
   // 選択案件の訪問結果（成約/失注）をコール履歴の下に表示
   const [visits, setVisits] = useState<VisitReport[]>([])
@@ -82,7 +92,7 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                 <Badge variant={l.contact_type === '接触' ? 'success' : 'secondary'}>
                   {l.contact_type}
                 </Badge>
-                {l.sales_rep && <Badge variant="outline">記録者: {l.sales_rep}</Badge>}
+                {recorderOf(l) && <Badge variant="outline">記録者: {recorderOf(l)}</Badge>}
               </div>
               <div className="flex gap-0.5">
                 <button className="rounded p-1 text-muted-foreground hover:bg-accent" onClick={() => onEdit(l)} title="編集">
