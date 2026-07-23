@@ -731,6 +731,13 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           // 新店リストは他社との取り合いで、1ヶ月前の地域メディア記事では遅い。カード型経路には
           // 記事型(openclose_article)にある公開日チェックが無く、ページ送り(page/2/)の古い記事まで
           // 拾って投入していたため入れる（実害: 1ヶ月前の号外NET記事が投入されていた）。
+          // 店舗記事ではない固定ページ（問い合わせ/会社概要/プライバシー等）は詳細として扱わない。
+          // これを拾うとサイト共通のフッター（代表電話・所在地）を店舗情報として誤抽出する
+          // （実害: log-oita.com/contactform/ から無関係な電話・住所で1件投入された）。
+          if (/\/(contactform|contact|inquiry|otoiawase|privacy|policy|about|company|profile|sitemap|terms|law|tokushoho|faq|login|register|search)(\/|\.|$)/i.test(String(detailUrl))) {
+            counts.excluded++; diag.excluded = (diag.excluded || 0) + 1
+            continue
+          }
           {
             const u = String(detailUrl)
             // 「/2026/06/24/」形式（号外NET等）と「/archives/20260722-02.html」形式（さいつう等）の両方に対応

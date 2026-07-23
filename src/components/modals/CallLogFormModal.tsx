@@ -47,6 +47,8 @@ interface Props {
 }
 
 const NONE = '__none__'
+/** アポ形式。訪問予定の枠幅に反映（対面=2時間 / zoom=1時間） */
+const MEETING_TYPES = ['対面', 'zoom'] as const
 
 function nowLocal() {
   return moment().format('YYYY-MM-DDTHH:mm')
@@ -69,6 +71,8 @@ export default function CallLogFormModal({
   const [result, setResult] = useState('')
   const [appoAt, setAppoAt] = useState('')
   const [appoRep, setAppoRep] = useState('')
+  // アポ形式（既定は対面）。訪問予定の枠幅に使う: 対面=2時間 / zoom=1時間
+  const [meetingType, setMeetingType] = useState<'zoom' | '対面'>('対面')
   const [recallAt, setRecallAt] = useState('')
   const [memo, setMemo] = useState('')
   const [logRep, setLogRep] = useState('')
@@ -213,6 +217,7 @@ export default function CallLogFormModal({
           // 担当未選択でも null にしない（訪問予定は担当者ごとの列で表示するため、nullだと画面に出ない）
           sales_rep: appoRep || logRep || selectedCase.sales_rep || displayName || null,
           appo_at: moment(roundTo15(appoAt)).toISOString(),
+          meeting_type: meetingType,
           memo: null,
         })
         syncAppointment(appt, selectedCase)
@@ -401,6 +406,24 @@ export default function CallLogFormModal({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              {/* アポ形式。訪問予定の枠幅が変わる（対面=2時間 / Zoom=1時間） */}
+              <div className="col-span-2 space-y-1">
+                <Label>アポ形式</Label>
+                <div className="flex gap-2">
+                  {MEETING_TYPES.map((m) => (
+                    <Button
+                      key={m}
+                      type="button"
+                      size="sm"
+                      variant={meetingType === m ? 'default' : 'outline'}
+                      className="flex-1"
+                      onClick={() => setMeetingType(m)}
+                    >
+                      {m === 'zoom' ? 'Zoom（1時間）' : '対面（2時間）'}
+                    </Button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

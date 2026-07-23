@@ -30,7 +30,7 @@ import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { jpError, roundTo15 } from '@/lib/utils'
+import { cn, jpError, roundTo15 } from '@/lib/utils'
 import type { Appointment, Case } from '@/lib/types'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 import VisitReportModal from '@/components/modals/VisitReportModal'
@@ -39,7 +39,8 @@ import VisitReportModal from '@/components/modals/VisitReportModal'
 // アポのバーは所要2時間として、開始時刻のセルから隣の列まで伸ばして表示する（VISIT_SPAN_HOURS）。
 const HOUR_START = 8
 const HOURS = Array.from({ length: 24 - HOUR_START }, (_, i) => i + HOUR_START)
-const VISIT_SPAN_HOURS = 2
+/** アポ形式ごとの所要時間（枠の幅）。Zoomは1時間、対面（既定）は2時間。 */
+const spanHoursOf = (a: Appointment) => (a.meeting_type === 'zoom' ? 1 : 2)
 const ALL = '__all__'
 const NONE = '__none__'
 
@@ -63,6 +64,7 @@ export default function Appointments() {
     title: '',
     sales_rep: '',
     appo_at: '',
+    meeting_type: '対面' as 'zoom' | '対面',
     memo: '',
   })
 
@@ -106,6 +108,7 @@ export default function Appointments() {
       title: '',
       sales_rep: rep,
       appo_at: moment(currentDate).hour(hour).minute(0).format('YYYY-MM-DDTHH:mm'),
+      meeting_type: '対面',
       memo: '',
     })
     setShowModal(true)
@@ -119,6 +122,7 @@ export default function Appointments() {
       title: a.case_id ? '' : (a.case_name ?? ''),
       sales_rep: a.sales_rep ?? '',
       appo_at: moment(a.appo_at).format('YYYY-MM-DDTHH:mm'),
+      meeting_type: a.meeting_type === 'zoom' ? 'zoom' : '対面',
       memo: a.memo ?? '',
     })
     setShowModal(true)
@@ -142,6 +146,7 @@ export default function Appointments() {
         address: c ? c.address : null,
         sales_rep: form.sales_rep || null,
         appo_at: moment(roundTo15(form.appo_at)).toISOString(),
+        meeting_type: form.meeting_type,
         memo: form.memo || null,
       }
       if (editing) {
@@ -256,12 +261,18 @@ export default function Appointments() {
                         return (
                           <div
                             key={a.id}
-                            // 訪問は所要2時間。列は1時間刻みのまま、バーだけ「ちょうど2列分」に伸ばす。
-                            // border-collapse では隣接セルが境界線1pxを共有するため +1px して端をぴったり合わせる。
-                            style={{ width: `calc(${VISIT_SPAN_HOURS * 100}% + 1px)` }}
-                            className="relative z-10 my-0.5 rounded-sm border border-primary/30 bg-primary/15 p-0.5"
+                            // 列は1時間刻みのまま、バーだけ所要時間ぶん（対面2時間 / Zoom1時間）に伸ばす。
+                            // border-collapse では隣接セルが境界線1pxを共有するため、2列以上のときだけ +1px して端を合わせる。
+                            style={{ width: spanHoursOf(a) > 1 ? `calc(${spanHoursOf(a) * 100}% + 1px)` : '100%' }}
+                            className={cn(
+                              'relative z-10 my-0.5 rounded-sm border p-0.5',
+                              a.meeting_type === 'zoom' ? 'border-sky-400/50 bg-sky-400/20' : 'border-primary/30 bg-primary/15',
+                            )}
                             onClick={(e) => e.stopPropagation()}
                           >
+                            {a.meeting_type === 'zoom' && (
+                              <span className="absolute right-0.5 top-0.5 rounded bg-sky-500 px-1 text-[8px] font-bold text-white">Zoom</span>
+                            )}
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button className="block w-full truncate text-left font-bold text-primary hover:underline">
@@ -354,6 +365,24 @@ export default function Appointments() {
                 value={form.appo_at}
                 onChange={(v) => setForm((f) => ({ ...f, appo_at: v }))}
               />
+            </div>
+            {/* アポ形式で枠の幅が変わる（対面=2時間 / Zoom=1時間） */}
+            <div className="space-y-1">
+              <Label>アポ形式</Label>
+              <div className="flex gap-2">
+                {(['対面', 'zoom'] as const).map((m) => (
+                  <Button
+                    key={m}
+                    type="button"
+                    size="sm"
+                    variant={form.meeting_type === m ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => setForm((f) => ({ ...f, meeting_type: m }))}
+                  >
+                    {m === 'zoom' ? 'Zoom（1時間）' : '対面（2時間）'}
+                  </Button>
+                ))}
+              </div>
             </div>
             <div className="space-y-1">
               <Label>メモ</Label>

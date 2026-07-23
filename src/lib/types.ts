@@ -52,6 +52,8 @@ export interface Appointment {
   address?: string | null
   sales_rep?: string | null
   appo_at: string
+  /** アポ形式。'zoom'=1時間枠 / '対面'(既定)=2時間枠 */
+  meeting_type?: 'zoom' | '対面' | null
   memo?: string | null
   organization_id?: string | null
   created_by_id?: string | null
