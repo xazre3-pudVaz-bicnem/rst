@@ -7,7 +7,7 @@
 import { enrichCandidate, fetchFollowersViaWebSearch } from './instagramWebRun.js'
 import { sanitizeShopName, isValidJpPhone, extractJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isJapanPhone, isJapanAddress, isForeignAddress } from './japanFilter.js'
-import { detectBigOrPublic, detectMultiStore } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, looksLikeBuildingName } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { computeQuality, detectNegative, isRealStoreAddress, phoneAddressMatch } from './leadQuality.js'
 import { hardExcludeReason } from './excludeGate.js'
@@ -395,11 +395,20 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
       if (phone && !c.phone_number) { u.phone_number = phone; u.extracted_phone = phone; u.phone_source = 'enrich_reprocess'; u.enriched_phone = e.phone || null }
       if (address && !c.address) { u.address = address; u.extracted_address = address }
       if (e.official && !c.official_url) u.official_url = e.official
-      if (phoneOk && address && isRealStoreAddress(address) && !isForeignAddress(address)) {
+      // 新店根拠が最初から無い候補（GBPスキャンで「新規シグナルは未検出」等）は、電話が取れても
+      // HOTにしない。このキューの目的は「新店根拠はあるが電話だけ欠けていた候補の救済」であり、
+      // 新店でないものまで昇格させるとHOT条件（電話+住所+新店根拠）を実質的に緩めてしまう。
+      const noNewness = /新規シグナルは未検出|新店根拠.?(なし|未検出)/.test(String(c.ai_comment || ''))
+      // 建物名/賃貸物件（アパート等）は店舗ではないので昇格させない
+      const bld = looksLikeBuildingName(shop, address)
+      if (phoneOk && address && isRealStoreAddress(address) && !isForeignAddress(address) && !noNewness && !bld.exclude) {
         u.lead_temperature = 'HOT'; u.hot_tier = 'B'; u.recommended_status = 'HOT_B'
         u.ai_comment = `HOLD再補完(${type}): 電話・住所を補完しHOT-Bへ昇格。`
         u.auto_import_reason = 'HOLD再補完で電話・住所確定→HOT-B'
         counts.promotedHot++
+      } else if (bld.exclude) {
+        u.lead_temperature = 'EXCLUDED'; u.hot_tier = null; u.should_exclude_from_call_list = true
+        u.auto_insert_skipped_reason = bld.reason
       }
       await admin.from('lead_candidates').update(u).eq('id', c.id)
       if (u.lead_temperature === 'HOT' && !c.imported_to_cases && phoneOk) {

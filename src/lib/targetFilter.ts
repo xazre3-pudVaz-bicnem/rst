@@ -33,6 +33,29 @@ const BIG_OR_PUBLIC_RE = new RegExp(
 // 閉店/休業ニュースの見出しがそのまま店名になっているケース（例:「◯◯が休業していました」）。
 // 新規オープンではないので投入対象外。※店名/記事タイトルに対してのみ使うこと（本文だと開店記事の
 // 「跡地に」等で誤爆する）。
+// 建物名・賃貸物件名（店舗ではない）。Places逆引きや住所補完で建物名を店名として拾うことがある。
+// 例:「プレジュール1」＝富山県高岡市明園町8-35 プレジュール1 という賃貸アパート。
+const BUILDING_NAME_RE = /(マンション|アパート|ハイツ|コーポ|コーポラス|メゾン|レジデンス|ヴィラ|パレス|ハイム|団地|社宅|荘$|寮$|[0-9０-９]+号棟|[0-9０-９]+号室)/
+
+/**
+ * 店舗ではなく建物名/賃貸物件の可能性が高いか。
+ *  - 建物語（マンション/アパート/ハイツ等）を含む
+ *  - 店名が住所の末尾にそのまま現れる（＝住所表記の一部＝建物名）
+ * 住所は任意。渡すと「住所の一部が店名」の判定が効く。
+ */
+export function looksLikeBuildingName(name?: string | null, address?: string | null): { exclude: boolean; reason: string } {
+  const n = String(name || '').trim()
+  if (!n || n === '店名未確定') return { exclude: false, reason: '' }
+  if (BUILDING_NAME_RE.test(n)) return { exclude: true, reason: `建物名/賃貸物件（${n}）＝店舗ではないため対象外` }
+  const a = String(address || '').replace(/[\s　]/g, '')
+  const nn = n.replace(/[\s　]/g, '')
+  // 住所の末尾が店名で終わる（例:「…明園町8-35プレジュール1」＋店名「プレジュール1」）＝建物名
+  if (a && nn.length >= 3 && a.endsWith(nn)) {
+    return { exclude: true, reason: `店名が住所の末尾と一致（${n}）＝建物名の可能性が高いため対象外` }
+  }
+  return { exclude: false, reason: '' }
+}
+
 const CLOSURE_NEWS_RE = /(休業|閉店|閉業|廃業|営業終了|営業を終了|閉館|閉院|撤退|中止|終了しました|していました)/
 
 // 記事タイトル/本文向けの厳しめ語（「していました」「中止」等の緩い語は使わない）

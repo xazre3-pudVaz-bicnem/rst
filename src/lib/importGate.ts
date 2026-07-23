@@ -9,7 +9,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, looksLikeBuildingName, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placesEstablishmentSignal, placesLookupByPhone, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
@@ -69,6 +69,9 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     // 「◯◯が休業していました」等の閉店/休業記事が新店として投入されるのを防ぐ
     const closed = detectClosureNews(name)
     if (closed.exclude) return exclude(`${closed.reason}（投入ゲート）`)
+    // 建物名/賃貸物件（アパート・マンション等）は店舗ではない
+    const bld = looksLikeBuildingName(name, address)
+    if (bld.exclude) return exclude(`${bld.reason}（投入ゲート）`)
     if (detectChain(name, g.text || '').definite) return exclude('大手チェーンのため対象外（投入ゲート）')
     if (looksLikeBranchStore(name)) return exclude('支店/チェーン店名（○○店）のため対象外（投入ゲート）')
     const big = detectBigOrPublic(`${name} ${address}`)
