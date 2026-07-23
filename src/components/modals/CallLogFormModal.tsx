@@ -206,7 +206,8 @@ export default function CallLogFormModal({
           case_id: selectedCase.id,
           case_name: selectedCase.name,
           address: selectedCase.address,
-          sales_rep: appoRep || null,
+          // 担当未選択でも null にしない（訪問予定は担当者ごとの列で表示するため、nullだと画面に出ない）
+          sales_rep: appoRep || logRep || selectedCase.sales_rep || displayName || null,
           appo_at: moment(roundTo15(appoAt)).toISOString(),
           memo: null,
         })

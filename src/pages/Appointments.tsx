@@ -88,7 +88,11 @@ export default function Appointments() {
     const set = new Set<string>()
     assignableNames.forEach((n) => set.add(n))
     dayAppos.forEach((a) => { if (a.sales_rep) set.add(a.sales_rep) })
-    return set.size ? Array.from(set) : ['']
+    const list = set.size ? Array.from(set) : ['']
+    // 担当が未設定のアポ（コール履歴から自動作成され担当を選ばなかった等）は列が無いと画面から消えるため、
+    // 該当があるときだけ「担当未設定」列を出す。※これが無く「訪問予定に登録されない」ように見えていた。
+    if (dayAppos.some((a) => !a.sales_rep) && !list.includes('')) list.push('')
+    return list
   }, [filterRep, assignableNames, dayAppos])
 
   function openNew(rep: string, hour: number) {
