@@ -420,7 +420,7 @@ export default function CallLogFormModal({
                       className="flex-1"
                       onClick={() => setMeetingType(m)}
                     >
-                      {m === 'zoom' ? 'Zoom（1時間）' : '対面（2時間）'}
+                      {m === 'zoom' ? 'Zoom' : '対面'}
                     </Button>
                   ))}
                 </div>

@@ -379,7 +379,7 @@ export default function Appointments() {
                     className="flex-1"
                     onClick={() => setForm((f) => ({ ...f, meeting_type: m }))}
                   >
-                    {m === 'zoom' ? 'Zoom（1時間）' : '対面（2時間）'}
+                    {m === 'zoom' ? 'Zoom' : '対面'}
                   </Button>
                 ))}
               </div>
