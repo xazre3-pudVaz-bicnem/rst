@@ -9,7 +9,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
@@ -58,8 +58,11 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   }
   // 3) 電話×住所の地域整合（固定電話の市外局番と都道府県の不一致=別店舗/本社番号の誤抽出）
   if (phoneAddressMatch(phone, address) === 'mismatch') return hold(`電話(${phone})と住所の地域不一致（誤抽出/本社番号の疑い・投入ゲート)`)
-  // 4) 店名: チェーン/支店(○○店)/大手・公共/多店舗
+  // 4) 店名: 閉店/休業ニュース見出し・チェーン/支店(○○店)/大手・公共/多店舗
   if (name && name !== '店名未確定') {
+    // 「◯◯が休業していました」等の閉店/休業記事が新店として投入されるのを防ぐ
+    const closed = detectClosureNews(name)
+    if (closed.exclude) return exclude(`${closed.reason}（投入ゲート）`)
     if (detectChain(name, g.text || '').definite) return exclude('大手チェーンのため対象外（投入ゲート）')
     if (looksLikeBranchStore(name)) return exclude('支店/チェーン店名（○○店）のため対象外（投入ゲート）')
     const big = detectBigOrPublic(`${name} ${address}`)

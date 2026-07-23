@@ -7,6 +7,7 @@
 //  - 連続not_found停止・1回20/1日100URL・30日再取得回避・robots配慮
 // ============================================================
 import { extractAddressLoose } from './enrichProfile.js'
+import { extractDirectoryShopInfo } from './directoryParser.js'
 import { extractJpPhone, sanitizeShopName, isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
 import { renderPage, renderConfigured } from './regionalMediaRun.js'
@@ -430,11 +431,18 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
     const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp|petlife\.asia/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail|petlife_detail)$/.test(site.parser_type || '')
     const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
-    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
+    // トリムトリム（ペットサロン）: 共通のディレクトリ詳細パーサーを media_family='trimtrim' 設定で使う
+    const isTrimtrim = /trimtrim\.jp/i.test(url) || site.parser_type === 'trimtrim_salon_detail'
+    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : isTrimtrim ? 'trimtrim_salon_detail' : 'generic_detail_page'
 
     // ===== 4分類: valid / invalid(404/不存在) / fetch_failed(403,429,5xx,timeout,network) / parser_failed(200だが抽出不可・文字化け) =====
     const classify = (resp: typeof r): { status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; reason: string; spot: any; name: string; address: string; phone: string; category: string; bodyAll: string } => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake)
+        : isTrimtrim && resp.html ? (() => {
+          // トリムトリム: 共通のディレクトリ詳細パーサー（media_family='trimtrim' 設定で店名は<title>から）
+          const i = extractDirectoryShopInfo(resp.html, '', 'trimtrim')
+          return { name: i.shop_name, address: i.address, phone: i.phone, category: i.industry || 'ペット', official: i.official_url, invalidReason: '' } as any
+        })() : null
       const bodyAll = resp.html ? stripTags(resp.html) : ''
       const sn = sanitizeShopName(spot ? spot.name : '', { placesMatched: false })
       const name = sn.valid ? sn.name : ''

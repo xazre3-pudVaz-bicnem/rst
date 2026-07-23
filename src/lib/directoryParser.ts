@@ -41,6 +41,12 @@ export const DIRECTORY_CONFIGS: Record<string, DirectoryConfig> = {
     detailPattern: /\/shop\/\d+$/i,
     nameOrder: ['title', 'h1', 'fallback'],
   },
+  // トリムトリム（ペットトリミングサロン検索）。詳細は /salon-detail/{連番ID}。
+  // h1/h2 は「空き状況」等の見出しなので、店名は <title>「店名 | トリムトリム - トリムトリム」から取る。
+  trimtrim: {
+    detailPattern: /\/salon-detail\/\d+$/i,
+    nameOrder: ['title', 'og', 'fallback'],
+  },
 }
 // 既定（未知のディレクトリでも /shop/ 配下の詳細っぽいURLを拾う）
 // 一覧/絞込/クーポン等の「店舗詳細ではないURL」を除く。これが無いと:
@@ -386,7 +392,7 @@ export function extractDirectoryShopInfo(html: string, fallbackTitle = '', media
   else if (addrPref) address = addrPref[0]
   else if (addr2) address = addr2[0]
   // 末尾に続くナビ/付帯情報を切る（アクセス/営業時間/交通/地図/TEL等）
-  address = address.replace(/(アクセス|営業時間|交通|地図|ＭＡＰ|MAP|TEL|ＴＥＬ|電話|定休|駐車|お問い?合わせ|ホームページ|公式|クチコミ|ニュース|メニュー).*$/i, '').replace(/\s+/g, '').slice(0, 60)
+  address = address.replace(/(アクセス|営業時間|交通|地図|ＭＡＰ|MAP|TEL|ＴＥＬ|電話|定休|駐車|お問い?合わせ|ホームページ|公式|クチコミ|ニュース|メニュー|最寄り?駅).*$/i, '').replace(/\s+/g, '').slice(0, 60)
 
   // 業種は「店名＋記事タイトル」の店舗固有テキストを最優先（ページ全体だと関連記事のパン屋等を誤検出するため）。
   const industry = detectIndustryFromText(`${shop_name} ${fallbackTitle}`) || detectIndustryFromText(body.slice(0, 400)) || ''
