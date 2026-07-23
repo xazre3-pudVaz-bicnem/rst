@@ -184,6 +184,19 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 全取得元を「並行実行」する（以前は順次＋1回3取得元までで、遅い取得元がタイムアウトし残りがdeferred＝
   // 何も投入されない問題があった）。並行なら壁時計は最も遅い1取得元の時間で済み、全取得元が毎回カバーされる。
   // 各取得元は自前の内部予算＋ここのハード上限で二重に打ち切り、60s関数上限を死守する。
+  // 取得元の自己増殖: 地域メディアの巡回サイト自動発見を1日1回だけ実行（新店情報サイトが勝手に増えていく）。
+  // ※以前は並列エンジンの「後」に置き、残り110秒以上を条件にしていたが、エンジンが予算(260s)の大半を
+  //   使うため条件が成立せず7/10以降13日間まったく走っていなかった（自動登録65サイトで停止）。
+  //   予算が潤沢な「前」に移し、22時間クールダウン＋上限75秒で後続を圧迫しないようにする。
+  try {
+    const { data: sdCfg } = await admin.from('app_config').select('value').eq('key', 'site_discovery_last').maybeSingle()
+    const lastSd = Date.parse((sdCfg?.value as any)?.at || '') || 0
+    if (Date.now() - lastSd > 22 * 3600 * 1000) {
+      await runSiteDiscovery(admin, { userId: opts.userId || null, maxQueries: 8, perQuery: 8, maxTests: 15, maxAutoRegister: 5, deadlineMs: Date.now() + 75000 })
+      await admin.from('app_config').upsert({ key: 'site_discovery_last', value: { at: new Date().toISOString() }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
+    }
+  } catch { /* noop */ }
+
   await Promise.allSettled(types.map(async (t) => {
     const itemStart = new Date().toISOString()
     try {
@@ -211,21 +224,6 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
 
   // 巡回末尾: 未投入HOTを cases へスイープ（電話/住所なしHOT・最古クチコミ30日超はHOLD降格）。残り時間内でのみ実行。
   // sweepはPlaces詳細/IGフォロワー確認で時間を要するため、残り予算をbudgetMsとして渡して60s枠を死守（残りは次回巡回で継続）。
-  // 取得元の自己増殖: 地域メディアの巡回サイト自動発見を1日1回だけ自動実行（新店情報サイトが勝手に増えていく）
-  try {
-    // 敷居110s: 60sだとdeadlineが+10s級になり、0クエリ0テストのまま22hスタンプだけ押す「実行したフリ」になる
-    const rS = budgetMs - (Date.now() - startMs)
-    if (rS > 110000) {
-      const { data: sdCfg } = await admin.from('app_config').select('value').eq('key', 'site_discovery_last').maybeSingle()
-      const lastSd = Date.parse((sdCfg?.value as any)?.at || '') || 0
-      if (Date.now() - lastSd > 22 * 3600 * 1000) {
-        // deadline必須: 無制限だと最悪200秒級（8クエリ+15テスト×robots/fetch）で関数300秒上限を突破し、後続のsweep/明細保存が全部飛ぶ
-        await runSiteDiscovery(admin, { userId: opts.userId || null, maxQueries: 8, perQuery: 8, maxTests: 15, maxAutoRegister: 5, deadlineMs: Date.now() + Math.min(90000, rS - 50000) })
-        await admin.from('app_config').upsert({ key: 'site_discovery_last', value: { at: new Date().toISOString() }, updated_date: new Date().toISOString() }, { onConflict: 'key' }).then(() => {}, () => {})
-      }
-    }
-  } catch { /* noop */ }
-
   // openingDate再判定: 既存のGoogle Places候補を再評価し、開業日が入った/口コミが動いた候補をHOT化（直後のsweepが投入）
   // 敷居75s: sweep（投入の本丸）の枠を先に確保する。45sだと「rejudgeが走った回に限りsweepの残り予算が尽きる」逆転が起きる。
   try {

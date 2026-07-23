@@ -88,8 +88,19 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
   for (const s of sites || []) { if (s.base_url) existingUrls.add(normalizeUrl(s.base_url)); if (s.list_url) existingUrls.add(normalizeUrl(s.list_url)) }
 
   // URL収集
+  // クエリは毎回「先頭N件」を使っていたため、実行のたびに同じURLしか見つからず、
+  // それらは全て「30日以内にテスト済み」で弾かれ tested=0/登録0 になっていた（実測: URL36件→テスト0件）。
+  // 実行ごとに開始位置をずらし、全クエリを一巡させて新しい候補が出るようにする。
+  const { data: qoCfg } = await admin.from('app_config').select('value').eq('key', 'site_discovery_qoffset').maybeSingle()
+  const qLen = DISCOVERY_QUERIES.length
+  const qOff = ((Number((qoCfg?.value as any)?.i) || 0) % qLen + qLen) % qLen
+  const pickedQueries = Array.from({ length: Math.min(maxQueries, qLen) }, (_, k) => DISCOVERY_QUERIES[(qOff + k) % qLen])
+  await admin.from('app_config').upsert(
+    { key: 'site_discovery_qoffset', value: { i: (qOff + pickedQueries.length) % qLen }, updated_date: new Date().toISOString() },
+    { onConflict: 'key' },
+  ).then(() => {}, () => {})
   const urlSet = new Map<string, { url: string; title: string; snippet: string; query: string }>()
-  for (const q of DISCOVERY_QUERIES.slice(0, maxQueries)) {
+  for (const q of pickedQueries) {
     if (Date.now() > deadline - 10000) break
     stats.queries++
     const { results } = await webSearch(q, perQuery)
