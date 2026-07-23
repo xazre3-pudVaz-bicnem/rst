@@ -8,6 +8,9 @@
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
 
+/** 発番済みの最前線ID（実測 2026-07: 21000=有効 / 21200以上=未発番）。新規掲載はこの先に発番される。 */
+const TRIMTRIM_FRONTIER_ID = 21000
+
 async function main() {
   const admin = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } })
 
@@ -23,6 +26,11 @@ async function main() {
     is_active: true,
     reliability_score: 72,
     probe_mode: 'safe',
+    // 探索開始IDは「発番済みの最前線」に置く。ID1から始めると既存15,900店を延々と探索して
+    // 新着に永遠に到達しない（実害: next_start_id=11 のまま停滞していた）。
+    // 実測: 21000=有効 / 21200以上=未発番 → 以降に発番される新規掲載だけを拾う。
+    start_probe_id: TRIMTRIM_FRONTIER_ID,
+    next_start_id: TRIMTRIM_FRONTIER_ID,
     rendering_mode: 'static',        // 静的HTMLに店名/電話/住所あり
     detail_fetch_enabled: true,
     disabled_reason: null,
