@@ -26,17 +26,19 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
 >(({ className, children, ...props }, ref) => (
   <DialogPortal>
-    <DialogOverlay />
+    {/* 背景オーバーレイ自体を閉じるトリガーにする（＝キャンセル扱い）。
+        「外側クリック検知」に頼らないので、Selectのポータルを閉じた操作が
+        誤って外側クリックと判定されモーダルごと閉じる不具合は起きない。 */}
+    <DialogPrimitive.Close asChild>
+      <DialogOverlay />
+    </DialogPrimitive.Close>
     <DialogPrimitive.Content
       ref={ref}
-      // 背景オーバーレイの直接クリックは「キャンセル」と同じ扱いで閉じる。
-      // 一方、Select等のポータルを閉じた際のクリックやフォーカス移動では閉じない
-      // （開いているSelectを閉じただけでモーダルごと閉じる誤検知を防ぐ）。ESCは既定どおり有効。
-      onInteractOutside={(e) => {
-        const target = ((e as any).detail?.originalEvent?.target ?? null) as HTMLElement | null
-        // 背景オーバーレイ上のクリックのみ閉じる。それ以外（Selectのポータル/フォーカス移動等）は閉じない。
-        if (!(target && target.closest('[data-dialog-overlay="true"]'))) e.preventDefault()
-      }}
+      // 外側クリック/フォーカス移動による自動クローズは完全に無効（Select誤検知の根本対策）。
+      // 閉じるのは「×」「キャンセル」「保存」「ESC」「背景オーバーレイの直接クリック」のみ。
+      onPointerDownOutside={(e) => e.preventDefault()}
+      onInteractOutside={(e) => e.preventDefault()}
+      onFocusOutside={(e) => e.preventDefault()}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 border bg-background p-4 shadow-lg rounded-lg max-h-[92vh] overflow-y-auto',
         className,
