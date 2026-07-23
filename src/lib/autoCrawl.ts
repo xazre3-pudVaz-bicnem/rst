@@ -243,16 +243,23 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     if (r1 > 22000) { const os = await runOpeningSoonQueue(admin, { limit: 150, runBudgetMs: Math.min(25000, r1 - 12000), mapsKey }, opts.userId || null); agg.cases_inserted_count += os?.imported || 0 }
   } catch { /* noop */ }
   try {
-    // HOLD復活: 「電話なし/住所なし/フォロワー未確認」など一時要因のHOLDを再検証してHOT復帰→投入（安全な理由のみ対象）
+    // HOLD復活キュー（HOT条件は変えず、一時要因で欠けていた電話/住所が取れた分だけHOT化→投入）。
+    //  - hold_reason_reprocess_queue : 除外理由が「電話なし/住所なし/フォロワー未確認」等のもの
+    //  - missing_phone_recheck_queue : 住所はあるが電話だけ無いHOLD（分類時点からHOLDで理由文言が無く、
+    //    汎用キューでは一度も拾われず滞留していた。実測814件/7日）
+    //  - phone_to_address_enrichment_queue : 電話はあるが住所が無いHOLD
+    // ※逐次に並べると先行処理で予算を使い切った回に後ろが永久に回らないため、
+    //   「最終実行が古い順」で毎回1種類だけ実行してローテーションさせる。
     const rH = budgetMs - (Date.now() - startMs)
-    if (rH > 25000) { const rq = await runReprocessQueue(admin, mapsKey, 'hold_reason_reprocess_queue', { limit: 60, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null); agg.cases_inserted_count += rq?.imported || 0 }
-  } catch { /* noop */ }
-  try {
-    // 「住所はあるが電話だけ無い」HOLD の電話再補完（HOT条件は変えず、電話が取れた分だけHOT化→投入）。
-    // 汎用キューは auto_insert_skipped_reason の文言でしか対象を選ばないため、分類時点からHOLDの
-    // 電話欠け候補（実測814件/7日）が一度も再補完されず滞留していた。専用キューを巡回に追加する。
-    const rP = budgetMs - (Date.now() - startMs)
-    if (rP > 25000) { const rq2 = await runReprocessQueue(admin, mapsKey, 'missing_phone_recheck_queue', { limit: 60, runBudgetMs: Math.min(35000, rP - 12000) }, opts.userId || null); agg.cases_inserted_count += rq2?.imported || 0 }
+    if (rH > 25000) {
+      const QUEUES = ['hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue']
+      const { data: lastQ } = await admin.from('auto_lead_runs').select('source,created_date').in('source', QUEUES).order('created_date', { ascending: false }).limit(60)
+      const lastBy = new Map<string, number>()
+      for (const r of (lastQ || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }
+      const pick = [...QUEUES].sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))[0]
+      const rq = await runReprocessQueue(admin, mapsKey, pick, { limit: 60, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null)
+      agg.cases_inserted_count += rq?.imported || 0
+    }
   } catch { /* noop */ }
   try {
     const r2 = budgetMs - (Date.now() - startMs)
