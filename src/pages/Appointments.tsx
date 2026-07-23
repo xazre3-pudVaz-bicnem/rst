@@ -35,7 +35,10 @@ import type { Appointment, Case } from '@/lib/types'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 import VisitReportModal from '@/components/modals/VisitReportModal'
 
-const HOURS = Array.from({ length: 24 }, (_, i) => i)
+// 表示する時間枠は8時〜24時を2時間刻み（深夜〜早朝の0〜7時は営業時間外のため非表示）
+const HOUR_START = 8
+const HOUR_STEP = 2
+const HOURS = Array.from({ length: Math.ceil((24 - HOUR_START) / HOUR_STEP) }, (_, i) => i * HOUR_STEP + HOUR_START)
 const ALL = '__all__'
 const NONE = '__none__'
 
@@ -213,31 +216,35 @@ export default function Appointments() {
 
       {/* タイムライングリッド */}
       <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse text-2xs">
+        <table className="border-collapse text-2xs">
+          {/* 縦軸=営業担当 / 横軸=時間 */}
           <thead className="sticky top-0 z-10 bg-card">
             <tr>
-              <th className="w-12 border bg-muted/50 p-1">時</th>
-              {reps.map((r) => (
-                <th key={r} className="border bg-muted/50 p-1 font-medium">
-                  {r || '担当未設定'}
+              <th className="sticky left-0 z-20 w-28 min-w-28 border bg-muted/50 p-1">担当</th>
+              {HOURS.map((h) => (
+                <th key={h} className="w-28 min-w-28 border bg-muted/50 p-1 font-medium text-muted-foreground">
+                  {h}:00〜{h + HOUR_STEP}:00
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {HOURS.map((h) => (
-              <tr key={h}>
-                <td className="border bg-muted/30 p-1 text-center text-muted-foreground">
-                  {h}:00
+            {reps.map((r) => (
+              <tr key={r || '__none__'}>
+                <td className="sticky left-0 z-10 w-28 min-w-28 border bg-muted/30 p-1 text-center font-medium">
+                  {r || '担当未設定'}
                 </td>
-                {reps.map((r) => {
-                  const cellAppos = dayAppos.filter(
-                    (a) => (a.sales_rep ?? '') === r && moment(a.appo_at).hour() === h,
-                  )
+                {HOURS.map((h) => {
+                  const cellAppos = dayAppos.filter((a) => {
+                    if ((a.sales_rep ?? '') !== r) return false
+                    const ah = moment(a.appo_at).hour()
+                    // 2時間枠。表示範囲外(0〜7時)のアポが無言で消えないよう先頭枠にまとめて表示する
+                    return (ah >= h && ah < h + HOUR_STEP) || (h === HOUR_START && ah < HOUR_START)
+                  })
                   return (
                     <td
-                      key={r}
-                      className="h-10 cursor-pointer border align-top hover:bg-accent/40"
+                      key={h}
+                      className="h-14 w-28 min-w-28 cursor-pointer border align-top hover:bg-accent/40"
                       onClick={() => openNew(r, h)}
                     >
                       {cellAppos.map((a) => {
