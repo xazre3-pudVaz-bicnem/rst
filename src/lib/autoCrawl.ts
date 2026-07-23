@@ -248,6 +248,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     if (rH > 25000) { const rq = await runReprocessQueue(admin, mapsKey, 'hold_reason_reprocess_queue', { limit: 60, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null); agg.cases_inserted_count += rq?.imported || 0 }
   } catch { /* noop */ }
   try {
+    // 「住所はあるが電話だけ無い」HOLD の電話再補完（HOT条件は変えず、電話が取れた分だけHOT化→投入）。
+    // 汎用キューは auto_insert_skipped_reason の文言でしか対象を選ばないため、分類時点からHOLDの
+    // 電話欠け候補（実測814件/7日）が一度も再補完されず滞留していた。専用キューを巡回に追加する。
+    const rP = budgetMs - (Date.now() - startMs)
+    if (rP > 25000) { const rq2 = await runReprocessQueue(admin, mapsKey, 'missing_phone_recheck_queue', { limit: 60, runBudgetMs: Math.min(35000, rP - 12000) }, opts.userId || null); agg.cases_inserted_count += rq2?.imported || 0 }
+  } catch { /* noop */ }
+  try {
     const r2 = budgetMs - (Date.now() - startMs)
     if (r2 > 12000) await runLeadScoring(admin, 'lead_freshness_scoring', { limit: 1000, runBudgetMs: Math.min(30000, r2 - 5000) }, opts.userId || null)
   } catch { /* noop */ }
