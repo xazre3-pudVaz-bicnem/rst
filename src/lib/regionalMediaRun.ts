@@ -727,6 +727,22 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           const { data: exC } = await admin.from('lead_candidates').select('id,imported_to_cases,phone_number,address').eq('source_detail_url', detailUrl).limit(1)
           const existingCand = exC?.[0] || null
           if (skipSeen(exA?.[0], existingCand)) { counts.seenSkipped++; siteSeenSkipped++; diag.seenSkipped = (diag.seenSkipped || 0) + 1; continue } // 差分: 既読カードはスキップ
+          // 鮮度ゲート: 記事URLに日付があり saveDays より古い記事は投入しない（詳細取得もしない＝コストも節約）。
+          // 新店リストは他社との取り合いで、1ヶ月前の地域メディア記事では遅い。カード型経路には
+          // 記事型(openclose_article)にある公開日チェックが無く、ページ送り(page/2/)の古い記事まで
+          // 拾って投入していたため入れる（実害: 1ヶ月前の号外NET記事が投入されていた）。
+          {
+            const u = String(detailUrl)
+            // 「/2026/06/24/」形式（号外NET等）と「/archives/20260722-02.html」形式（さいつう等）の両方に対応
+            const um = u.match(/\/(20\d{2})\/(\d{1,2})\/(\d{1,2})\//) || u.match(/\/(20\d{2})(\d{2})(\d{2})(?:[-_.]|\b)/)
+            if (um) {
+              const t = Date.parse(`${um[1]}-${String(um[2]).padStart(2, '0')}-${String(um[3]).padStart(2, '0')}T00:00:00+09:00`)
+              if (Number.isFinite(t) && (Date.now() - t) > recentMs) {
+                counts.oldSkipped++; siteOldSkipped++; diag.oldSkipped = (diag.oldSkipped || 0) + 1
+                continue
+              }
+            }
+          }
           if (siteNewest === null) siteNewest = cardKey  // 今回処理する最初の新規カード＝次回の停止カーソル
           siteNewArticles++
           counts.articles++; counts.newArticles++; used++
