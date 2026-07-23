@@ -35,10 +35,11 @@ import type { Appointment, Case } from '@/lib/types'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 import VisitReportModal from '@/components/modals/VisitReportModal'
 
-// 表示する時間枠は8時〜24時を2時間刻み（深夜〜早朝の0〜7時は営業時間外のため非表示）
+// 時間の列は1時間ごと（8時〜23時。深夜〜早朝の0〜7時は営業時間外のため非表示）。
+// アポのバーは所要2時間として、開始時刻のセルから隣の列まで伸ばして表示する（VISIT_SPAN_HOURS）。
 const HOUR_START = 8
-const HOUR_STEP = 2
-const HOURS = Array.from({ length: Math.ceil((24 - HOUR_START) / HOUR_STEP) }, (_, i) => i * HOUR_STEP + HOUR_START)
+const HOURS = Array.from({ length: 24 - HOUR_START }, (_, i) => i + HOUR_START)
+const VISIT_SPAN_HOURS = 2
 const ALL = '__all__'
 const NONE = '__none__'
 
@@ -223,7 +224,7 @@ export default function Appointments() {
               <th className="sticky left-0 z-20 w-28 min-w-28 border bg-muted/50 p-1">担当</th>
               {HOURS.map((h) => (
                 <th key={h} className="w-28 min-w-28 border bg-muted/50 p-1 font-medium text-muted-foreground">
-                  {h}:00〜{h + HOUR_STEP}:00
+                  {h}:00
                 </th>
               ))}
             </tr>
@@ -238,20 +239,27 @@ export default function Appointments() {
                   const cellAppos = dayAppos.filter((a) => {
                     if ((a.sales_rep ?? '') !== r) return false
                     const ah = moment(a.appo_at).hour()
-                    // 2時間枠。表示範囲外(0〜7時)のアポが無言で消えないよう先頭枠にまとめて表示する
-                    return (ah >= h && ah < h + HOUR_STEP) || (h === HOUR_START && ah < HOUR_START)
+                    // 開始時刻のセルにだけ置く（バーは幅で2時間分に伸ばす）。
+                    // 表示範囲外(0〜7時)のアポが無言で消えないよう先頭枠にまとめて表示する。
+                    return ah === h || (h === HOUR_START && ah < HOUR_START)
                   })
                   return (
                     <td
                       key={h}
-                      className="h-14 w-28 min-w-28 cursor-pointer border align-top hover:bg-accent/40"
+                      className="relative h-14 w-28 min-w-28 cursor-pointer border align-top hover:bg-accent/40"
                       onClick={() => openNew(r, h)}
                     >
                       {cellAppos.map((a) => {
                         const c = cases.find((x) => x.id === a.case_id)
                         const phone = c?.phone1
                         return (
-                          <div key={a.id} className="m-0.5 rounded-sm bg-primary/15 p-0.5" onClick={(e) => e.stopPropagation()}>
+                          <div
+                            key={a.id}
+                            // 訪問は所要2時間として、開始セルから隣の列まで横に伸ばす（列は1時間刻みのまま）
+                            style={{ width: `calc(${VISIT_SPAN_HOURS * 100}% - 4px)` }}
+                            className="relative z-10 m-0.5 rounded-sm border border-primary/30 bg-primary/15 p-0.5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button className="block w-full truncate text-left font-bold text-primary hover:underline">
