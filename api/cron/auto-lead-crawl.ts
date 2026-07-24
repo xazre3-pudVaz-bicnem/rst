@@ -4,7 +4,7 @@
 //   - 手動(UI):     POST ＋ Authorization: Bearer <ユーザーJWT>（要ログイン）。?only= / body.only で取得元を限定
 // 取得元: Google Places / 地域メディア(全サイト) / Instagram Web / 連番URL探索(全有効ソース)
 // ロジックは UI の個別実行と同じ run 関数を共通利用（二重化しない）。詳細は src/lib/autoCrawl.ts。
-// Vercel Pro: vercel.json で2時間おき（0 23,1,3,5,7,9 * * * = JST 8/10/12/14/16/18時）・maxDuration 300s。
+// Vercel Pro: vercel.json で2時間おき終日（0 */2 * * *＝1日12回）・maxDuration 300s。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
 import { runAutoCrawl, type CrawlOnly } from '../../src/lib/autoCrawl.js'
