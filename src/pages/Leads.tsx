@@ -660,7 +660,9 @@ export default function Leads() {
       setRmSitesErr(null)
     } catch (e) { setRmSitesErr(jpError(e)) }
   }, [adminFetch])
-  useEffect(() => { if (sourceTab === 'regional') loadSites() }, [sourceTab, loadSites])
+  // 取得元管理タブ(mainView='manage')は sourceTab が既定の'places'のままなので、
+  // sourceTab だけを条件にすると巡回サイト一覧が一度も読み込まれず「0件」に見える。
+  useEffect(() => { if (sourceTab === 'regional' || mainView === 'manage') loadSites() }, [sourceTab, mainView, loadSites])
 
   const emptySite = { name: '', base_url: '', list_url: '', media_family: 'other', source_type: 'html_list', category_label: '開店閉店', is_active: true, reliability_score: 50, crawl_interval_hours: 24, rendering_mode: 'auto' }
 
