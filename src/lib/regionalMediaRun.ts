@@ -447,13 +447,21 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       // 連番URL探索は別タブ（runAllSequentialProbes）で実行。地域メディア巡回では処理・集計しない。
       if (site.source_type === 'sequential_id_probe') continue
 
-      const idx = await fetchHtml(crawlUrl)
+      let idx = await fetchHtml(crawlUrl)
       await sleep(delay)
+      // 素のfetchが403/5xx等で失敗（WAF/UA拒否）した場合、rendering_mode!=static かつ
+      // レンダリングAPI設定ありならブラウザ取得にfallbackする（例: 湘南人 shonanjin.com が
+      // クローラUAに403。ブラウザでは200で取れるためレンダリング経由なら取得できる）。
+      let listRendered = false
+      if (!idx.ok && !idx.timedOut && String(site.rendering_mode || 'auto') !== 'static' && renderConfigured() && !overBudget()) {
+        const rr = await renderFetch(crawlUrl, { waitMs: 5000 })
+        if (rr.ok && rr.html) { idx = { ok: true, status: rr.status || 200, html: rr.html, length: rr.length, error: null, timedOut: false }; listRendered = true }
+      }
       const linkOpts: LinkOpts = { mediaFamily: site.media_family, categoryLabel: site.category_label, listUrl: crawlUrl }
       // parser_type 判定（site設定 → URL/HTML構造から推定）
       const parserType = idx.ok ? detectParserType(site, idx.html, crawlUrl) : siteTypeOf(site)
       const stype = parserType
-      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, parserType, parser_used: '', fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, timeouts: 0, error: idx.error, reason: '' }
+      const diag: any = { site: site.name, url: crawlUrl, siteType: stype, parserType, parser_used: '', fetchOk: idx.ok, status: idx.status, htmlLength: idx.length, listRendered, totalLinks: 0, candidateLinks: 0, keywordHits: 0, recent: 0, saved: 0, hot: 0, hold: 0, excluded: 0, timeouts: 0, error: idx.error, reason: '' }
       if (!idx.ok) {
         counts.error++; if (idx.timedOut) { counts.timeouts++; diag.timeouts++ }
         diag.reason = idx.timedOut ? `リスト取得がタイムアウト（外部サイト応答遅延）` : `リスト取得失敗（${idx.error}）`
