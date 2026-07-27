@@ -25,6 +25,18 @@ import { caseImportGate, applyGateDowngrade } from './importGate.js'
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 const PROBE_TIMEOUT_MS = 8000
 
+// じゃらん由来の投入先担当（ユーザー指示で固定＝織田春樹）。profilesから氏名一致で解決しキャッシュ。
+const JALAN_ASSIGNEE_NAME = '織田春樹'
+let _jalanAssignee: { id: string | null; name: string } | null | undefined
+async function resolveJalanAssignee(admin: any): Promise<{ id: string | null; name: string } | null> {
+  if (_jalanAssignee !== undefined) return _jalanAssignee
+  try {
+    const { data } = await admin.from('profiles').select('id,full_name').ilike('full_name', `%${JALAN_ASSIGNEE_NAME}%`).limit(1)
+    _jalanAssignee = data?.[0] ? { id: data[0].id, name: data[0].full_name || JALAN_ASSIGNEE_NAME } : { id: null, name: JALAN_ASSIGNEE_NAME }
+  } catch { _jalanAssignee = { id: null, name: JALAN_ASSIGNEE_NAME } }
+  return _jalanAssignee
+}
+
 // ---- 文字コード判定つき取得 ----
 function detectCharset(buf: Buffer, headerCt: string): string {
   const m = headerCt.match(/charset=["']?([\w-]+)/i)
@@ -613,7 +625,9 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       })())) {
         // ゲート否認: 投入せず降格/リンク済み
       } else {
-      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId }).select('id').single()
+      // じゃらん由来は担当＝織田春樹・ステータス＝新規で投入（ユーザー指示）。他ソースは従来どおり未割当。
+      const jalanAssignee = isJalan ? await resolveJalanAssignee(admin) : null
+      const { data: created, error: caseErr } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(category) || null, status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / 連番URL探索 / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】取得元: ${site.name}\nID=${probedId}\nURL: ${url}\n電話: ${phone || '—'}\n住所: ${address || '—'}\n連番URL探索で新規存在確認${nameUnconfirmedHot ? '\n※営業前に店名確認推奨' : ''}`, created_by_id: opts.userId, ...(jalanAssignee ? { sales_rep: jalanAssignee.name, assigned_user_id: jalanAssignee.id, assigned_user_name: jalanAssignee.name } : {}) }).select('id').single()
       if (caseErr) res.importFailed = (res.importFailed || 0) + 1
       if (created?.id) { createdCaseId = created.id; await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: opts.nowIso, imported_case_id: created.id }).eq('id', candidateId); res.imported++; importedCount++; importedThisRun++ }
       }
