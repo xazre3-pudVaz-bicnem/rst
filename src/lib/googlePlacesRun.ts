@@ -451,6 +451,14 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
   const runId: string | null = runRow?.id ?? null
 
   try {
+    // サーキットブレーカー: Google Places APIの「1日あたりクォータ超過」を検知した日は、
+    // 以降の巡回で叩かない（クォータ回復は翌日。叩き続けても0件で、他エンジンの時間予算を食うだけのため）。
+    const todayKey = new Date().toISOString().slice(0, 10)
+    const { data: qx } = await admin.from('app_config').select('value').eq('key', 'places_quota_exhausted').maybeSingle()
+    if ((qx?.value as any)?.date === todayKey) {
+      return { ok: true, skipped: true, reason: `Google Places APIの1日あたりクォータ超過のため本日はスキップ（Google Cloud Consoleで SearchText per day を増枠してください）`, counts, debug }
+    }
+
     const cases = await fetchCases(admin)
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: importedToday } = await admin.from('lead_candidates').select('id', { count: 'exact', head: true }).gte('imported_at', startToday.toISOString())
@@ -486,7 +494,18 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
       const region = (useGrid && gq.isNewOpen) ? REGION_RECTANGLES[(qi + gridOffset) % REGION_RECTANGLES.length] : null
       if (region) regionsCovered.add(region.name)
       const r = await searchPaged(apiKey, query, perQuery, gq.isNewOpen ? pagesPerQuery : 1, resultsPerQueryLimit, region?.rect, runDeadline())
-      if (r.error) { counts.error++; errorMessage = r.error }
+      if (r.error) {
+        counts.error++; errorMessage = r.error
+        // 1日あたりクォータ超過は当日フラグを立てて即打ち切り（残りクエリを叩いても全て失敗するため）
+        if (/quota exceeded/i.test(r.error) && /per\s*day/i.test(r.error)) {
+          debug.quotaExhausted = true
+          await admin.from('app_config').upsert(
+            { key: 'places_quota_exhausted', value: { date: new Date().toISOString().slice(0, 10), at: new Date().toISOString() }, updated_date: new Date().toISOString() },
+            { onConflict: 'key' },
+          ).then(() => {}, () => {})
+          break
+        }
+      }
       counts.apiReturned += r.apiReturned; counts.pages += r.pages; counts.uniquePlaceIds += r.places.length
       // クエリ別の内訳（取得→Details→判定→保存→スキップ理由）
       const qstat: any = {
