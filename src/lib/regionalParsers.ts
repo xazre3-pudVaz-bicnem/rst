@@ -81,6 +81,11 @@ export function detectParserType(site: any, html: string, url: string): ParserTy
   if (['goguynet', 'kaitenheiten', 'tsushin'].includes(fam)) return 'openclose_article'
   if (['saikohkunavi', 'local_directory'].includes(fam)) return 'local_directory_new_listing'
   if (fam === 'horby') return 'horby_new_salon'
+  // ドメインヒント: 号外NET系ネットワーク（goguynet本体＋OEMの地域つうしん/ローカルマガジン）は記事型。
+  //  記事URLが /12345/ や /12345.html 形式で、カテゴリURLに shop/newshop 等を含むためURLヒントで
+  //  マーケット型に誤判定され記事リンク0になっていた（例: minamisuna1.com/newshop, arakawa102.com,
+  //  katsushika-tsushin.com）。ドメインで先に記事型に確定させる。
+  if (/(goguynet\.jp|-?tsushin\.com|arakawa102\.com|minamisuna1\.com|[a-z]+102\.com|[a-z]+2\.jp)/i.test(url)) return 'openclose_article'
   // URLヒント: 検索結果/新着順/店舗一覧 → マーケットプレイス
   if (/(searchResult|\bsearch\b|sort(Type)?=|newest|\bstore\b|\bshop\b|\blist\b|menuType=)/i.test(url)) return 'marketplace_listing'
   // HTML構造: 店舗カードらしきクラスが多い → マーケットプレイス
