@@ -368,20 +368,36 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     //    開店記事サイトが高頻度(〜6-8h)で、ディレクトリ等は日次で巡回される（鮮度と網羅の両立）。
     //    以前は last_crawled_at 昇順の一律ラウンドロビンで、327サイトを2日かけて一巡＝開店記事が
     //    最大2日遅れで取得され「他社が電話し終えた後」になっていた。
+    let list: any[] = []
     if (runMode === 'priority') {
       sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
       const { data: sites } = await sq.limit(maxSites)
-      var list = sites || []
+      list = sites || []
     } else {
-      // 候補を広めに取得（超過度でJS側ソート）。never-crawledは最優先。
-      const { data: pool } = await sq.order('last_crawled_at', { ascending: true, nullsFirst: true }).limit(Math.max(maxSites * 4, 200))
+      // 候補を広めに取得し、「締切（最終巡回＋目標間隔）を過ぎた分の絶対時間」が大きい順で選ぶ。
+      // 比率(超過度)で並べると目標6hの開店記事型が常に勝ち、目標24hのディレクトリ型(彩北なび/いばナビ等)が
+      // 4日に1回まで枯渇していた。締切ベースの絶対時間なら、ディレクトリも目標を数時間過ぎれば選ばれる。
+      const { data: pool } = await sq.order('last_crawled_at', { ascending: true, nullsFirst: true }).limit(Math.max(maxSites * 4, 240))
       const nowMs = Date.now()
-      const targetH = (s: any) => (String(s.source_type) === 'openclose_article' ? 6 : 24)
-      const overdue = (s: any) => {
+      const targetMs = (s: any) => (String(s.source_type) === 'openclose_article' ? 6 : 24) * 3600 * 1000
+      const overdueBy = (s: any) => {
         if (!s.last_crawled_at) return Number.MAX_SAFE_INTEGER
-        return (nowMs - Date.parse(s.last_crawled_at)) / (targetH(s) * 3600 * 1000)
+        return nowMs - (Date.parse(s.last_crawled_at) + targetMs(s)) // 締切を過ぎた絶対ミリ秒（負=まだ余裕）
       }
-      var list = (pool || []).sort((a: any, b: any) => overdue(b) - overdue(a)).slice(0, maxSites)
+      const byOverdue = (a: any, b: any) => overdueBy(b) - overdueBy(a)
+      // 開店記事型に大量の滞留があると枠を独占し、ディレクトリ型(彩北なび/いばナビ等)が枯渇するため、
+      // 非開店記事型で「締切超過済み」のサイトに最大20%の枠を予約する（枯渇防止）。残りは開店記事型優先。
+      const ocPool = (pool || []).filter((s: any) => String(s.source_type) === 'openclose_article').sort(byOverdue)
+      const otherDue = (pool || []).filter((s: any) => String(s.source_type) !== 'openclose_article' && overdueBy(s) >= 0).sort(byOverdue)
+      const otherQuota = Math.min(otherDue.length, Math.ceil(maxSites * 0.2))
+      const otherPick = otherDue.slice(0, otherQuota)
+      const ocPick = ocPool.slice(0, maxSites - otherPick.length)
+      // 予約枠が余ったら開店記事型で埋める
+      list = [...ocPick, ...otherPick].slice(0, maxSites)
+      if (list.length < maxSites) {
+        const chosen = new Set(list.map((s: any) => s.id))
+        for (const s of (pool || []).sort(byOverdue)) { if (list.length >= maxSites) break; if (!chosen.has(s.id)) list.push(s) }
+      }
     }
     const failedSites: { id: string; name: string; reason: string }[] = []
     const nowIso = new Date().toISOString()

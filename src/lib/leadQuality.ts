@@ -127,7 +127,13 @@ export function isRealStoreAddress(addr?: string | null): boolean {
   if (ADDR_JUNK_RE.test(s)) return false                       // 「最新まとめ」等のカテゴリ文言を含む
   const prefs = s.match(PREF_G) || []
   if (prefs.length >= 2) return false                          // 都道府県が2つ以上＝カテゴリナビ/パンくず
-  if (!prefs.length) return false                             // 都道府県が無い
+  if (!prefs.length) {
+    // 都道府県が無くても「◯◯市/区/町/村 ＋ 番地(数字-数字 や 丁目N番)」があれば実店舗住所とみなす。
+    // 地域メディア(彩北なび等)は県名を省いて「深谷市国済寺516-22」の形で載せるため、県名必須だと
+    // その媒体の全店が「実店舗住所なし」で投入ゲートに弾かれていた。カテゴリ列挙は下の区切りチェックで排除。
+    const hasCityBanchi = /[一-龥ぁ-んァ-ヶ]{1,8}[市区町村][一-龥ぁ-んァ-ヶ0-9０-９ー]{1,20}(?:[0-9０-９]+[-－丁]|[0-9０-９]+番)/.test(s)
+    if (!hasCityBanchi) return false
+  }
   // 「・」等で複数エリアが並ぶ（見沼区・岩槻区・浦和区・緑区 のようなカテゴリ列挙）はNG。
   // ※以前は [区市町村] の総数>=3 で弾いていたが、政令市の正規住所は「市＋区＋◯◯町」で必ず3つに達するため
   //   さいたま市大宮区桜木町… 等の実住所を巻き込み、主要商圏の個人店が恒久的に投入されなかった。
