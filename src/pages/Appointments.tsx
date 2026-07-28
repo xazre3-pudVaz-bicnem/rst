@@ -290,6 +290,13 @@ export default function Appointments() {
                                     </DropdownMenuItem>
                                   </>
                                 )}
+                                {c?.address && (
+                                  <DropdownMenuItem
+                                    onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.address)}`, '_blank', 'noopener,noreferrer')}
+                                  >
+                                    地図を開く
+                                  </DropdownMenuItem>
+                                )}
                                 <DropdownMenuItem onClick={() => openEdit(a)}>予定を編集</DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
