@@ -170,7 +170,7 @@ async function fetchDetailPage(url: string, mode: string, timeoutMs = DETAIL_TIM
 
 /** robots.txt の User-agent:* で path が Disallow されていないか（簡易） */
 async function robotsAllows(origin: string, path: string): Promise<boolean> {
-  const txt = await fetchText(`${origin}/robots.txt`, 6000)
+  const txt = await fetchText(`${origin}/robots.txt`, 3500)
   if (!txt) return true // 取得不可なら許可とみなす（その代わりレート制限を守る）
   const lines = txt.split(/\r?\n/).map((l) => l.trim())
   let appliesToAll = false
@@ -315,7 +315,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
   const maxSites = runMode === 'test' ? 3 : runMode === 'selected' ? Math.max(1, selectedSiteIds.length || 50) : batchSites
   const maxArticles = Math.max(1, Number(s.maxArticlesPerSite) || 5)
   const dailyCap = Math.max(1, Number(s.dailyCap) || 30)
-  const delay = Math.max(200, Number(s.fetchDelayMs) || 800)
+  const delay = Math.max(150, Number(s.fetchDelayMs) || 350)
   const enrichEnabled = s.regionalEnrichEnabled !== false
   const enrichMaxQueries = Math.max(0, Number(s.regionalEnrichMaxQueries) || 3)
   const enrichPerQuery = Math.max(1, Math.min(10, Number(s.regionalEnrichPerQuery) || 5))
@@ -361,14 +361,28 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
     if (runMode === 'selected' && selectedSiteIds.length) sq = sq.in('id', selectedSiteIds)
     if (excludeSiteIds.length) sq = sq.not('id', 'in', `(${excludeSiteIds.join(',')})`)  // 全サイト巡回: 既に処理済みを除外して次バッチへ
     // 選定順:
-    //  - all（自動巡回）: 「最終巡回が古い順」＝ラウンドロビンで全サイトを確実に一巡させる（信頼度は同着時のタイブレークのみ）。
-    //    以前は reliability DESC 主キーだったため、上位(score≥75)92サイトで毎回の枠(60)を食い潰し、
-    //    号外NET(score70)の270サイトに順番が一度も回らず13日以上未巡回だった。
-    //  - priority（手動の優先実行）: 従来どおり信頼度の高い順。
-    if (runMode === 'priority') sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
-    else sq = sq.order('last_crawled_at', { ascending: true, nullsFirst: true }).order('reliability_score', { ascending: false })
-    const { data: sites } = await sq.limit(maxSites)
-    const list = sites || []
+    //  - priority（手動の優先実行）: 信頼度の高い順。
+    //  - all（自動巡回）: 「種別ごとの目標巡回間隔に対する超過度」が大きい順で選ぶ。
+    //    開店記事型(openclose_article/号外NET等)は毎日新店が出て他社と取り合いになるため目標6h、
+    //    店舗ディレクトリ等は目標24h。超過度=(now-最終巡回)/目標間隔 が大きい順に回すことで、
+    //    開店記事サイトが高頻度(〜6-8h)で、ディレクトリ等は日次で巡回される（鮮度と網羅の両立）。
+    //    以前は last_crawled_at 昇順の一律ラウンドロビンで、327サイトを2日かけて一巡＝開店記事が
+    //    最大2日遅れで取得され「他社が電話し終えた後」になっていた。
+    if (runMode === 'priority') {
+      sq = sq.order('reliability_score', { ascending: false }).order('last_crawled_at', { ascending: true, nullsFirst: true })
+      const { data: sites } = await sq.limit(maxSites)
+      var list = sites || []
+    } else {
+      // 候補を広めに取得（超過度でJS側ソート）。never-crawledは最優先。
+      const { data: pool } = await sq.order('last_crawled_at', { ascending: true, nullsFirst: true }).limit(Math.max(maxSites * 4, 200))
+      const nowMs = Date.now()
+      const targetH = (s: any) => (String(s.source_type) === 'openclose_article' ? 6 : 24)
+      const overdue = (s: any) => {
+        if (!s.last_crawled_at) return Number.MAX_SAFE_INTEGER
+        return (nowMs - Date.parse(s.last_crawled_at)) / (targetH(s) * 3600 * 1000)
+      }
+      var list = (pool || []).sort((a: any, b: any) => overdue(b) - overdue(a)).slice(0, maxSites)
+    }
     const failedSites: { id: string; name: string; reason: string }[] = []
     const nowIso = new Date().toISOString()
     const now = Date.now()
@@ -437,7 +451,16 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       let base: URL
       try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正', last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {}); continue }
 
-      const allowed = await robotsAllows(base.origin, base.pathname)
+      // robots判定はサイト単位でキャッシュ（7日）。毎回robots.txtを取得(最大6s)するのが
+      // 巡回スループット最大のボトルネックだったため、7日以内に確認済みなら実取得を省く。
+      let allowed: boolean
+      const robotsFresh = site.robots_checked_at && (Date.now() - Date.parse(site.robots_checked_at)) < 7 * 86400000
+      if (robotsFresh && typeof site.robots_allowed === 'boolean') {
+        allowed = site.robots_allowed
+      } else {
+        allowed = await robotsAllows(base.origin, base.pathname)
+        await admin.from('source_sites').update({ robots_allowed: allowed, robots_checked_at: nowIso }).eq('id', site.id).then(() => {}, () => {})
+      }
       if (!allowed) {
         debug.siteResults.push({ site: site.name, error: 'robots.txt により不許可' })
         await admin.from('source_sites').update({ last_crawled_at: nowIso, updated_at: nowIso, last_crawl_result: 'robots.txtにより不許可' }).eq('id', site.id)
