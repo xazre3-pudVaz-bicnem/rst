@@ -301,10 +301,14 @@ export default function CaseDetail({
         {row('作成日', moment(c.created_date).format('YYYY/MM/DD HH:mm'))}
         {row('更新日', moment(c.updated_date).format('YYYY/MM/DD HH:mm'))}
         {row('メモ', <span className="whitespace-pre-wrap">{c.memo}</span>)}
-        {c.source_urls && row('情報源', (
+        {c.source_urls && row('掲載元', (
           <div className="space-y-0.5">
             {c.source_urls.split('\n').filter(Boolean).map((u, i) => (
-              <div key={i}>{urlCell(u, u)}</div>
+              <div key={i}>
+                {/^\s*(https?:\/\/|www\.)|\.[a-z]{2,}\//i.test(u.trim())
+                  ? urlCell(u.trim(), u.trim())
+                  : <span className="text-muted-foreground">{u}</span>}
+              </div>
             ))}
           </div>
         ))}
