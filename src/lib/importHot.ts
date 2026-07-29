@@ -383,8 +383,14 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       linkedDup++; continue
     }
     // 3) 投入
-    const name = c.name && c.name !== '店名未確定' ? c.name : (c.name || '（店名未確定）')
-    const nameUnclear = !c.name || c.name === '店名未確定'
+    // サイト名/ドメイン/媒体見出しが店名として入ってしまうケース（例「開店閉店.com」）は店名未確定扱いにする。
+    const looksLikeSiteName = (n: string) => !!n && (
+      /\.(com|jp|net|info|co)\b/i.test(n) ||
+      /まとめ|マガジン|情報を集め|ナビ$|ドットコム|の開店|開店・?閉店$/i.test(n) ||
+      (!!c.source_site_name && n.replace(/\s/g, '') === String(c.source_site_name).replace(/\s/g, ''))
+    )
+    const nameUnclear = !c.name || c.name === '店名未確定' || looksLikeSiteName(c.name)
+    const name = nameUnclear ? '（店名未確定）' : c.name
     const origin = phoneOrigin(c)
     // 開業タイミング（メモ・priority・自動再コールで共用）。
     // 信用条件: (1) opening_date列がある行のみ「投入時点の値」で再計算して使う（days_*スナップショットは
