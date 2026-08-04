@@ -199,10 +199,10 @@ export default function Dashboard() {
     }
   }, [loadAll])
 
-  // Appointments からの ?case=id 連携
+  // Appointments からの ?case=id 連携。スマホでは一覧を経由せず直接その案件の詳細タブを開く。
   useEffect(() => {
     const cid = searchParams.get('case')
-    if (cid) setSelectedCaseId(cid)
+    if (cid) { setSelectedCaseId(cid); setActiveTab('detail') }
   }, [searchParams])
 
   const selectedCase = useMemo(
