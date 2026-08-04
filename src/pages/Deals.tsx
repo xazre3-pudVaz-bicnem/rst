@@ -30,7 +30,10 @@ export default function Deals() {
     if (!isSupabaseConfigured) { setLoading(false); return }
     try {
       const [all, cases] = await Promise.all([VisitReportApi.listAll(), CaseApi.listAll()])
-      setReports(all.filter((r) => r.result === '成約'))
+      // 契約日の新しい順（降順）。契約日が無いものは末尾。
+      const deals = all.filter((r) => r.result === '成約')
+        .sort((a, b) => String(b.contract_date || '').localeCompare(String(a.contract_date || '')))
+      setReports(deals)
       setCaseMap(new Map(cases.map((c) => [c.id, c])))
     } catch (e) {
       console.error('[Deals]', e)
