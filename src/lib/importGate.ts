@@ -48,16 +48,17 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   // 1) 電話（HOTの絶対条件）: 日本の有効な番号・フリーダイヤル/ナビダイヤル不可
   if (!phone || !isJapanPhone(phone) || !isValidJpPhone(phone)) return hold('電話番号なし/無効（投入ゲート）')
   if (isTollFreeJp(phone)) return exclude(`フリーダイヤル(${phone})は店舗直通でないため対象外（投入ゲート）`)
-  // 2) 住所: 実店舗住所・国内
-  if (!address || !isRealStoreAddress(address) || isForeignAddress(address)) return hold('実店舗住所なし/国外（投入ゲート）')
-  // 2.5) バーチャルオフィス/登記用住所: 実店舗なし開業はMEO/HP営業の対象外（確定語=除外 / 汎用語=要確認）
-  {
+  // 2) 住所: 電話があれば住所は任意（方針変更）。ただし住所が「ある」ときは実店舗・国内であること。
+  //    住所なしでも電話で架電営業できるため投入可。国外/非実店舗の“誤った住所”だけは弾く。
+  if (address) {
+    if (!isRealStoreAddress(address) || isForeignAddress(address)) return hold('掲載住所が実店舗住所でない/国外（投入ゲート）')
+    // 2.5) バーチャルオフィス/登記用住所: 実店舗なし開業はMEO/HP営業の対象外（確定語=除外 / 汎用語=要確認）
     const vo = isVirtualOfficeAddress(address)
     if (vo.definite) return exclude(`バーチャルオフィス/登記用住所（${vo.word}）＝実店舗なしのため対象外（投入ゲート）`)
     if (vo.hit) return hold(`レンタル/シェアオフィス系住所（${vo.word}）＝実店舗か要確認（投入ゲート）`)
+    // 3) 電話×住所の地域整合（固定電話の市外局番と都道府県の不一致=別店舗/本社番号の誤抽出）
+    if (phoneAddressMatch(phone, address) === 'mismatch') return hold(`電話(${phone})と住所の地域不一致（誤抽出/本社番号の疑い・投入ゲート)`)
   }
-  // 3) 電話×住所の地域整合（固定電話の市外局番と都道府県の不一致=別店舗/本社番号の誤抽出）
-  if (phoneAddressMatch(phone, address) === 'mismatch') return hold(`電話(${phone})と住所の地域不一致（誤抽出/本社番号の疑い・投入ゲート)`)
   // 3.9) 記事タイトル/本文が閉店・休業ニュースなら除外（開店語が併記されていれば新店記事とみなし除外しない）
   //      例:「トモズ元住吉店が7月26日で閉店。」が店名未確定のまま新店として投入されるのを防ぐ
   {

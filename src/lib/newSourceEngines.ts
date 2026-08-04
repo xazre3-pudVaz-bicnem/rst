@@ -103,8 +103,9 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
 
   let temperature = 'HOLD'; let hotTier: 'A' | 'B' | null = null; let holdReason = ''
   if (closed.closed || big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || portalNoise || hardEx) temperature = 'EXCLUDED'
-  else if (phoneOk && address && isRealStoreAddress(address) && isJapan && shopConfirmed && hasNewness) { temperature = 'HOT'; hotTier = 'B' }
-  else { holdReason = !phoneOk ? '電話番号なし/無効' : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし' : !shopConfirmed ? '実店舗名が未確定' : !hasNewness ? '新規根拠が確認できず' : '要確認' }
+  // 住所は任意（方針変更）: 店名が確定していれば電話＋新規根拠でHOT。住所があるときは実店舗住所であること。
+  else if (phoneOk && isJapan && shopConfirmed && hasNewness && (!address || isRealStoreAddress(address))) { temperature = 'HOT'; hotTier = 'B' }
+  else { holdReason = !phoneOk ? '電話番号なし/無効' : (address && !isRealStoreAddress(address)) ? '掲載住所が実店舗住所でない' : !shopConfirmed ? '実店舗名が未確定' : !hasNewness ? '新規根拠が確認できず' : '要確認' }
 
   const reason = `${o.label}: 「${name}」${hasNewness ? ' / 新規根拠あり' : ''}${o.evidenceIso ? ` / 根拠日:${o.evidenceIso.slice(0, 10)}` : ''}${holdReason ? `（HOLD理由: ${holdReason}）` : ''}${enrich?.status ? ` / 補完[${enrich.status}]` : ''}`
   const payload: any = {
@@ -758,8 +759,8 @@ export async function runTextImport(admin: any, mapsKey: string | null, text: st
     const anchored = !!phone0 || !!address0
     if (big.exclude || chain.definite || multi.exclude || isForeignAddress(address) || hardEx) temperature = 'EXCLUDED'
     // 人手で選んだリスト＝新規根拠は担保されている前提。電話+実店舗住所+日本ならHOT-B（店名未確定でも可）
-    else if (anchored && phoneOk && address && isRealStoreAddress(address) && isJapan) { temperature = 'HOT'; hotTier = 'B' }
-    else holdReason = !phoneOk ? '電話番号なし/無効' : (!address || !isRealStoreAddress(address)) ? '実店舗住所なし' : !anchored ? '店名のみ入力（補完誤マッチ防止のため要確認）' : '要確認'
+    else if (anchored && phoneOk && isJapan && (!address || isRealStoreAddress(address))) { temperature = 'HOT'; hotTier = 'B' }
+    else holdReason = !phoneOk ? '電話番号なし/無効' : (address && !isRealStoreAddress(address)) ? '掲載住所が実店舗住所でない' : !anchored ? '店名のみ入力（補完誤マッチ防止のため要確認）' : '要確認'
     if (temperature === 'HOT') counts.hot++; else if (temperature === 'EXCLUDED') counts.excluded++; else counts.hold++
     const reason = `テキスト貼り付け取込: 「${name}」${meta.memo ? ` / メモ:${meta.memo}` : ''}${holdReason ? `（HOLD理由: ${holdReason}）` : ''}${e?.status ? ` / 補完[${e.status}]` : ''}`
     const payload: any = {
