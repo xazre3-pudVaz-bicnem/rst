@@ -110,13 +110,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 【重要】内部予算は sourceHardMs より必ず小さくする（＝innerBudgetMs）。同値(220000)だとエンジンの
     //   安全停止が完了する前に Promise.race のタイムアウトが発火してエンジンを放棄し、run行がrunningのまま
     //   残って"60s上限"errorになる（regional_mediaで既知・修正済みの現象。google_placesが直し漏れていた）。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: focused ? Math.min(240000, sourceHardMs - 15000) : innerBudgetMs, placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 60) : 60 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: focused ? Math.min(240000, sourceHardMs - 15000) : innerBudgetMs, placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 120) : 120 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 60, maxSitesPerDay: focused ? 80 : 60, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 80, maxSitesPerDay: focused ? 100 : 100, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
   if (wantType('instagram')) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
@@ -127,7 +127,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'sequential_auto')
     if (cfg.sequentialEnabled === false) return { skipped: true }
     // 全巡回時は forwardCount/cap を小さく（~10s）。連番単独実行時は設定値で本格実行（バウンドは設定より優先）
-    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 500) : 400, ...(focused ? {} : { forwardCount: 40 }) }, opts.userId || null)
+    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 900) : 900, ...(focused ? {} : { forwardCount: 40 }) }, opts.userId || null)
   } })
   if (wantType('discovery')) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
     const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }

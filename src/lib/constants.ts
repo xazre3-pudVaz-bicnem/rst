@@ -359,9 +359,9 @@ export const DEFAULT_LEAD_SETTINGS = {
   rotation: true,
   autoFetch: true,
   placesNationwide: true,
-  placesMaxQueriesPerDay: 60,
+  placesMaxQueriesPerDay: 120,
   placesPerQuery: 20,
-  placesMaxDetailsPerDay: 100,
+  placesMaxDetailsPerDay: 200,
   placesDetailsLimitPerRun: 100,        // 1回あたりPlace Details上限
   placesSkipDetailsIfReviewsOver: 100,  // 口コミN件以上はDetailsスキップ
   placesOpeningDatePriority: true,       // openingDate最優先（既定ON）
@@ -369,7 +369,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   placesResultsPerQueryLimit: 60,       // 1クエリの最大件数
   aiInjectMode: 'standard' as 'strict' | 'standard' | 'aggressive',
   autoImportPerRun: 50,
-  autoImportPerDay: 200,
+  autoImportPerDay: 400,
   igEnabled: true,
   igAutoImport: false,
   igRequirePhone: true,
@@ -382,7 +382,7 @@ export const DEFAULT_LEAD_SETTINGS = {
   regionalMaxSites: 3,
   regionalBatchSites: 8,
   horbyMaxDetails: 2,
-  probeDailyCap: 500,
+  probeDailyCap: 900,
   regionalMaxArticles: 5,
   regionalPeriodDays: 30,
   regionalEnrichEnabled: true,
