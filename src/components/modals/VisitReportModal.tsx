@@ -41,6 +41,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const { user } = useAuth()
   const { names: repNames } = useAssignableUsers()
   const [salesRep, setSalesRep] = useState('')
+  const [caseName, setCaseName] = useState('')  // 案件未登録の直接成約登録用の店舗名（selectedCaseが無いとき使用）
   const toast = useToast()
   const [busy, setBusy] = useState(false)
   const [visitedAt, setVisitedAt] = useState(() => moment().format('YYYY-MM-DDTHH:mm'))
@@ -69,6 +70,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpPayType(editing.hp_payment_type === '分割' ? '分割' : '一括')
       setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
       setSalesRep(editing.sales_rep ?? '')
+      setCaseName(editing.case_name ?? '')
     } else {
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
@@ -81,6 +83,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpPayType('一括')
       setHpInstallments('')
       setSalesRep('')
+      setCaseName('')
     }
   }, [open, editing])
 
@@ -93,13 +96,17 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const total = initialTotal + monthlyTotal
   const hpSplit = hpSplitInfo(priceNums)
 
+  // 案件(selectedCase)がある通常フローと、案件未登録で直接成約を登録するフロー両対応。
+  const effName = selectedCase?.name ?? caseName.trim()
+  const effCaseId = selectedCase?.id ?? editing?.case_id ?? null
+
   async function handleSave() {
-    if (!selectedCase) return
+    if (!effName) { toast.error('店舗名を入力してください'); return }
     setBusy(true)
     try {
       const payload: Partial<VisitReport> = {
-        case_id: selectedCase.id,
-        case_name: selectedCase.name,
+        case_id: effCaseId,
+        case_name: effName,
         appointment_id: appointmentId ?? editing?.appointment_id ?? null,
         visited_at: moment(visitedAt).toISOString(),
         result,
@@ -131,8 +138,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       }
       if (editing) await VisitReportApi.update(editing.id, payload)
       else await VisitReportApi.create(payload)
-      // 案件ステータスも訪問結果に合わせて更新
-      await CaseApi.update(selectedCase.id, { status: result })
+      // 案件ステータスも訪問結果に合わせて更新（案件未登録の直接成約はスキップ）
+      if (effCaseId) await CaseApi.update(effCaseId, { status: result })
       toast.success(`訪問結果（${result}）を登録しました`)
       onSaved()
       onClose()
@@ -149,12 +156,19 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {editing ? '訪問結果を編集' : '訪問結果を登録'}
-            {selectedCase && <span className="ml-2 text-2xs font-normal text-muted-foreground">{selectedCase.name}</span>}
+            {editing ? '訪問結果を編集' : (selectedCase ? '訪問結果を登録' : '成約を登録')}
+            {effName && <span className="ml-2 text-2xs font-normal text-muted-foreground">{effName}</span>}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-2">
+          {/* 案件未登録の直接成約登録時は店舗名を手入力（selectedCaseがある通常フローでは非表示） */}
+          {!selectedCase && (
+            <div className="space-y-1">
+              <Label>店舗名<span className="ml-1 text-2xs font-normal text-muted-foreground">（案件未登録）</span></Label>
+              <Input placeholder="例: 〇〇カフェ" value={caseName} onChange={(e) => setCaseName(e.target.value)} />
+            </div>
+          )}
           <div className="space-y-1">
             <Label>訪問日時</Label>
             <DateTime15Input value={visitedAt} onChange={setVisitedAt} />
@@ -277,7 +291,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>キャンセル</Button>
-          <Button onClick={handleSave} disabled={busy || !selectedCase}>{busy ? '保存中...' : '保存'}</Button>
+          <Button onClick={handleSave} disabled={busy || !effName}>{busy ? '保存中...' : '保存'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

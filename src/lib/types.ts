@@ -67,7 +67,7 @@ export interface Appointment {
 // ===== 訪問結果（成約/失注）＋契約詳細 =====
 export interface VisitReport {
   id: string
-  case_id: string
+  case_id?: string | null   // 案件未登録の直接成約登録では null
   case_name?: string | null
   appointment_id?: string | null
   visited_at: string

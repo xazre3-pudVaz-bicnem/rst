@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import moment from 'moment'
-import { Handshake, Pencil, Trash2 } from 'lucide-react'
+import { Handshake, Pencil, Trash2, Plus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import TopBar from '@/components/layout/TopBar'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { VisitReportApi, CaseApi } from '@/lib/api'
@@ -23,6 +24,7 @@ export default function Deals() {
   const [caseMap, setCaseMap] = useState<Map<string, Case>>(new Map())
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<VisitReport | null>(null)
+  const [creating, setCreating] = useState(false)  // 案件未登録の直接成約登録
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -61,6 +63,10 @@ export default function Deals() {
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
             {totals.count}件 / 初期 {yen(totals.initial)} ・ 月額 {yen(totals.monthly)}/月
           </span>
+          {/* 案件未登録でも成約を直接登録できる */}
+          <Button size="sm" className="ml-auto bg-emerald-600 hover:bg-emerald-700" onClick={() => setCreating(true)}>
+            <Plus className="mr-1 h-4 w-4" /> 成約を直接登録
+          </Button>
         </div>
 
         <div className="overflow-x-auto rounded-xl border bg-card">
@@ -87,10 +93,12 @@ export default function Deals() {
               {reports.map((r) => (
                 <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                   <td className="px-2 py-1.5">
-                    <button className="font-medium text-primary hover:underline" onClick={() => navigate(`/?case=${r.case_id}`)}>
-                      {caseMap.get(r.case_id)?.name || r.case_name}
+                    {/* 案件に紐づく成約は案件詳細へ、案件未登録の直接成約は編集を開く */}
+                    <button className="font-medium text-primary hover:underline" onClick={() => (r.case_id ? navigate(`/?case=${r.case_id}`) : setEditing(r))}>
+                      {(r.case_id ? caseMap.get(r.case_id)?.name : null) || r.case_name}
+                      {!r.case_id && <span className="ml-1 text-2xs font-normal text-muted-foreground">(案件未登録)</span>}
                     </button>
-                    <div className="text-2xs text-muted-foreground">{caseMap.get(r.case_id)?.address || ''}</div>
+                    <div className="text-2xs text-muted-foreground">{(r.case_id ? caseMap.get(r.case_id)?.address : '') || ''}</div>
                   </td>
                   <td className="px-2 py-1.5">{r.contract_date ? moment(r.contract_date).format('YYYY/MM/DD') : '—'}</td>
                   <td className="px-2 py-1.5">
@@ -134,9 +142,10 @@ export default function Deals() {
       </div>
 
       <VisitReportModal
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        selectedCase={editing ? (caseMap.get(editing.case_id) ?? ({ id: editing.case_id, name: editing.case_name } as Case)) : null}
+        open={!!editing || creating}
+        onClose={() => { setEditing(null); setCreating(false) }}
+        // 案件に紐づく既存成約の編集は該当caseを渡す（案件未登録の直接成約はnull＝店舗名を手入力）
+        selectedCase={editing && editing.case_id ? (caseMap.get(editing.case_id) ?? ({ id: editing.case_id, name: editing.case_name } as Case)) : null}
         editing={editing}
         onSaved={load}
       />
