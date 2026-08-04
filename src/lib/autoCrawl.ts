@@ -107,7 +107,10 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'lead_auto')
     if (cfg.autoFetch === false) return { skipped: true }
     // 全取得元巡回では10s/5クエリに制限し他フェーズへ譲る。Places単独実行(only=places)は42s/設定値で本格実行。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: pb(220000, 240000), placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 60) : 60 }, opts.userId || null)
+    // 【重要】内部予算は sourceHardMs より必ず小さくする（＝innerBudgetMs）。同値(220000)だとエンジンの
+    //   安全停止が完了する前に Promise.race のタイムアウトが発火してエンジンを放棄し、run行がrunningのまま
+    //   残って"60s上限"errorになる（regional_mediaで既知・修正済みの現象。google_placesが直し漏れていた）。
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: focused ? Math.min(240000, sourceHardMs - 15000) : innerBudgetMs, placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 60) : 60 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')
