@@ -98,8 +98,12 @@ export default function Deals() {
                     return (
                       <td key={p.key} className={`px-2 py-1.5 text-right tabular-nums ${v != null ? 'font-medium text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground/40'}`}>
                         {yen(v)}
-                        {split && <span className="block text-[9px] font-normal text-muted-foreground">分割 ¥{split.monthly.toLocaleString()}×{split.months}回</span>}
-                        {p.key === 'hp_price' && v != null && !split && <span className="block text-[9px] font-normal text-muted-foreground">一括</span>}
+                        {/* HP制作の支払区分を一目で分かるバッジで表示（分割=琥珀 / 一括=青） */}
+                        {p.key === 'hp_price' && v != null && (
+                          split
+                            ? <span className="mt-0.5 block"><span className="rounded bg-amber-100 px-1 py-px text-[9px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">分割</span><span className="ml-1 text-[9px] font-normal text-muted-foreground">¥{split.monthly.toLocaleString()}×{split.months}回</span></span>
+                            : <span className="mt-0.5 block"><span className="rounded bg-sky-100 px-1 py-px text-[9px] font-bold text-sky-700 dark:bg-sky-500/20 dark:text-sky-300">一括</span></span>
+                        )}
                       </td>
                     )
                   })}
