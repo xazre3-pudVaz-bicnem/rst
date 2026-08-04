@@ -23,13 +23,14 @@ export default function TopBar() {
     return true
   })
 
-  const navItem = (to: string, label: string, icon: React.ReactNode) => {
+  // core=true の項目（案件・訪問予定）だけスマホで表示。他は md 以上でのみ表示してスマホUIを絞る。
+  const navItem = (to: string, label: string, icon: React.ReactNode, core = false) => {
     const active = location.pathname === to
     return (
       <Link
         to={to}
         title={label}
-        className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
+        className={`${core ? 'flex' : 'hidden md:flex'} shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
           active
             ? 'bg-primary/10 text-primary font-medium'
             : 'text-muted-foreground hover:bg-accent'
@@ -49,7 +50,7 @@ export default function TopBar() {
         </Link>
         <nav className="flex items-center gap-0.5 overflow-x-auto sm:gap-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {navItem('/home', 'ホーム', <LayoutDashboard className="h-3.5 w-3.5" />)}
-          {/* 案件は全リロードで検索リセット */}
+          {/* 案件は全リロードで検索リセット（スマホでも常時表示のコア機能） */}
           <a
             href="/"
             title="案件"
@@ -61,7 +62,7 @@ export default function TopBar() {
             <span className="hidden sm:inline">案件</span>
           </a>
           {navItem('/leads', 'AI投入', <Sparkles className="h-3.5 w-3.5" />)}
-          {navItem('/appointments', '訪問予定', <Calendar className="h-3.5 w-3.5" />)}
+          {navItem('/appointments', '訪問予定', <Calendar className="h-3.5 w-3.5" />, true)}
           {navItem(
             '/analytics',
             'KPI',
@@ -73,12 +74,12 @@ export default function TopBar() {
           {navItem('/deals', '成約案件', <Handshake className="h-3.5 w-3.5" />)}
           {navItem('/users', 'ユーザー', <Users className="h-3.5 w-3.5" />)}
 
-          {/* 労務管理（ドロップダウン） */}
+          {/* 労務管理（ドロップダウン）— スマホでは非表示 */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 title="労務管理"
-                className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
+                className={`hidden md:flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
                   laborActive ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-accent'
                 }`}
               >

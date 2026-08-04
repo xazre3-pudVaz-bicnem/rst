@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import moment from 'moment'
-import { ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Trash2, Phone, MapPin, Plus, ClipboardCheck, Pencil } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -86,6 +86,14 @@ export default function Appointments() {
   const dayAppos = useMemo(
     () => appointments.filter((a) => moment(a.appo_at).isSame(currentDate, 'day')),
     [appointments, currentDate],
+  )
+
+  // スマホ用: 当日アポを担当フィルタ適用のうえ時刻順に並べたリスト（横テーブルの代わり）
+  const mobileAppos = useMemo(
+    () => dayAppos
+      .filter((a) => !filterRep || (a.sales_rep ?? '') === filterRep)
+      .sort((a, b) => String(a.appo_at).localeCompare(String(b.appo_at))),
+    [dayAppos, filterRep],
   )
 
   // 担当列: ユーザー管理の候補＋当日アポの担当を統合。空でも未割当列を1つ出して操作可能に
@@ -220,8 +228,85 @@ export default function Appointments() {
         </div>
       </div>
 
-      {/* タイムライングリッド */}
-      <div className="flex-1 overflow-auto">
+      {/* スマホ用: 時刻順カードリスト（横16列テーブルは潰れて見にくいため、スマホではこちらを表示） */}
+      <div className="flex-1 overflow-auto p-2 md:hidden">
+        <Button size="sm" className="mb-2 w-full" onClick={() => openNew(filterRep || '', 9)}>
+          <Plus className="mr-1 h-4 w-4" /> この日に予定を追加
+        </Button>
+        {mobileAppos.length === 0 ? (
+          <p className="py-16 text-center text-sm text-muted-foreground">この日の訪問予定はありません</p>
+        ) : (
+          <div className="space-y-2">
+            {mobileAppos.map((a) => {
+              const c = cases.find((x) => x.id === a.case_id)
+              const phone = c?.phone1
+              const addr = c?.address || a.address
+              const isZoom = a.meeting_type === 'zoom'
+              return (
+                <div
+                  key={a.id}
+                  className={cn(
+                    'rounded-lg border p-3 shadow-sm',
+                    isZoom ? 'border-sky-400/40 bg-sky-400/5' : 'border-primary/30 bg-primary/5',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold tabular-nums leading-none">{moment(a.appo_at).format('HH:mm')}</span>
+                      <span className={cn('rounded px-1.5 py-0.5 text-2xs font-bold text-white', isZoom ? 'bg-sky-500' : 'bg-primary')}>
+                        {isZoom ? 'Zoom' : '対面'}
+                      </span>
+                    </div>
+                    {a.sales_rep && <span className="rounded bg-muted px-2 py-0.5 text-2xs font-medium">{a.sales_rep}</span>}
+                  </div>
+                  <button
+                    onClick={() => (a.case_id ? navigate(`/?case=${a.case_id}`) : openEdit(a))}
+                    className="mt-1.5 block text-left text-base font-bold text-primary"
+                  >
+                    {a.case_name || '（用件未設定）'}
+                  </button>
+                  {addr && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{addr}</p>}
+                  <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+                    {phone && (
+                      <a
+                        href={`tel:${phone}`}
+                        className="flex h-9 items-center justify-center gap-1 rounded-md bg-green-600 text-sm font-bold text-white active:bg-green-700"
+                      >
+                        <Phone className="h-4 w-4" /> 電話
+                      </a>
+                    )}
+                    {addr && (
+                      <button
+                        onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`, '_blank', 'noopener,noreferrer')}
+                        className="flex h-9 items-center justify-center gap-1 rounded-md border border-input text-sm font-medium active:bg-accent"
+                      >
+                        <MapPin className="h-4 w-4" /> 地図
+                      </button>
+                    )}
+                    {a.case_id && (
+                      <button
+                        onClick={() => { setVisitCase(c ?? { id: a.case_id!, name: a.case_name ?? '' } as Case); setVisitApptId(a.id) }}
+                        className="flex h-9 items-center justify-center gap-1 rounded-md border border-input text-sm font-medium active:bg-accent"
+                      >
+                        <ClipboardCheck className="h-4 w-4" /> 訪問結果
+                      </button>
+                    )}
+                    <button
+                      onClick={() => openEdit(a)}
+                      className="flex h-9 items-center justify-center gap-1 rounded-md border border-input text-sm font-medium active:bg-accent"
+                    >
+                      <Pencil className="h-4 w-4" /> 編集
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* タイムライングリッド（PC専用） */}
+      <div className="hidden flex-1 overflow-auto md:block">
         {/* table-fixed + w-full で画面幅いっぱいに広げ、時間列を均等割りにする（バーの2時間幅を正確にするためにも均等が必要） */}
         <table className="w-full table-fixed border-collapse text-2xs">
           {/* 縦軸=営業担当 / 横軸=時間 */}
