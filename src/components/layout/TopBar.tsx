@@ -54,6 +54,8 @@ export default function TopBar() {
           <a
             href="/"
             title="案件"
+            // スマホは初期表示を訪問予定にしているため、「案件」を明示タップしたときはDashboardを開くフラグを立てる
+            onClick={() => { try { sessionStorage.setItem('rst_cases', '1') } catch { /* noop */ } }}
             className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs transition-colors sm:px-2 ${
               location.pathname === '/' ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-accent'
             }`}

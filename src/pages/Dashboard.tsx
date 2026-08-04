@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { Smartphone, Copy, Upload, Plus, Sparkles, FolderOpen } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
@@ -102,6 +102,17 @@ export default function Dashboard() {
   const confirm = useConfirm()
   const { user, displayName, canWrite } = useAuth()
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+
+  // スマホ版の初期表示は訪問予定。アプリを開いた初回(=/へ直接来た)はスマホなら訪問予定へ送る。
+  // 「案件」タブを明示タップしたとき(rst_cases フラグ)と、訪問予定から案件名タップ(?case=)は対象外。
+  useEffect(() => {
+    if (!window.matchMedia('(max-width: 767px)').matches) return
+    if (sessionStorage.getItem('rst_cases')) { sessionStorage.removeItem('rst_cases'); return }
+    if (!searchParams.get('case')) navigate('/appointments', { replace: true })
+    // 初回マウントのみ判定（依存を空に）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [cases, setCases] = useState<Case[]>([])
   const [callLogs, setCallLogs] = useState<CallLog[]>([])
   const [recalls, setRecalls] = useState<Recall[]>([])
