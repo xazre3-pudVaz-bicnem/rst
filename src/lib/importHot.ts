@@ -345,10 +345,13 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
         }
       }
       if (followers == null) {
-        await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の可能性）→手動確認' }).eq('id', c.id)
-        downgraded++; continue
+        // ② 方針変更: フォロワー数は未確認だが、実店舗住所あり・非チェーン/非大手・bio多店舗/大手語なしは
+        //   既に通過済み（line316/342）。従来はHOLDで取りこぼしていたが、要注意コメント付きでそのままHOT投入する。
+        //   （確立店=1000人以上のすり抜けリスクは残るため架電時に要確認）
+        await admin.from('lead_candidates').update({ ai_comment: 'Instagramフォロワー数は未確認。実店舗住所あり・非チェーン・新店根拠ありのためHOT-Bで投入（フォロワー多数＝確立店の可能性は架電時に要確認）' }).eq('id', c.id)
+        // downgradeせず投入処理（重複チェック→case作成）へ継続
       }
-      if (followers >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
+      if (followers != null && followers >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
         await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followers}人(1000人以上=確立済み)のため投入対象外` }).eq('id', c.id)
         reviewExcluded++; continue
       }
