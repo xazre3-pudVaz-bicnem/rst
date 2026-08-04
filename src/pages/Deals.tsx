@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import moment from 'moment'
 import { Handshake, Pencil, Trash2, Plus, Printer } from 'lucide-react'
@@ -25,6 +25,48 @@ export default function Deals() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<VisitReport | null>(null)
   const [creating, setCreating] = useState(false)  // 案件未登録の直接成約登録
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const pdfRef = useRef<HTMLDivElement>(null)
+
+  // 印刷ダイアログを出さずにPDFを直接ダウンロード（html2canvasで画像化→jsPDFに配置）。
+  // 日本語も画像なので確実に出る。生成中は操作列/ボタンを隠し、ダークモードは一時的に解除して白背景に。
+  async function handlePdf() {
+    const el = pdfRef.current
+    if (!el || pdfBusy) return
+    setPdfBusy(true)
+    const root = document.documentElement
+    const wasDark = root.classList.contains('dark')
+    if (wasDark) root.classList.remove('dark')
+    // 操作列/ボタン非表示の再描画を待つ
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))))
+    try {
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+      const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#ffffff', windowWidth: el.scrollWidth })
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+      const margin = 8
+      const pw = pdf.internal.pageSize.getWidth() - margin * 2
+      const ph = pdf.internal.pageSize.getHeight() - margin * 2
+      const imgW = pw
+      const imgH = (canvas.height * imgW) / canvas.width
+      const img = canvas.toDataURL('image/png')
+      let heightLeft = imgH
+      let position = 0
+      pdf.addImage(img, 'PNG', margin, margin + position, imgW, imgH)
+      heightLeft -= ph
+      while (heightLeft > 0) {
+        position -= ph
+        pdf.addPage()
+        pdf.addImage(img, 'PNG', margin, margin + position, imgW, imgH)
+        heightLeft -= ph
+      }
+      pdf.save(`成約案件_${moment().format('YYYY-MM-DD')}.pdf`)
+    } catch (e) {
+      toast.error('PDF生成に失敗しました: ' + jpError(e))
+    } finally {
+      if (wasDark) root.classList.add('dark')
+      setPdfBusy(false)
+    }
+  }
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
@@ -59,18 +101,18 @@ export default function Deals() {
   return (
     <div className="min-h-screen bg-background">
       <div className="print:hidden"><TopBar /></div>
-      <div className="mx-auto max-w-[1400px] p-3 print:max-w-none print:p-2">
+      <div ref={pdfRef} className="mx-auto max-w-[1400px] bg-background p-3 print:max-w-none print:p-2">
         <div className="mb-3 flex items-center gap-2">
           <Handshake className="h-5 w-5 text-emerald-600" />
           <h1 className="text-lg font-bold">成約案件管理</h1>
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
             {totals.count}件 / 初期 {yen(totals.initial)} ・ 月額 {yen(totals.monthly)}/月
           </span>
-          {/* 印刷(PDF)時のみ出力日を表示 */}
-          <span className="ml-2 hidden text-2xs text-muted-foreground print:inline">出力日: {moment().format('YYYY/MM/DD')}</span>
-          <div className="ml-auto flex gap-2 print:hidden">
-            <Button size="sm" variant="outline" onClick={() => window.print()}>
-              <Printer className="mr-1 h-4 w-4" /> PDF出力
+          {/* PDF生成中・印刷時のみ出力日を表示 */}
+          <span className={`ml-2 text-2xs text-muted-foreground print:inline ${pdfBusy ? 'inline' : 'hidden'}`}>出力日: {moment().format('YYYY/MM/DD')}</span>
+          <div className={`ml-auto gap-2 print:hidden ${pdfBusy ? 'hidden' : 'flex'}`}>
+            <Button size="sm" variant="outline" onClick={handlePdf} disabled={pdfBusy}>
+              <Printer className="mr-1 h-4 w-4" /> {pdfBusy ? '生成中...' : 'PDF出力'}
             </Button>
             {/* 案件未登録でも成約を直接登録できる */}
             <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setCreating(true)}>
@@ -79,7 +121,7 @@ export default function Deals() {
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border bg-card print:overflow-visible print:rounded-none print:border-0">
+        <div className={`rounded-xl border bg-card print:overflow-visible print:rounded-none print:border-0 ${pdfBusy ? 'overflow-visible' : 'overflow-x-auto'}`}>
           <table className="w-full min-w-[1000px] text-xs print:min-w-0 print:text-[9px]">
             <thead>
               <tr className="border-b bg-muted/40 text-muted-foreground">
@@ -92,7 +134,7 @@ export default function Deals() {
                 <th className="px-2 py-2 text-right">最低契約期間</th>
                 <th className="px-2 py-2 text-left">支払方法</th>
                 <th className="px-2 py-2 text-left">メモ</th>
-                <th className="px-2 py-2 text-right print:hidden">操作</th>
+                <th className={`px-2 py-2 text-right print:hidden ${pdfBusy ? 'hidden' : ''}`}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -138,7 +180,7 @@ export default function Deals() {
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.min_contract_months != null ? `${r.min_contract_months}ヶ月` : '—'}</td>
                   <td className="px-2 py-1.5">{r.payment_method || '—'}</td>
                   <td className="px-2 py-1.5 max-w-[220px] truncate text-muted-foreground" title={r.memo || ''}>{r.memo || '—'}</td>
-                  <td className="px-2 py-1.5 text-right print:hidden">
+                  <td className={`px-2 py-1.5 text-right print:hidden ${pdfBusy ? 'hidden' : ''}`}>
                     <div className="flex justify-end gap-1">
                       <button className="rounded p-1 text-muted-foreground hover:bg-accent" onClick={() => setEditing(r)} title="編集"><Pencil className="h-3.5 w-3.5" /></button>
                       <button className="rounded p-1 text-red-500 hover:bg-accent" onClick={() => handleDelete(r)} title="削除"><Trash2 className="h-3.5 w-3.5" /></button>

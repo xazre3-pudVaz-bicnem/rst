@@ -68,7 +68,6 @@ export default function Login() {
       <div className="w-full max-w-xs rounded-lg border bg-card p-6 shadow-sm">
         <div className="mb-5 text-center">
           <div className="text-xl font-bold text-primary">RST</div>
-          <div className="text-2xs text-muted-foreground">新規開業店舗CRM</div>
         </div>
 
         {!isSupabaseConfigured && (
