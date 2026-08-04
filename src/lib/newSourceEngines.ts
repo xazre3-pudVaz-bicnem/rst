@@ -333,8 +333,15 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
   const counts: any = { sourceType: type, label: '再評価/補完', scanned: 0, enriched: 0, phoneFound: 0, addressFound: 0, promotedHot: 0, imported: 0 }
   const runId = await startRun(admin, type, userId)
   try {
-    // 対象: HOLD かつ 店名が確定（未確定はノイズが多い）
-    let q = admin.from('lead_candidates').select('id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url,auto_insert_skipped_reason,instagram_url,search_snippet').eq('lead_temperature', 'HOLD').not('name', 'is', null).limit(300)
+    // 対象: HOLD かつ 店名が確定（未確定はノイズが多いのでDB段で除外）。
+    // 【重要】last_enriched_at 昇順(未処理=nullを先頭)で並べる。処理した候補は last_enriched_at が
+    //   更新され後ろに回るため、300件窓が固定化せず全バックログを順に巡回できる（従来は並び順なしで
+    //   先頭300件しか届かず、確定名候補の大半（数千件）に永久に到達できていなかった）。
+    let q = admin.from('lead_candidates').select('id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url,auto_insert_skipped_reason,instagram_url,search_snippet,ai_comment')
+      .eq('lead_temperature', 'HOLD').not('name', 'is', null)
+      .not('name', 'in', '("店名未確定","（店名未確定）","連番探索候補")')
+      .order('last_enriched_at', { ascending: true, nullsFirst: true })
+      .limit(300)
     if (type === 'missing_phone_recheck_queue') q = q.is('phone_number', null).not('address', 'is', null)
     else if (type === 'phone_to_address_enrichment_queue') q = q.not('phone_number', 'is', null).is('address', null)
     // 汎用キューは「一時要因」の理由だけを対象（記事/まとめ・チェーン等の品質理由をHOTへ誤復活させない）
