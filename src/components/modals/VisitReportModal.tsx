@@ -15,6 +15,7 @@ import {
 import { VisitReportApi, CaseApi } from '@/lib/api'
 import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
+import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { useToast } from '@/components/ui/toast'
 import { jpError } from '@/lib/utils'
 import type { Case, VisitReport } from '@/lib/types'
@@ -29,6 +30,7 @@ interface Props {
 }
 
 const NONE = '__none__'
+const AGENCY = '販売代理店'  // ユーザー登録外の営業担当（固定選択肢）
 const num = (v: string): number | null => {
   const n = Number(String(v).replace(/[^\d.-]/g, ''))
   return Number.isFinite(n) && v.trim() !== '' ? Math.round(n) : null
@@ -37,6 +39,8 @@ const num = (v: string): number | null => {
 export default function VisitReportModal({ open, onClose, selectedCase, appointmentId, editing, onSaved }: Props) {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { names: repNames } = useAssignableUsers()
+  const [salesRep, setSalesRep] = useState('')
   const toast = useToast()
   const [busy, setBusy] = useState(false)
   const [visitedAt, setVisitedAt] = useState(() => moment().format('YYYY-MM-DDTHH:mm'))
@@ -64,6 +68,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setPrices(Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, editing[p.key as keyof VisitReport] != null ? String(editing[p.key as keyof VisitReport]) : ''])))
       setHpPayType(editing.hp_payment_type === '分割' ? '分割' : '一括')
       setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
+      setSalesRep(editing.sales_rep ?? '')
     } else {
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
@@ -75,6 +80,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setPayment('')
       setHpPayType('一括')
       setHpInstallments('')
+      setSalesRep('')
     }
   }, [open, editing])
 
@@ -98,6 +104,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
         visited_at: moment(visitedAt).toISOString(),
         result,
         memo: memo.trim() || null,
+        sales_rep: salesRep || null,
         created_by_id: user?.id ?? null,
       }
       if (result === '成約') {
@@ -246,6 +253,21 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               </div>
             </div>
           )}
+
+          <div className="space-y-1">
+            <Label>営業担当</Label>
+            <Select value={salesRep || NONE} onValueChange={(v) => setSalesRep(v === NONE ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="選択" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE}>選択</SelectItem>
+                {/* ユーザー登録済みの営業担当（織田春樹・織田哲哉 等）＋編集中の値も欠落しないよう合流 */}
+                {Array.from(new Set([...repNames, salesRep].filter((n) => n && n !== AGENCY))).map((n) => (
+                  <SelectItem key={n} value={n}>{n}</SelectItem>
+                ))}
+                <SelectItem value={AGENCY}>販売代理店</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
           <div className="space-y-1">
             <Label>メモ</Label>

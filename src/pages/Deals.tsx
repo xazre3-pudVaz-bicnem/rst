@@ -69,6 +69,7 @@ export default function Deals() {
               <tr className="border-b bg-muted/40 text-muted-foreground">
                 <th className="px-2 py-2 text-left">店舗名</th>
                 <th className="px-2 py-2 text-left">契約日</th>
+                <th className="px-2 py-2 text-left">営業担当</th>
                 {CONTRACT_PRODUCTS.map((p) => <th key={p.key} className="px-2 py-2 text-right">{p.label}<span className="block text-[9px] font-normal opacity-70">{p.kind === 'initial' ? '初期' : '月額'}</span></th>)}
                 <th className="px-2 py-2 text-right">初期費用計</th>
                 <th className="px-2 py-2 text-right">月額計</th>
@@ -79,9 +80,9 @@ export default function Deals() {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={CONTRACT_PRODUCTS.length + 8}><SkeletonRows count={5} /></td></tr>}
+              {loading && <tr><td colSpan={CONTRACT_PRODUCTS.length + 9}><SkeletonRows count={5} /></td></tr>}
               {!loading && reports.length === 0 && (
-                <tr><td colSpan={CONTRACT_PRODUCTS.length + 8} className="py-8 text-center text-muted-foreground">成約案件はまだありません（訪問予定から訪問結果を「成約」で登録すると表示されます）</td></tr>
+                <tr><td colSpan={CONTRACT_PRODUCTS.length + 9} className="py-8 text-center text-muted-foreground">成約案件はまだありません（訪問予定から訪問結果を「成約」で登録すると表示されます）</td></tr>
               )}
               {reports.map((r) => (
                 <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
@@ -92,6 +93,13 @@ export default function Deals() {
                     <div className="text-2xs text-muted-foreground">{caseMap.get(r.case_id)?.address || ''}</div>
                   </td>
                   <td className="px-2 py-1.5">{r.contract_date ? moment(r.contract_date).format('YYYY/MM/DD') : '—'}</td>
+                  <td className="px-2 py-1.5">
+                    {r.sales_rep
+                      ? (r.sales_rep === '販売代理店'
+                          ? <span className="rounded bg-violet-100 px-1.5 py-px text-2xs font-bold text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">販売代理店</span>
+                          : <span className="font-medium">{r.sales_rep}</span>)
+                      : <span className="text-muted-foreground/40">—</span>}
+                  </td>
                   {CONTRACT_PRODUCTS.map((p) => {
                     const v = r[p.key as keyof VisitReport] as number | null | undefined
                     const split = p.key === 'hp_price' ? hpSplitInfo(r) : null
