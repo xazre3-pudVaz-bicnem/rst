@@ -95,6 +95,10 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 単一取得元の指定実行（only!=='all'）は1フェーズだけなので予算を大きく取れる。全取得元は各フェーズを小さく。
   const focused = only !== 'all'
   const pb = (small: number, big: number) => (focused ? big : small)
+  // Serper節約: cronは毎時だが、Serperを消費するエンジン(instagram_web/serp_discovery)は偶数時のみ実行し
+  //   実質2時間おきに据え置く（残高逼迫対策）。手動(focused)実行時は常に許可。Places/連番/地域メディア巡回・
+  //   逆引き/再補完は毎時のまま＝Serper無課金の恩恵だけ毎時化する。
+  const serperAllowedThisRun = focused || (new Date().getUTCHours() % 2 === 0)
   const agg = { hot_a_count: 0, hot_b_count: 0, hold_count: 0, excluded_count: 0, cases_inserted_count: 0, lead_saved_count: 0, google_places_count: 0, regional_media_count: 0, instagram_count: 0, sequential_count: 0 }
   let success = 0, failed = 0
   const items: any[] = []
@@ -118,7 +122,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
     return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 80, maxSitesPerDay: focused ? 100 : 100, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
-  if (wantType('instagram')) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
+  if (wantType('instagram') && serperAllowedThisRun) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
     if (cfg.iwEnabled === false) return { skipped: true }
     return runInstagramWeb(admin, mapsKey, { ...getDefaultIwSettings(), maxQueries: 4, perQuery: 8, ...cfg, ...(master.instagram || {}) }, opts.userId || null)
@@ -129,7 +133,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 全巡回時は forwardCount/cap を小さく（~10s）。連番単独実行時は設定値で本格実行（バウンドは設定より優先）
     return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 900) : 900, ...(focused ? {} : { forwardCount: 40 }) }, opts.userId || null)
   } })
-  if (wantType('discovery')) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
+  if (wantType('discovery') && serperAllowedThisRun) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
     const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }
     const enabled = DISCOVERY_SOURCES.filter((s) => s.mode === 'serp' && toggles[s.type] !== false).map((s) => s.type)
     if (!enabled.length) return { skipped: true, reason: '有効なSERP取得元なし' }
@@ -235,7 +239,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   } catch { /* noop */ }
   let swept: any = null
   const sweepBudget = Math.min(60000, budgetMs - (Date.now() - startMs) - 20000)
-  if (sweepBudget > 6000) { try { swept = await sweepHotToCases(admin, { limit: 80, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
+  if (sweepBudget > 6000) { try { swept = await sweepHotToCases(admin, { limit: 80, userId: opts.userId || null, mapsKey, budgetMs: sweepBudget, allowSerper: serperAllowedThisRun }); agg.cases_inserted_count += swept.imported || 0 } catch { /* noop */ } }
 
   // 品質テール: 巡回のたびに 開業予定日キュー(HOT-A自動投入)→営業優先度採点(S/A/B/C)＋未知チェーン検出＋鮮度整理 を
   // 自動実行。手動ボタンを押さなくても「常に採点済み・新鮮な架電リスト」が維持される。
@@ -253,7 +257,11 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     //   「最終実行が古い順」で毎回1種類だけ実行してローテーションさせる。
     const rH = budgetMs - (Date.now() - startMs)
     if (rH > 25000) {
-      const QUEUES = ['hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue']
+      // 逆引き(missing_phone)/住所補完(phone_to_address)はPlaces=無課金なので毎時。フォロワー確認を伴う
+      // hold_reason は Serper を使うため偶数時のみ（2時間おき据え置き）。
+      const QUEUES = serperAllowedThisRun
+        ? ['hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue']
+        : ['missing_phone_recheck_queue', 'phone_to_address_enrichment_queue']
       const { data: lastQ } = await admin.from('auto_lead_runs').select('source,created_date').in('source', QUEUES).order('created_date', { ascending: false }).limit(60)
       const lastBy = new Map<string, number>()
       for (const r of (lastQ || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }

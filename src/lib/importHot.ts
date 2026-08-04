@@ -170,9 +170,12 @@ export async function placesEstablishmentSignal(mapsKey: string, name: string, a
   } catch { return { count: null, oldestDays: null } }
 }
 
-export async function sweepHotToCases(admin: any, opts: { limit?: number; userId?: string | null; mapsKey?: string | null; budgetMs?: number } = {}): Promise<any> {
+export async function sweepHotToCases(admin: any, opts: { limit?: number; userId?: string | null; mapsKey?: string | null; budgetMs?: number; allowSerper?: boolean } = {}): Promise<any> {
   const limit = Math.max(1, Math.min(500, opts.limit || 200))
   const userId = opts.userId || null
+  // Serper節約: falseのときフォロワー確認のSerperフォールバックを使わない（IGプロフィール直接取得=無課金は継続。
+  //   数値が取れなければ②方針=要注意HOT-Bで投入）。cronの奇数時に渡してSerper消費を2時間おきに据え置く。
+  const allowSerper = opts.allowSerper !== false
   const mapsKey = opts.mapsKey || null
   const nowIso = new Date().toISOString()
   // 時間予算（自動巡回の60s枠を守るため）。外部ルックアップ(Places詳細/IGフォロワー)は残り時間があるときだけ実行。
@@ -336,7 +339,7 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       // ※fetchInstagramProfileはログイン壁で読めなくてもfollowers:0を返す。0=未確認としてfallbackへ（1000人超のすり抜け防止）
       let followers = prof && typeof prof.followers === 'number' && prof.followers > 0 ? prof.followers : null
       if (followers == null) {
-        const web = await followersViaSerper(igUser)  // Webスニペットfallback
+        const web = allowSerper ? await followersViaSerper(igUser) : { followers: null, bio: '' }  // Webスニペットfallback（Serper節約時はスキップ）
         followers = web.followers
         // bioに多店舗/大手語（グループ公式/◯店舗を展開等）→ フォロワー数が読めなくても除外
         if (web.bio && (detectMultiStore(web.bio).exclude || detectBigOrPublicStrong(web.bio).exclude)) {
@@ -361,7 +364,7 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
       // 非IGソースは「確認できたら除外」の任意チェック（未確認はHOLDにしない）。
       // ただしログイン壁でprofが0のときはWebスニペットでも確認する（1000人超の大手すり抜け防止）
       let followers = prof && typeof prof.followers === 'number' && prof.followers > 0 ? prof.followers : null
-      if (followers == null && Date.now() < deadline - 3500) followers = (await followersViaSerper(igUser)).followers
+      if (allowSerper && followers == null && Date.now() < deadline - 3500) followers = (await followersViaSerper(igUser)).followers
       if ((followers ?? 0) >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
         await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followers}人(1000人以上=確立済み)のため投入対象外` }).eq('id', c.id)
         reviewExcluded++; continue
