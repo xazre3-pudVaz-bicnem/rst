@@ -290,6 +290,30 @@ export function parseEkiten(html: string, mojibake: boolean): JalanSpot {
   return { name, address, phone, category, official, mapUrl: '', reviews, valid: !invalidReason, invalidReason, published, updated }
 }
 
+/** いこーよ（iko-yo.net/facilities/{ID}）施設詳細パーサー。h1「◯◯の基本情報」＝施設名、
+ *  電話/住所は JSON-LD(schema.org) の telephone / address を優先。子供のおでかけ施設＝営業慣れしてない層。 */
+export function parseIkoyo(html: string, mojibake: boolean): JalanSpot {
+  const empty: JalanSpot = { name: '', address: '', phone: '', category: '', official: '', mapUrl: '', reviews: '', valid: false, invalidReason: '', published: '', updated: '' }
+  if (mojibake) return { ...empty, invalidReason: '文字化けで読めない' }
+  const body = stripTags(html)
+  const h1 = stripTags(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '').trim()
+  const name = h1.replace(/の基本情報\s*$/, '').replace(/\s*[|｜].*$/, '').trim().slice(0, 50)
+  // 電話: JSON-LD "telephone" 優先 → tel: → 本文
+  let phone = extractJpPhone(html.match(/"telephone"\s*:\s*"([^"]+)"/i)?.[1] || '')
+  if (!phone) phone = (html.match(/href=["']tel:(\+?[\d-]{9,15})["']/i)?.[1] || '').replace(/^\+81/, '0')
+  if (!phone) phone = extractJpPhone(body)
+  // 住所: JSON-LD address（region+locality+street）→ 住所ラベル → 都道府県アンカー
+  const region = html.match(/"addressRegion"\s*:\s*"([^"]+)"/i)?.[1] || ''
+  const locality = html.match(/"addressLocality"\s*:\s*"([^"]+)"/i)?.[1] || ''
+  const street = html.match(/"streetAddress"\s*:\s*"([^"]+)"/i)?.[1] || ''
+  let address = (region + locality + street).replace(/\s+/g, '').trim()
+  if (!address) address = (body.match(/(?:住所|所在地)[:：\s]{0,4}((?:北海道|東京都|大阪府|京都府|[^\s]{2,3}県)[一-龥ぁ-んァ-ヶ0-9０-９丁目番地号－−\-]{2,40})/)?.[1] || '').trim()
+  if (!address) address = extractAddressLoose(body).address
+  address = address.slice(0, 70)
+  const invalidReason = (!name && !phone && !address) ? '該当施設なし/抽出不可' : ''
+  return { name, address, phone, category: 'おでかけ施設', official: '', mapUrl: '', reviews: '', valid: !invalidReason, invalidReason, published: '', updated: '' }
+}
+
 /** 公開日(YYYY/MM/DD等)から今日との日数差（過去=正）。取れなければ null。 */
 export function daysSinceDate(s?: string): number | null {
   if (!s) return null
@@ -314,9 +338,10 @@ export async function testProbeSite(site: any, ids?: number[]): Promise<{ ok: bo
     const isTabelog = (site.parser_type === 'tabelog_detail') || /tabelog\.com/i.test(url)
     const isEparkCaloo = /epark\.jp|haisha-yoyaku\.jp|caloo\.jp|petlife\.asia/i.test(url) || /^(epark_shopinfo_detail|epark_dental_detail|caloo_hospital_detail|pet_caloo_hospital_detail|petlife_detail)$/.test(site.parser_type || '')
     const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
-    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : 'generic_detail_page'
+    const isIkoyo = /iko-yo\.net/i.test(url) || site.parser_type === 'ikoyo_facility_detail'
+    const parser_used = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : isIkoyo ? 'ikoyo_facility_detail' : 'generic_detail_page'
     const classifyTest = (resp: typeof r) => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : null
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : isIkoyo ? parseIkoyo(resp.html, resp.mojibake) : null
       const body = resp.html ? stripTags(resp.html) : ''
       const sn0 = spot ? sanitizeShopName(spot.name, { placesMatched: false }) : null
       const nm = sn0 && sn0.valid ? sn0.name : ''
@@ -445,11 +470,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     const isEkiten = /ekiten\.jp/i.test(url) || site.parser_type === 'ekiten_shop_detail'
     // トリムトリム（ペットサロン）: 共通のディレクトリ詳細パーサーを media_family='trimtrim' 設定で使う
     const isTrimtrim = /trimtrim\.jp/i.test(url) || site.parser_type === 'trimtrim_salon_detail'
-    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : isTrimtrim ? 'trimtrim_salon_detail' : 'generic_detail_page'
+    const isIkoyo = /iko-yo\.net/i.test(url) || site.parser_type === 'ikoyo_facility_detail'
+    const parserUsed = isJalan ? 'jalan_spot_detail' : isTabelog ? 'tabelog_detail' : isEparkCaloo ? (site.parser_type || 'epark_caloo_detail') : isEkiten ? 'ekiten_shop_detail' : isTrimtrim ? 'trimtrim_salon_detail' : isIkoyo ? 'ikoyo_facility_detail' : 'generic_detail_page'
 
     // ===== 4分類: valid / invalid(404/不存在) / fetch_failed(403,429,5xx,timeout,network) / parser_failed(200だが抽出不可・文字化け) =====
     const classify = (resp: typeof r): { status: 'valid' | 'invalid' | 'fetch_failed' | 'parser_failed'; reason: string; spot: any; name: string; address: string; phone: string; category: string; bodyAll: string } => {
-      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake)
+      const spot = isJalan ? parseJalanSpot(resp.html, resp.mojibake) : isTabelog ? parseTabelog(resp.html, resp.mojibake) : isEparkCaloo ? parseEparkCaloo(resp.html, resp.mojibake) : isEkiten ? parseEkiten(resp.html, resp.mojibake) : isIkoyo ? parseIkoyo(resp.html, resp.mojibake)
         : isTrimtrim && resp.html ? (() => {
           // トリムトリム: 共通のディレクトリ詳細パーサー（media_family='trimtrim' 設定で店名は<title>から）
           const i = extractDirectoryShopInfo(resp.html, '', 'trimtrim')
