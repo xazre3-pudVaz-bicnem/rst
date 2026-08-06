@@ -7,7 +7,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { onlyDigits, looksLikeArticle, isRealStoreAddress, phoneAddressMatch, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublicStrong, detectBigOrPublic, detectSameIndustry, looksLikeBranchStore, detectMultiStore, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublicStrong, detectBigOrPublic, detectSameIndustry, looksLikeBranchStore, detectMultiStore, detectExcludedCategory, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placeDetails, reviewDates } from './googlePlacesRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
@@ -316,9 +316,10 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     // が sweep 経由で cases に素通りしていた（HOT_Aなら優先架電キューにも乗る）。
     const same = detectSameIndustry(c.name || '')
     const bigPlain = detectBigOrPublic(`${c.name || ''} ${address || ''}`)
-    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude || same.exclude || bigPlain.exclude) {
-      const excludeHard = bigStrong.exclude || chainDef || multi.exclude || same.exclude || bigPlain.exclude
-      const why = same.exclude ? `同業者（${same.hit}）` : bigPlain.exclude ? `大手/公共/大型施設（${bigPlain.hit}）` : branch ? '支店/チェーン店（○○店）' : multi.exclude ? `2店舗以上/姉妹店/FC(${String(multi.hit).trim()})` : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
+    const exCat = detectExcludedCategory(c.name || '')
+    if (looksLikeArticle(c.name, c.regional_media_newness_reason) || !isRealStoreAddress(address) || bigStrong.exclude || chainDef || branch || multi.exclude || same.exclude || bigPlain.exclude || exCat.exclude) {
+      const excludeHard = bigStrong.exclude || chainDef || multi.exclude || same.exclude || bigPlain.exclude || exCat.exclude
+      const why = exCat.exclude ? `ペット系/行政書士（${exCat.hit}）` : same.exclude ? `同業者（${same.hit}）` : bigPlain.exclude ? `大手/公共/大型施設（${bigPlain.hit}）` : branch ? '支店/チェーン店（○○店）' : multi.exclude ? `2店舗以上/姉妹店/FC(${String(multi.hit).trim()})` : bigStrong.exclude ? `大手/量販/モール(${bigStrong.hit})` : chainDef ? '大手チェーン' : looksLikeArticle(c.name, c.regional_media_newness_reason) ? '記事/まとめ' : 'カテゴリ住所で店舗住所でない'
       await admin.from('lead_candidates').update({ lead_temperature: excludeHard ? 'EXCLUDED' : 'HOLD', hot_tier: null, should_exclude_from_call_list: excludeHard, auto_insert_skipped_reason: `${why}のため投入対象外` }).eq('id', c.id)
       downgraded++; continue
     }

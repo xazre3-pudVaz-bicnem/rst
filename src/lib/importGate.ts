@@ -9,7 +9,7 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, looksLikeBuildingName, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, looksLikeBuildingName, detectExcludedCategory, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { placesEstablishmentSignal, placesLookupByPhone, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
@@ -74,6 +74,7 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     const bld = looksLikeBuildingName(name, address)
     if (bld.exclude) return exclude(`${bld.reason}（投入ゲート）`)
     if (detectChain(name, g.text || '').definite) return exclude('大手チェーンのため対象外（投入ゲート）')
+    { const exCat = detectExcludedCategory(name); if (exCat.exclude) return exclude(`ペット系/行政書士（${exCat.hit}）のため対象外（投入ゲート）`) }
     if (looksLikeBranchStore(name)) return exclude('支店/チェーン店名（○○店）のため対象外（投入ゲート）')
     const big = detectBigOrPublic(`${name} ${address}`)
     if (big.exclude) return exclude(`${big.hit}（大手/公共/大型施設）のため対象外（投入ゲート）`)

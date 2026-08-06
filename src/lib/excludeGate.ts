@@ -5,7 +5,7 @@
 // （口コミ数≥30・最古クチコミ>30日・IGフォロワー≥1000 は要ネットワークのため別ゲート＝importHot/各エンジンで実施）
 // ============================================================
 import { isTollFreeJp } from './regionalParsers.js'
-import { detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore } from './targetFilter.js'
+import { detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectExcludedCategory } from './targetFilter.js'
 import { detectChain } from './chainFilter.js'
 import { looksLikeArticle } from './leadQuality.js'
 
@@ -15,6 +15,8 @@ export function hardExcludeReason(opts: { name?: string | null; phone?: string |
   const extra = String(opts.text || '')
   const phone = String(opts.phone || '')
   if (phone && isTollFreeJp(phone)) return `フリーダイヤル(${phone})＝店舗直通でない`
+  const exCat = detectExcludedCategory(name)
+  if (exCat.exclude) return `対象外カテゴリ（${exCat.hit}＝ペット系/行政書士）`
   if (looksLikeBranchStore(name)) return '支店/チェーン店（○○店）'
   const strong = detectBigOrPublicStrong(name)
   if (strong.exclude) return `大手/量販/モール(${strong.hit})`

@@ -199,6 +199,15 @@ export function detectSameIndustry(name: string, text?: string): { exclude: bool
   return { exclude: false, hold: false, reason: '', hit: '' }
 }
 
+// ユーザー指定の投入対象外カテゴリ（ペット系・行政書士）。店名に対してのみ判定する
+// （本文/スニペットで判定すると「動物病院の近く」等の地名/文脈で誤爆するため店名限定）。
+const EXCLUDED_CATEGORY_RE = /動物病院|獣医|犬猫(病院|クリニック)|ペット(サロン|ショップ|ホテル|クリニック|美容|霊園|葬|シッター|ケア|ライフ)|トリミング|トリマー|ドッグ(サロン|ラン|カフェ)|(猫|ねこ|キャット)カフェ|行政書士/
+/** ペット系/行政書士（投入対象外カテゴリ）か。店名基準。 */
+export function detectExcludedCategory(name?: string | null): { exclude: boolean; hit: string } {
+  const m = String(name || '').trim().match(EXCLUDED_CATEGORY_RE)
+  return m ? { exclude: true, hit: m[0] } : { exclude: false, hit: '' }
+}
+
 // 確立済み大型の閾値（厳しめ）
 export const BIG_REVIEW_COUNT = 30       // Google口コミがこれ以上＝既に集客できている → 除外
 export const BIG_IG_FOLLOWERS = 500      // Instagramフォロワーがこれ以上 → 除外（IG分類時の判定）
