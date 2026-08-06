@@ -8,6 +8,6 @@
     "api/**/*.ts": { "maxDuration": 300 }
   },
   "crons": [
-    { "path": "/api/cron/auto-lead-crawl", "schedule": "0 */2 * * *" }
+    { "path": "/api/cron/auto-lead-crawl", "schedule": "0 * * * *" }
   ]
 }

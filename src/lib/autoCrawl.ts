@@ -120,7 +120,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 80, maxSitesPerDay: focused ? 100 : 100, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 100, maxSitesPerDay: focused ? 100 : 150, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
   if (wantType('instagram') && serperAllowedThisRun) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
@@ -131,7 +131,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'sequential_auto')
     if (cfg.sequentialEnabled === false) return { skipped: true }
     // 全巡回時は forwardCount/cap を小さく（~10s）。連番単独実行時は設定値で本格実行（バウンドは設定より優先）
-    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 900) : 600, ...(focused ? {} : { forwardCount: 20 }) }, opts.userId || null)
+    return runAllSequentialProbes(admin, mapsKey, { aiInjectMode: 'standard', autoImportPerRun: 50, ...cfg, ...(master.sequential || {}), probeDailyCap: focused ? (Number(cfg.probeDailyCap) || 900) : 800, ...(focused ? {} : { forwardCount: 20 }) }, opts.userId || null)
   } })
   if (wantType('discovery') && serperAllowedThisRun) types.push({ key: 'discovery', type: 'serp_discovery', name: '新規取得元 SERPディスカバリ', minMs: 8000, run: async () => {
     const toggles = { ...defaultSourceToggles(), ...(await readCfg(admin, 'discovery_sources')) }
