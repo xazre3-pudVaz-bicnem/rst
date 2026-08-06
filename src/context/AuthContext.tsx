@@ -99,8 +99,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAdmin,
     isActive,
     async signIn(email, password) {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) throw new Error(error.message)
+      // 巡回(AI投入)中はSupabaseが高負荷で認証通信が一時的に失敗することがある。
+      // 認証失敗(パスワード誤り等)は即エラー、ネットワーク/一時失敗のみ最大3回リトライ。
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const { error } = await supabase.auth.signInWithPassword({ email, password })
+          if (error) throw new Error(error.message)  // 返却エラー=認証失敗系→リトライしない
+          return
+        } catch (e: any) {
+          const msg = String(e?.message || e)
+          const retriable = /failed to fetch|networkerror|network error|timeout|load failed|fetch|503|504|gateway|一時的/i.test(msg)
+          if (!retriable || attempt >= 2) throw e
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+        }
+      }
     },
     async signUp(email, password) {
       const { error } = await supabase.auth.signUp({ email, password })
