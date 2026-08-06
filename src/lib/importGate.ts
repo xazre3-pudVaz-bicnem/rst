@@ -74,7 +74,7 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     const bld = looksLikeBuildingName(name, address)
     if (bld.exclude) return exclude(`${bld.reason}（投入ゲート）`)
     if (detectChain(name, g.text || '').definite) return exclude('大手チェーンのため対象外（投入ゲート）')
-    { const exCat = detectExcludedCategory(name); if (exCat.exclude) return exclude(`ペット系/行政書士（${exCat.hit}）のため対象外（投入ゲート）`) }
+    { const exCat = detectExcludedCategory(name); if (exCat.exclude) return exclude(`投入対象外カテゴリ（${exCat.hit}）のため対象外（投入ゲート）`) }
     if (looksLikeBranchStore(name)) return exclude('支店/チェーン店名（○○店）のため対象外（投入ゲート）')
     const big = detectBigOrPublic(`${name} ${address}`)
     if (big.exclude) return exclude(`${big.hit}（大手/公共/大型施設）のため対象外（投入ゲート）`)

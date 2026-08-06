@@ -199,13 +199,24 @@ export function detectSameIndustry(name: string, text?: string): { exclude: bool
   return { exclude: false, hold: false, reason: '', hit: '' }
 }
 
-// ユーザー指定の投入対象外カテゴリ（ペット系・行政書士）。店名に対してのみ判定する
-// （本文/スニペットで判定すると「動物病院の近く」等の地名/文脈で誤爆するため店名限定）。
-const EXCLUDED_CATEGORY_RE = /動物病院|獣医|犬猫(病院|クリニック)|ペット(サロン|ショップ|ホテル|クリニック|美容|霊園|葬|シッター|ケア|ライフ)|トリミング|トリマー|ドッグ(サロン|ラン|カフェ)|(猫|ねこ|キャット)カフェ|行政書士/
-/** ペット系/行政書士（投入対象外カテゴリ）か。店名基準。 */
+// ユーザー指定の投入対象外カテゴリ（ペット系・士業全て・公共/非商用施設）。店名に対してのみ判定する
+// （本文/スニペットで判定すると地名/文脈で誤爆するため店名限定）。誤爆を抑えるため多くは末尾一致。
+const EXCL_PET_RE = /動物病院|獣医|犬猫(病院|クリニック)|ペット(サロン|ショップ|ホテル|クリニック|美容|霊園|葬|シッター|ケア|ライフ)|トリミング|トリマー|ドッグ(サロン|ラン|カフェ)|(猫|ねこ|キャット)カフェ/
+// 士業（全て）。事務所系も含む。
+const EXCL_SHIGYO_RE = /行政書士|税理士|司法書士|弁護士|弁理士|社会保険労務士|社労士|公認会計士|土地家屋調査士|海事代理士|中小企業診断士|法律事務所|会計事務所|特許事務所|法務事務所|(税理士|司法書士|行政書士|社労士)法人/
+// 公共/非商用スポット（いこーよ等のおでかけ施設対策）: 施設種別が末尾に来るものを弾く。
+//   ※温泉/旅館/牧場/農園/カフェ/食堂 等の私営は末尾に来ないため残る。
+const EXCL_PUBLICSPOT_END_RE = /(公園|体育館|武道館|図書館|児童館|公民館|文化会館|市民会館|区民会館|町民会館|資料館|記念館|博物館|美術館|科学館|プラネタリウム|植物園|動物園|水族館|神社|神宮|八幡宮|天満宮|大社|稲荷|城跡|城址|古墳|遺跡|史跡|掩体|記念碑|小学校|中学校|高等学校|廃校|渓谷|鍾乳洞|干潟|湿原|緑地|遊歩道|散歩道|古道|海水浴場|商店街|銀天街|横丁|の森|の街|昭和の街)$/
+// 明確な公共・公営（含有一致でよい語）。
+const EXCL_PUBLIC_CONTAIN_RE = /市立|区立|町立|村立|県立|都立|府立|道立|市民(体育|プール|会館|ギャラリー)|市役所|区役所|町役場|村役場|保健所|保健センター|子育て支援|福祉センター|コミュニティセンター|地区センター|ウインズ|競馬場|競輪場|競艇場|オートレース場/
+/** ペット系/士業/公共・非商用施設（投入対象外）か。店名基準。 */
 export function detectExcludedCategory(name?: string | null): { exclude: boolean; hit: string } {
-  const m = String(name || '').trim().match(EXCLUDED_CATEGORY_RE)
-  return m ? { exclude: true, hit: m[0] } : { exclude: false, hit: '' }
+  const n = String(name || '').trim()
+  let m = n.match(EXCL_PET_RE); if (m) return { exclude: true, hit: `${m[0]}(ペット系)` }
+  m = n.match(EXCL_SHIGYO_RE); if (m) return { exclude: true, hit: `${m[0]}(士業)` }
+  m = n.match(EXCL_PUBLICSPOT_END_RE); if (m) return { exclude: true, hit: `${m[0]}(公共/非商用施設)` }
+  m = n.match(EXCL_PUBLIC_CONTAIN_RE); if (m) return { exclude: true, hit: `${m[0]}(公共施設)` }
+  return { exclude: false, hit: '' }
 }
 
 // 確立済み大型の閾値（厳しめ）

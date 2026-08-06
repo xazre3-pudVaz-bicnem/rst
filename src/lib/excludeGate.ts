@@ -16,7 +16,7 @@ export function hardExcludeReason(opts: { name?: string | null; phone?: string |
   const phone = String(opts.phone || '')
   if (phone && isTollFreeJp(phone)) return `フリーダイヤル(${phone})＝店舗直通でない`
   const exCat = detectExcludedCategory(name)
-  if (exCat.exclude) return `対象外カテゴリ（${exCat.hit}＝ペット系/行政書士）`
+  if (exCat.exclude) return `投入対象外カテゴリ（${exCat.hit}）`
   if (looksLikeBranchStore(name)) return '支店/チェーン店（○○店）'
   const strong = detectBigOrPublicStrong(name)
   if (strong.exclude) return `大手/量販/モール(${strong.hit})`
