@@ -130,9 +130,10 @@ export const LEGACY_INDUSTRIES = ['美容', '健康'] as const
 export const CONTACT_RESULTS = [
   'アポ',
   '興味なし',
-  '忙しい',
+  'いまは忙しい',
   'タイミング違い',
   '金をかけたくない',
+  '集客求めてない',
 ] as const
 
 export const NO_CONTACT_RESULTS = ['不在', '忙しい', '断られた', '今は代表いません', '代表ここに来ません'] as const
