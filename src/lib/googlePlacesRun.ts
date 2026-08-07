@@ -11,7 +11,7 @@ import { resolveAreas, prefectureOfArea, type AreaPresetKey } from './areaPreset
 import { buildLeadQueries } from './leadQueries.js'
 import { isForeignAddress, isOrgNonStore, isJapanAddress, isJapanPhone, isForeignPhone } from './japanFilter.js'
 import { detectChain } from './chainFilter.js'
-import { looksLikeBranchStore, detectBigOrPublicStrong } from './targetFilter.js'
+import { looksLikeBranchStore, detectBigOrPublicStrong, detectExcludedCategory } from './targetFilter.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { getHotCities } from './hotspots.js'
@@ -665,7 +665,7 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
         const hasJapanAddr = isJapanAddress(fullAddress)
         const dupHit = !!classified.duplicate_of_case_id
         // ここに来る時点で日本国内は確定済み（海外は上流でスキップ）
-        const hardExcludeReason = chainish || orgLike || closedPermLight || tooManyReviewsLight || dupHit
+        const hardExcludeReason = chainish || orgLike || closedPermLight || tooManyReviewsLight || dupHit || detectExcludedCategory(name).exclude
         if (classified.lead_temperature === 'EXCLUDED' && !hardExcludeReason && !!name && hasJapanAddr) {
           classified.lead_temperature = 'HOLD'
           classified.should_exclude_from_call_list = false

@@ -6,7 +6,7 @@ import { judgeJapan, isJapanAddress, isJapanPhone, isOrgNonStore } from './japan
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { scoreCandidate, tierToTemperature } from './hotTier.js'
 import { detectChain } from './chainFilter.js'
-import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, BIG_REVIEW_COUNT } from './targetFilter.js'
+import { detectBigOrPublic, detectMultiStore, looksLikeBranchStore, detectExcludedCategory, BIG_REVIEW_COUNT } from './targetFilter.js'
 import { isTollFreeJp } from './regionalParsers.js'
 import type { Case, LeadCandidate, RawLead, LeadTemperature, ClassifyOpts } from './types.js'
 
@@ -148,6 +148,8 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   const inStation = includesAny(hay, STATION_KEYWORDS)
   const isBranch = includesAny(name, BRANCH_KEYWORDS) || looksLikeBranchStore(name)
   const excludedName = includesAny(hay, EXCLUDED_NAME_KEYWORDS)
+  // 投入対象外カテゴリ（ペット系/士業/公共・非商用施設）。Google Places等が直接投入する経路もここで弾く。
+  const excludedCat = detectExcludedCategory(name)
 
   // オーナー到達スコア
   let score = 90
@@ -173,7 +175,7 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
 
   // 到達不可（チェーン/施設内/駅ビル/支店）
   const nonReachable = isChain || inMall || inStation || isBranch
-  const hardExclude = isDup || excludedName || nonReachable || !hasPhone || veryHigh || isForeign
+  const hardExclude = isDup || excludedName || excludedCat.exclude || nonReachable || !hasPhone || veryHigh || isForeign
 
   // ---- 新規性シグナル ----
   const hasWebsite = !!normalizeUrl(raw.website_url)
@@ -288,6 +290,7 @@ export function classifyLead(raw: RawLead, cases: Case[], opts?: ClassifyOpts): 
   else if (orgLike) temperature = (hasJapanPhone && !!address && hasOpeningDate) ? 'HOLD' : 'EXCLUDED'
   else if (isDup) temperature = 'EXCLUDED'
   else if (excludedName) temperature = 'EXCLUDED'
+  else if (excludedCat.exclude) temperature = 'EXCLUDED'   // ペット系/士業/公共・非商用施設
   else if (nonReachable) temperature = 'EXCLUDED'              // チェーン/施設内/駅ビル/支店
   else if (closedPerm) temperature = 'EXCLUDED'               // 閉業
   // 電話番号なし: openingDate/FUTURE_OPENING 等の強い新規根拠があればHOLD（自動投入はしない）、無ければEXCLUDED
