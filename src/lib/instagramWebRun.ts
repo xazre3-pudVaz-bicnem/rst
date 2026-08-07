@@ -1046,13 +1046,15 @@ export async function runInstagramWeb(admin: any, mapsKey: string | null, rawSet
               }
             }
           }
-          // ② 方針変更: フォロワー数が確認できない候補もHOT投入する（要注意コメント付き）。
-          //   以前差し戻した実害（フォロワー2848人・bio【グループ店舗】の確立店）は、今は上の
-          //   bio多店舗/大手語チェック(1036-1046)が捕捉するため安全。残る確立店すり抜けは架電時に確認。
+          // フォロワー数が確認できない候補は投入しない（HOLD）。IGは「フォロワー数=確立度」が命で、
+          // スクレイプ遮断で数が読めない確立アカウント(例:1.2万人)まで通してしまうため、②の緩和は撤回。
+          // 確認できた<1000人だけ投入する（未確認は手動確認HOLD）。
           if (followersKnown == null) {
-            await admin.from('lead_candidates').update({ ai_comment: 'Instagramフォロワー数は未確認。bio多店舗/大手語なし・新店根拠ありのためHOT-Bで投入（フォロワー多数＝確立店の可能性は架電時に要確認）' }).eq('id', candidateId)
-            counts.followerUnknownProceed = (counts.followerUnknownProceed || 0) + 1
-            // downgrade/continueせず投入処理へ継続
+            await admin.from('lead_candidates').update({ lead_temperature: 'HOLD', hot_tier: null, auto_insert_skipped_reason: 'Instagramフォロワー数を確認できず（1000人以上の確立店の可能性）→投入せず手動確認' }).eq('id', candidateId)
+            counts.followerUnknownHold = (counts.followerUnknownHold || 0) + 1
+            counts.hot = Math.max(0, counts.hot - 1); counts.hold++
+            if (hotTier === 'A') counts.hotA = Math.max(0, (counts.hotA || 0) - 1); else counts.hotB = Math.max(0, (counts.hotB || 0) - 1)
+            continue
           }
           if (followersKnown != null && followersKnown >= IG_FOLLOWERS_IMPORT_EXCLUDE) {
             await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `Instagramフォロワー${followersKnown}人(${IG_FOLLOWERS_IMPORT_EXCLUDE}人以上=確立済み)のため投入対象外` }).eq('id', candidateId)
