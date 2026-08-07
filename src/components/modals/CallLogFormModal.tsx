@@ -119,7 +119,12 @@ export default function CallLogFormModal({
       setLogRep(displayName || selectedCase?.sales_rep || '')
       setNewStatus(selectedCase?.status ?? '')
     }
-  }, [open, editingLog, selectedCase, displayName])
+    // 依存は selectedCase 全体でなく id（案件の同一性）に限定する。
+    // 代表者名入力ごとに onRepNameChange が親の Case.representative を更新し selectedCase オブジェクトが
+    // 変化するため、selectedCase 全体を依存にすると入力中に repName が再初期化されて（特にIME変換中に）
+    // 「うまく入力できない」不具合になる。案件が切り替わった時だけ初期化すればよい。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editingLog, selectedCase?.id, displayName])
 
   const summary = useMemo(
     () =>
