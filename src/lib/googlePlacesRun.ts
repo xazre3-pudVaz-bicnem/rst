@@ -803,9 +803,15 @@ export async function runGooglePlaces(admin: any, apiKey: string, rawSettings: a
           result: temp, saved: savedOk, exclusion: classified.exclusion_reason || null, saveError: saveErrMsg || null,
         })
 
+        // 投入対象外カテゴリ（士業/ペット/公共・非商用施設）は下流の救済経路で温度がHOTに戻ることが
+        // あるため、投入直前でも確実にハードガードする。該当は候補もEXCLUDEDにして再投入を防ぐ。
+        const gpExCat = detectExcludedCategory(classified.name)
+        if (gpExCat.exclude && candidateId) {
+          await admin.from('lead_candidates').update({ lead_temperature: 'EXCLUDED', hot_tier: null, should_exclude_from_call_list: true, auto_insert_skipped_reason: `投入対象外（${gpExCat.hit}）` }).eq('id', candidateId).then(() => {}, () => {})
+        }
         // HOT自動投入（HOT_A / HOT_B。strictモードはHOT_Aのみ。1回/1日上限）
         const tierAllows = classified.hot_tier === 'A' || (classified.hot_tier === 'B' && aiInjectMode !== 'strict')
-        if (autoImport && temp === 'HOT' && tierAllows && !classified.duplicate_of_case_id && !alreadyImported && importedCount < autoImportPerDay && (counts.imported < autoImportPerRun) && candidateId) {
+        if (autoImport && temp === 'HOT' && tierAllows && !gpExCat.exclude && !classified.duplicate_of_case_id && !alreadyImported && importedCount < autoImportPerDay && (counts.imported < autoImportPerRun) && candidateId) {
           const memo = [
             `【AI自動投入 / GBP / ${classified.recommended_status || temp}】`,
             `投入理由: ${classified.auto_import_reason || ''}`,
