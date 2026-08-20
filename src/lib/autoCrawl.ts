@@ -114,7 +114,7 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     // 【重要】内部予算は sourceHardMs より必ず小さくする（＝innerBudgetMs）。同値(220000)だとエンジンの
     //   安全停止が完了する前に Promise.race のタイムアウトが発火してエンジンを放棄し、run行がrunningのまま
     //   残って"60s上限"errorになる（regional_mediaで既知・修正済みの現象。google_placesが直し漏れていた）。
-    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: focused ? Math.min(240000, sourceHardMs - 15000) : innerBudgetMs, placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 120) : 120 }, opts.userId || null)
+    return runGooglePlaces(admin, mapsKey, { ...getDefaultSettings(), ...cfg, ...(master.places || {}), runBudgetMs: focused ? Math.min(240000, sourceHardMs - 15000) : innerBudgetMs, placesMaxQueriesPerDay: focused ? (Number(cfg.placesMaxQueriesPerDay) || 40) : 40 }, opts.userId || null)
   } })
   if (wantType('regional')) types.push({ key: 'regional', type: 'regional_media', name: '地域メディア全サイト巡回', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'regional_auto')

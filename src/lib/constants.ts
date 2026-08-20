@@ -360,13 +360,13 @@ export const DEFAULT_LEAD_SETTINGS = {
   rotation: true,
   autoFetch: true,
   placesNationwide: true,
-  placesMaxQueriesPerDay: 120,
+  placesMaxQueriesPerDay: 40,   // Enterprise SKU課金(約$35/1000)のため抑制。サブスク枠対象外と判明(2026-08)
   placesPerQuery: 20,
-  placesMaxDetailsPerDay: 200,
+  placesMaxDetailsPerDay: 80,   // Enterprise+Atmosphere SKU課金のため抑制
   placesDetailsLimitPerRun: 100,        // 1回あたりPlace Details上限
   placesSkipDetailsIfReviewsOver: 100,  // 口コミN件以上はDetailsスキップ
   placesOpeningDatePriority: true,       // openingDate最優先（既定ON）
-  placesPagesPerQuery: 3,               // 1クエリのページ取得数（nextPageToken）
+  placesPagesPerQuery: 2,               // 1クエリのページ取得数（nextPageToken）。1ページ=1課金イベントのため抑制
   placesResultsPerQueryLimit: 60,       // 1クエリの最大件数
   aiInjectMode: 'standard' as 'strict' | 'standard' | 'aggressive',
   autoImportPerRun: 50,
