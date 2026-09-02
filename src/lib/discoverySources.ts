@@ -72,12 +72,11 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
       '開院しました 歯科 電話番号', '開院しました クリニック 住所', '開院しました 動物病院',
       'ペットサロン 新規オープン 電話', '教室 新規開業 電話番号', 'リフォーム 新規開業 電話',
     ] },
-  // 開店・閉店まとめ系ポータル（新店を日次で網羅的に掲載＝熱いリストの宝庫）
-  { type: 'kaiten_heiten_portal_search', label: '開店閉店まとめサイト', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
-    queries: ['site:kaiten-heiten.com オープン', 'site:kaiten-heiten.com 開店 予定', '"開店閉店" "オープン予定" 店舗', '"開店情報" オープン 電話番号', '"開店予定" 店舗 住所 電話'] },
+  // ※ 開店閉店まとめサイト(kaiten_heiten_portal_search)は廃止。kaiten-heiten.com は sourceBlocklist で全面除外。
   // グルメ/美容ポータルの「ニューオープン」ページ（詳細ページに電話・住所が載る）
+  // ※ ホットペッパー(hotpepper.jp)はクエリから除外（sourceBlocklist で流入もブロック）
   { type: 'portal_newopen_page_scan', label: 'グルメ/美容ポータル新店ページ', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'portal_new_listing', freshness: 'month',
-    queries: ['site:tabelog.com "ニューオープン"', 'site:tabelog.com "オープンしました"', 'site:beauty.hotpepper.jp "ニューオープン"', 'site:beauty.hotpepper.jp "NEW OPEN"', 'site:hotpepper.jp "ニューオープン"', 'site:ekiten.jp "新規オープン"', 'site:r.gnavi.co.jp "ニューオープン"', 'site:retty.me "ニューオープン"', 'site:retty.me "オープンしました"', 'site:epark.jp "新規オープン"', 'site:beauty.epark.jp "NEW OPEN"', 'site:restaurant.ikyu.com "ニューオープン"', 'site:ozmall.co.jp "ニューオープン"'] },
+    queries: ['site:tabelog.com "ニューオープン"', 'site:tabelog.com "オープンしました"', 'site:ekiten.jp "新規オープン"', 'site:r.gnavi.co.jp "ニューオープン"', 'site:retty.me "ニューオープン"', 'site:retty.me "オープンしました"', 'site:epark.jp "新規オープン"', 'site:beauty.epark.jp "NEW OPEN"', 'site:restaurant.ikyu.com "ニューオープン"', 'site:ozmall.co.jp "ニューオープン"'] },
   // 個人開業ブログ（アメブロ=個人サロン系が非常に多い / note=開業エッセイ）。店名から Places で電話・住所補完
   { type: 'blog_opening_search', label: '個人開業ブログ(アメブロ/note)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'sns_opening', freshness: 'month',
     queries: ['site:ameblo.jp "オープンしました" サロン', 'site:ameblo.jp "新規オープン" 電話', 'site:ameblo.jp "開業しました"', 'site:ameblo.jp "オープン予定" 店舗', 'site:note.com "開業しました" 店舗', 'site:note.com "オープンします" 店舗'] },
@@ -270,7 +269,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
 ]
 
 // 追加しない（明示除外）source_type
-export const EXCLUDED_SOURCE_TYPES = ['shopping_mall_new_shop_crawl', 'google_places_no_website_scan', 'gbp_content_weakness_scan', 'brand_serp_weakness_scan', 'reservation_portal_dependency_scan', 'franchise_new_store_search', 'competitor_gap_scan']
+export const EXCLUDED_SOURCE_TYPES = ['kaiten_heiten_portal_search', 'shopping_mall_new_shop_crawl', 'google_places_no_website_scan', 'gbp_content_weakness_scan', 'brand_serp_weakness_scan', 'reservation_portal_dependency_scan', 'franchise_new_store_search', 'competitor_gap_scan']
 
 // 専用エンジンで本稼働している source_type（run.ts が newSourceEngines.runEngineSource に振り分ける）。
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。

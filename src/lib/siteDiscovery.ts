@@ -6,6 +6,7 @@
 import { webSearch } from './instagramWebRun.js'
 import { detectParserType, extractNewnessBlocks, newnessKeywords } from './regionalParsers.js'
 import { isForeignText } from './japanFilter.js'
+import { isExcludedSourceUrl } from './sourceBlocklist.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 
@@ -108,6 +109,8 @@ export async function runSiteDiscovery(admin: any, opts: { userId: string | null
       const dom = domainOf(r.url); if (!dom) continue
       // ポータル/SNS/検索は除外
       if (/(instagram\.com|twitter\.com|x\.com|facebook\.com|youtube\.com|google\.|yahoo\.co\.jp\/search|wikipedia\.org|amazon\.|rakuten\.co\.jp\/search)/i.test(r.url)) continue
+      // 恒久除外ドメイン（ホットペッパー/開店閉店.com 等）は巡回サイトとして登録しない
+      if (isExcludedSourceUrl(r.url)) continue
       const key = domainOf(r.url) + new URL(r.url).pathname.replace(/\/+$/, '')
       if (!urlSet.has(key)) urlSet.set(key, { url: r.url, title: r.title || '', snippet: r.snippet || '', query: q })
     }

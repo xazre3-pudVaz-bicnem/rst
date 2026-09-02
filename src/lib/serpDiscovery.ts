@@ -21,6 +21,7 @@ import { placesEstablishmentSignal, BIG_GOOGLE_REVIEWS } from './importHot.js'
 import { ingestExtractedStores } from './newSourceEngines.js'
 import { extractOpeningDateFromText } from './directoryParser.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
+import { isExcludedSourceUrl } from './sourceBlocklist.js'
 import { DEFAULT_STATUS } from './constants.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 RST-CRM-bot/1.0'
@@ -278,6 +279,9 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         if (remain() < 3500) { debug.stoppedEarly = true; stopAll = true; break }
         const url = String(rr.url || '').split('#')[0]
         if (!/^https?:\/\//.test(url)) continue
+        // 恒久除外ドメイン（ホットペッパー/開店閉店.com 等）。クエリから外しても汎用クエリの検索結果に
+        // 混ざって入ってくるため、URL単位でも必ず止める（fetch前に切って無駄な取得も避ける）。
+        if (isExcludedSourceUrl(url)) { counts.excludedDomain = (counts.excludedDomain || 0) + 1; continue }
         const h = urlHash(url)
         if (seen.has(h)) continue; seen.add(h)
         // 差分: 既読URL or 既存候補はスキップ

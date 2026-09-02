@@ -3,6 +3,8 @@
 // 認可: ADMIN_SECRET / CRON_SECRET ヘッダ もしくは ログイン中ユーザーのJWT。
 // フロントには service role を出さず、必ずこのAPI経由で書き込む。
 // ============================================================
+import { isExcludedSourceUrl } from './sourceBlocklist.js'
+
 export const MEDIA_FAMILIES = ['goguynet', 'kaitenheiten', 'tsushin', 'saikohkunavi', 'horby', 'jalan', 'tabelog', 'epark', 'hotpepper', 'local_blog', 'local_news', 'local_directory', 'other']
 // openclose_article=記事型 / local_directory_new_listing=店舗ディレクトリ型 / marketplace_listing=検索結果カード型 / sequential_id_probe=連番探索 / generic_page_text_scan=汎用本文
 export const SOURCE_TYPES = ['openclose_article', 'local_directory_new_listing', 'marketplace_listing', 'sequential_id_probe', 'generic_page_text_scan', 'hybrid', 'html_list', 'rss', 'sitemap', 'category_page']
@@ -30,6 +32,8 @@ export function sanitizeSitePayload(body: any): { ok: boolean; error?: string; v
   if (!base_url || !isValidHttpUrl(base_url)) return { ok: false, error: 'base_url が不正です（http/httpsのURL）' }
   if (!list_url) list_url = base_url // 空なら base_url を自動セット
   if (!isValidHttpUrl(list_url)) return { ok: false, error: 'list_url が不正です' }
+  // 恒久除外ドメイン（ホットペッパー/開店閉店.com 等）は登録・更新ともに受け付けない
+  if (isExcludedSourceUrl(base_url) || isExcludedSourceUrl(list_url)) return { ok: false, error: '対象外メディア（ホットペッパー/開店閉店.com 等）は登録できません' }
 
   const media_family = MEDIA_FAMILIES.includes(body?.media_family) ? body.media_family : 'other'
   const source_type = SOURCE_TYPES.includes(body?.source_type) ? body.source_type : 'html_list'
@@ -70,7 +74,6 @@ export async function authorizeAdmin(admin: any, headers: any): Promise<{ ok: bo
  *  号外NETは地域別サブドメインの「開店・閉店」カテゴリ(list_url)を巡回対象にする。
  *  ポータル(goguynet.jp)は記事一覧が無いため is_active=false。地域URLはUIから追加可。 */
 export const INITIAL_SOURCES = [
-  { name: '開店閉店.com', base_url: 'https://kaiten-heiten.com/', list_url: 'https://kaiten-heiten.com/', media_family: 'kaitenheiten', source_type: 'openclose_article', parser_type: 'openclose_article', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 90, crawl_interval_hours: 24 },
   { name: '号外NET（ポータル）', base_url: 'https://goguynet.jp/', list_url: 'https://goguynet.jp/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: false, reliability_score: 60, crawl_interval_hours: 24 },
   { name: '号外NET 葛飾区', base_url: 'https://katsushika.goguynet.jp/', list_url: 'https://katsushika.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
   { name: '号外NET 江戸川区', base_url: 'https://edogawa.goguynet.jp/', list_url: 'https://edogawa.goguynet.jp/category/cat_openclose/', media_family: 'goguynet', source_type: 'openclose_article', category_label: '開店閉店', is_active: true, reliability_score: 80, crawl_interval_hours: 24 },
@@ -98,9 +101,6 @@ export const INITIAL_SOURCES = [
 
   // ===== 大量追加 seed（A.全国/広域・B.号外NET開店閉店・C.千葉東葛・D.東京・E.神奈川・F.埼玉・G.地方優良） =====
   // A. 全国・広域
-  { name: '開店閉店.com 東京', base_url: 'https://kaiten-heiten.com/category/tokyo/', list_url: 'https://kaiten-heiten.com/category/tokyo/', media_family: 'kaitenheiten', source_type: 'openclose_article', parser_type: 'openclose_article', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 90, crawl_interval_hours: 24 },
-  { name: '開店閉店.com 埼玉', base_url: 'https://kaiten-heiten-24.com/category/category/saitama/', list_url: 'https://kaiten-heiten-24.com/category/category/saitama/', media_family: 'kaitenheiten', source_type: 'openclose_article', parser_type: 'openclose_article', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 90, crawl_interval_hours: 24 },
-  { name: '開店閉店.com 神奈川', base_url: 'https://kaiten-heiten.com/category/category/kanagawa/', list_url: 'https://kaiten-heiten.com/category/category/kanagawa/', media_family: 'kaitenheiten', source_type: 'openclose_article', parser_type: 'openclose_article', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 90, crawl_interval_hours: 24 },
   { name: '号外NET 東京', base_url: 'https://goguynet.jp/tokyo/', list_url: 'https://goguynet.jp/tokyo/', media_family: 'goguynet', source_type: 'openclose_article', parser_type: 'goguynet_area_discovery', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 85, crawl_interval_hours: 24 },
   { name: '号外NET 埼玉', base_url: 'https://goguynet.jp/saitama/', list_url: 'https://goguynet.jp/saitama/', media_family: 'goguynet', source_type: 'openclose_article', parser_type: 'goguynet_area_discovery', rendering_mode: 'static', category_label: '開店閉店', is_active: true, reliability_score: 85, crawl_interval_hours: 24 },
   // B. 号外NET 開店閉店カテゴリ
