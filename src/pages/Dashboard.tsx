@@ -12,6 +12,7 @@ import KpiPaceChips from '@/components/dashboard/KpiPaceChips'
 import AutoSearchRunner from '@/components/dashboard/AutoSearchRunner'
 import CaseFormModal from '@/components/modals/CaseFormModal'
 import SearchModal, { normalizeCriteria, type SearchCriteria } from '@/components/modals/SearchModal'
+import { creatorNameOf, creatorOptionsOf } from '@/lib/caseCreator'
 import CallLogFormModal from '@/components/modals/CallLogFormModal'
 import RecallFormModal from '@/components/modals/RecallFormModal'
 import ImportModal from '@/components/modals/ImportModal'
@@ -314,6 +315,7 @@ export default function Dashboard() {
         if (pq && ![c.phone1, c.phone2, c.phone3].map(phoneDigits).some((d) => d.includes(pq))) return false
         if (criteria.industries?.length && !criteria.industries.includes(c.industry ?? '')) return false
         if (criteria.sales_rep && c.sales_rep !== criteria.sales_rep) return false
+        if (criteria.created_by && creatorNameOf(c) !== criteria.created_by) return false
         if (criteria.status && c.status !== criteria.status) return false
         if (criteria.uncalledOnly && !UNCALLED_STATUSES.includes(c.status as never)) return false
         if (criteria.overdueRecallOnly && !rc?.overdue) return false
@@ -346,6 +348,9 @@ export default function Dashboard() {
     })
     return arr
   }, [cases, criteria, quickFilter, searchText, recallByCase, lastCallByCase, displayName, sortKey])
+
+  // 詳細検索「リスト投入者」の候補（実データに存在する投入者だけを出す）
+  const creatorOptions = useMemo(() => creatorOptionsOf(cases), [cases])
 
   const filterActive = !!criteria || quickFilter !== 'all' || !!searchText.trim()
 
@@ -808,6 +813,7 @@ export default function Dashboard() {
       <SearchModal
         open={modal === 'search'}
         initial={criteria}
+        creators={creatorOptions}
         onClose={() => setModal(null)}
         onSearch={setCriteria}
         onReset={() => setCriteria(null)}

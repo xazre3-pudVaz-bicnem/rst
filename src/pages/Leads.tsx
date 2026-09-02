@@ -78,7 +78,7 @@ function loadSettings(): LeadImportSettings {
 }
 
 export default function Leads() {
-  const { user } = useAuth()
+  const { user, displayName } = useAuth()
   const toast = useToast()
   const confirm = useConfirm()
   const [candidates, setCandidates] = useState<LeadCandidate[]>([])
@@ -941,6 +941,8 @@ export default function Leads() {
       source_urls: c.source_type ?? 'AI自動投入',
       memo,
       created_by_id: user?.id ?? null,
+      // リスト投入者＝この画面から投入した人（cron自動投入は人がいないため空＝「AI自動投入」表示）
+      created_by_name: displayName || null,
     })
     await LeadCandidateApi.update(c.id, { imported_to_cases: true, imported_at: new Date().toISOString() })
     AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, detail: 'AI自動投入', actor_id: user?.id ?? null })

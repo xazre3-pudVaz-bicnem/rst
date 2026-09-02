@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { INDUSTRIES, STATUSES } from '@/lib/constants'
+import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +27,8 @@ export interface SearchCriteria {
   phone: string
   industries: string[]   // 複数選択（空＝すべて）
   sales_rep: string
+  /** リスト投入者名（'' = すべて。人が介在しない自動投入は AI_CREATOR_LABEL） */
+  created_by: string
   status: string
   uncalledOnly: boolean
   overdueRecallOnly: boolean
@@ -35,7 +38,7 @@ export interface SearchCriteria {
 }
 
 const EMPTY: SearchCriteria = {
-  name: '', address: '', phone: '', industries: [], sales_rep: '', status: '',
+  name: '', address: '', phone: '', industries: [], sales_rep: '', created_by: '', status: '',
   uncalledOnly: false, overdueRecallOnly: false, hasRecall: 'any',
   lastCallFrom: '', lastCallTo: '',
 }
@@ -44,10 +47,9 @@ const EMPTY: SearchCriteria = {
 export function normalizeCriteria(c: SearchCriteria | null): SearchCriteria | null {
   if (!c) return c
   const anyC = c as unknown as { industry?: string; industries?: string[] }
-  if (!Array.isArray(anyC.industries)) {
-    return { ...c, industries: anyC.industry ? [anyC.industry] : [] }
-  }
-  return c
+  const industries = Array.isArray(anyC.industries) ? anyC.industries : (anyC.industry ? [anyC.industry] : [])
+  // created_by は後から追加した項目。保存済みビューには無いため既定値で補う。
+  return { ...c, industries, created_by: c.created_by ?? '' }
 }
 
 const ALL = '__all__'
@@ -55,12 +57,14 @@ const ALL = '__all__'
 interface Props {
   open: boolean
   initial: SearchCriteria | null
+  /** リスト投入者の候補（案件一覧に実在する名前。Dashboardから渡す） */
+  creators?: string[]
   onClose: () => void
   onSearch: (c: SearchCriteria) => void
   onReset: () => void
 }
 
-export default function SearchModal({ open, initial, onClose, onSearch, onReset }: Props) {
+export default function SearchModal({ open, initial, creators = [], onClose, onSearch, onReset }: Props) {
   const { names: assignableNames } = useAssignableUsers()
   const [c, setC] = useState<SearchCriteria>({ ...EMPTY })
   const set = (k: keyof SearchCriteria, v: string | boolean) =>
@@ -71,6 +75,9 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
   useEffect(() => {
     if (open) setC(normalizeCriteria(initial) ?? { ...EMPTY })
   }, [open, initial])
+
+  // 保存ビュー等で選択中の投入者が候補に無い場合も、選択状態を失わないようにする
+  const creatorOptions = withCurrent(creators, c.created_by)
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -124,6 +131,16 @@ export default function SearchModal({ open, initial, onClose, onSearch, onReset 
               <SelectContent>
                 <SelectItem value={ALL}>すべて</SelectItem>
                 {withCurrent(assignableNames, c.sales_rep).map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>リスト投入者<span className="ml-1 text-2xs font-normal text-muted-foreground">案件をリストへ入れた人</span></Label>
+            <Select value={c.created_by || ALL} onValueChange={(v) => set('created_by', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>すべて</SelectItem>
+                {creatorOptions.map((n) => <SelectItem key={n} value={n}>{n === AI_CREATOR_LABEL ? `${n}（自動）` : n}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

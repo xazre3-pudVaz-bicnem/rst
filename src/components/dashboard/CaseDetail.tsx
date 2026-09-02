@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { creatorNameOf } from '@/lib/caseCreator'
 import moment from 'moment'
 import {
   Pencil, Trash2, Save, ExternalLink, MapPin, PhoneCall, CalendarClock,
@@ -297,7 +298,7 @@ export default function CaseDetail({
             {moment(nextRecallAt).format('YYYY/MM/DD HH:mm')}
           </span>
         ) : null)}
-        {row('リスト作成者', c.created_by_name)}
+        {row('リスト投入者', creatorNameOf(c))}
         {row('作成日', moment(c.created_date).format('YYYY/MM/DD HH:mm'))}
         {row('更新日', moment(c.updated_date).format('YYYY/MM/DD HH:mm'))}
         {row('メモ', <span className="whitespace-pre-wrap">{c.memo}</span>)}

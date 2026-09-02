@@ -65,7 +65,7 @@ interface MappedRow {
 }
 
 export default function ImportModal({ open, onClose, existingCases, onImported }: Props) {
-  const { user } = useAuth()
+  const { user, displayName } = useAuth()
   const toast = useToast()
   const [tab, setTab] = useState<Tab>('csv')
   const fileRef = useRef<HTMLInputElement>(null)
@@ -225,7 +225,8 @@ export default function ImportModal({ open, onClose, existingCases, onImported }
             }
             // add → 別案件として追加
           }
-          await CaseApi.create({ ...payload, created_by_id: user?.id ?? null })
+          // リスト投入者＝取込を実行した人（詳細検索の「リスト投入者」で絞り込める）
+          await CaseApi.create({ ...payload, created_by_id: user?.id ?? null, created_by_name: displayName || null })
           added++
         } catch (e) {
           console.error('[CSV import row]', m.rowNo, e)
@@ -318,6 +319,7 @@ export default function ImportModal({ open, onClose, existingCases, onImported }
           source_urls: r.source_urls || null,
           memo: r.memo || null,
           created_by_id: user?.id ?? null,
+          created_by_name: displayName || null,   // リスト投入者＝取込を実行した人
         })
         if (d) existDigits.add(d)
         added++
