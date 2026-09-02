@@ -44,6 +44,8 @@ export interface Case {
   updated_date: string
 }
 
+export type AppoPriority = 'S' | 'A' | 'B' | 'C'
+
 export interface Appointment {
   id: string
   // 案件に紐づかない予定（社内MTG等）も登録できるため null 許容
@@ -54,6 +56,8 @@ export interface Appointment {
   appo_at: string
   /** アポ形式。'zoom'=1時間枠 / '対面'(既定)=2時間枠 */
   meeting_type?: 'zoom' | '対面' | null
+  /** アポの優先度。S=最優先 / A=高 / B=標準 / C=低。未設定はnull（案件のpriority「高/中/低」とは別軸） */
+  priority?: AppoPriority | null
   memo?: string | null
   organization_id?: string | null
   created_by_id?: string | null

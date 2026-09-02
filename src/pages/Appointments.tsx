@@ -31,7 +31,8 @@ import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { cn, jpError, roundTo15 } from '@/lib/utils'
-import type { Appointment, Case } from '@/lib/types'
+import type { Appointment, AppoPriority, Case } from '@/lib/types'
+import { APPO_PRIORITIES, APPO_PRIORITY_COLORS } from '@/lib/constants'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 import VisitReportModal from '@/components/modals/VisitReportModal'
 
@@ -65,6 +66,7 @@ export default function Appointments() {
     sales_rep: '',
     appo_at: '',
     meeting_type: '対面' as 'zoom' | '対面',
+    priority: '' as AppoPriority | '',   // '' = 優先度なし
     memo: '',
   })
 
@@ -117,6 +119,7 @@ export default function Appointments() {
       sales_rep: rep,
       appo_at: moment(currentDate).hour(hour).minute(0).format('YYYY-MM-DDTHH:mm'),
       meeting_type: '対面',
+      priority: '',
       memo: '',
     })
     setShowModal(true)
@@ -131,6 +134,7 @@ export default function Appointments() {
       sales_rep: a.sales_rep ?? '',
       appo_at: moment(a.appo_at).format('YYYY-MM-DDTHH:mm'),
       meeting_type: a.meeting_type === 'zoom' ? 'zoom' : '対面',
+      priority: (a.priority ?? '') as AppoPriority | '',
       memo: a.memo ?? '',
     })
     setShowModal(true)
@@ -155,6 +159,7 @@ export default function Appointments() {
         sales_rep: form.sales_rep || null,
         appo_at: moment(roundTo15(form.appo_at)).toISOString(),
         meeting_type: form.meeting_type,
+        priority: form.priority || null,
         memo: form.memo || null,
       }
       if (editing) {
@@ -256,6 +261,9 @@ export default function Appointments() {
                       <span className={cn('rounded px-1.5 py-0.5 text-2xs font-bold text-white', isZoom ? 'bg-sky-500' : 'bg-primary')}>
                         {isZoom ? 'Zoom' : '対面'}
                       </span>
+                      {a.priority && (
+                        <span className={cn('rounded border px-1.5 py-0.5 text-2xs font-bold', APPO_PRIORITY_COLORS[a.priority])}>{a.priority}</span>
+                      )}
                     </div>
                     {a.sales_rep && <span className="rounded bg-muted px-2 py-0.5 text-2xs font-medium">{a.sales_rep}</span>}
                   </div>
@@ -361,6 +369,9 @@ export default function Appointments() {
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button className="block w-full truncate text-left font-bold text-primary hover:underline">
+                                  {a.priority && (
+                                    <span className={cn('mr-1 rounded border px-1 text-[9px] font-bold', APPO_PRIORITY_COLORS[a.priority])}>{a.priority}</span>
+                                  )}
                                   {moment(a.appo_at).format('HH:mm')} {a.case_name}
                                 </button>
                               </DropdownMenuTrigger>
@@ -472,6 +483,24 @@ export default function Appointments() {
                     onClick={() => setForm((f) => ({ ...f, meeting_type: m }))}
                   >
                     {m === 'zoom' ? 'Zoom' : '対面'}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            {/* 優先度 S/A/B/C（案件の「高/中/低」とは別軸。もう一度押すと解除） */}
+            <div className="space-y-1">
+              <Label>優先度</Label>
+              <div className="flex gap-2">
+                {APPO_PRIORITIES.map((p) => (
+                  <Button
+                    key={p}
+                    type="button"
+                    size="sm"
+                    variant={form.priority === p ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => setForm((f) => ({ ...f, priority: f.priority === p ? '' : p }))}
+                  >
+                    {p}
                   </Button>
                 ))}
               </div>

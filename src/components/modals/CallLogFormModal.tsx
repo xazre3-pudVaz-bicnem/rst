@@ -24,6 +24,7 @@ import { syncAppointment } from '@/lib/calendarSync'
 import type { Template } from '@/lib/types'
 import {
   AGES,
+  APPO_PRIORITIES,
   CONTACT_RESULTS,
   GENDERS,
   NO_CONTACT_RESULTS,
@@ -34,7 +35,7 @@ import { generateSummary } from '@/lib/summary'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { jpError, roundTo15 } from '@/lib/utils'
-import type { Case, CallLog } from '@/lib/types'
+import type { AppoPriority, Case, CallLog } from '@/lib/types'
 
 interface Props {
   open: boolean
@@ -73,6 +74,8 @@ export default function CallLogFormModal({
   const [appoRep, setAppoRep] = useState('')
   // アポ形式（既定は対面）。訪問予定の枠幅に使う: 対面=2時間 / zoom=1時間
   const [meetingType, setMeetingType] = useState<'zoom' | '対面'>('対面')
+  // アポの優先度 S/A/B/C（''=なし）。訪問予定画面の編集からも変更できる
+  const [appoPriority, setAppoPriority] = useState<AppoPriority | ''>('')
   const [recallAt, setRecallAt] = useState('')
   const [memo, setMemo] = useState('')
   const [logRep, setLogRep] = useState('')
@@ -100,6 +103,7 @@ export default function CallLogFormModal({
       setAge('')
       setAppoAt('')
       setAppoRep(selectedCase?.sales_rep ?? '')
+      setAppoPriority('')
       setRecallAt('')
       setLogRep(editingLog.sales_rep ?? selectedCase?.sales_rep ?? '')
       setNewStatus(selectedCase?.status ?? '')
@@ -113,6 +117,7 @@ export default function CallLogFormModal({
       setResult('')
       setAppoAt('')
       setAppoRep(selectedCase?.sales_rep ?? '')
+      setAppoPriority('')
       setRecallAt('')
       setMemo('')
       // 記録者はログイン中ユーザーを初期値に（原則ログインユーザーで自動設定）
@@ -223,6 +228,7 @@ export default function CallLogFormModal({
           sales_rep: appoRep || logRep || selectedCase.sales_rep || displayName || null,
           appo_at: moment(roundTo15(appoAt)).toISOString(),
           meeting_type: meetingType,
+          priority: appoPriority || null,
           memo: null,
         })
         syncAppointment(appt, selectedCase)
@@ -411,6 +417,24 @@ export default function CallLogFormModal({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              {/* 優先度 S/A/B/C（もう一度押すと解除）。訪問予定の編集からも変更できる */}
+              <div className="col-span-2 space-y-1">
+                <Label>優先度</Label>
+                <div className="flex gap-2">
+                  {APPO_PRIORITIES.map((pr) => (
+                    <Button
+                      key={pr}
+                      type="button"
+                      size="sm"
+                      variant={appoPriority === pr ? 'default' : 'outline'}
+                      className="flex-1"
+                      onClick={() => setAppoPriority((v) => (v === pr ? '' : pr))}
+                    >
+                      {pr}
+                    </Button>
+                  ))}
+                </div>
               </div>
               {/* アポ形式。訪問予定の枠幅が変わる（対面=2時間 / Zoom=1時間） */}
               <div className="col-span-2 space-y-1">

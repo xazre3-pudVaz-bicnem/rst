@@ -247,6 +247,15 @@ export const PRIORITY_COLORS: Record<string, string> = {
   低: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:border-slate-600',
 }
 
+/** アポの優先度（S=最優先 / A=高 / B=標準 / C=低）。案件の「高/中/低」とは別軸 */
+export const APPO_PRIORITIES = ['S', 'A', 'B', 'C'] as const
+export const APPO_PRIORITY_COLORS: Record<string, string> = {
+  S: 'bg-red-100 text-red-700 border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30',
+  A: 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-500/20 dark:text-orange-300 dark:border-orange-500/30',
+  B: 'bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-500/20 dark:text-sky-300 dark:border-sky-500/30',
+  C: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:border-slate-600',
+}
+
 /** タグのプリセット（自由入力も可） */
 export const TAG_PRESETS = [
   '高優先度',
