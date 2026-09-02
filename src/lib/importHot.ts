@@ -14,6 +14,7 @@ import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { fetchInstagramProfile } from './enrichProfile.js'
 import { openProx } from './salesScore.js'
 import { DEFAULT_STATUS } from './constants.js'
+import { mediaAssigneePatch } from './leadAssignee.js'
 
 // Web検索スニペットからフォロワー数＋bioを取得（IGログイン壁対策。instagramWebRunと同等のローカル実装＝循環import回避）
 async function followersViaSerper(username: string): Promise<{ followers: number | null; bio: string }> {
@@ -61,7 +62,7 @@ function igUsername(url?: string | null): string {
   return u && !/^(p|reel|reels|explore|tv|stories|accounts)$/i.test(u) ? u : ''
 }
 
-const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,sales_priority_score,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count,phone_source,enriched_phone_source,enriched_address_source,name_unconfirmed_hot,source_detail_url,source_type,business_hours,first_seen_at,opening_date,opening_date_source,opening_date_confidence,days_until_opening,days_since_opening,google_business_status'
+const FIELDS = 'id,name,phone_number,extracted_phone,address,extracted_address,hot_tier,industry,industry_category,website_url,official_url,instagram_url,call_memo,sales_priority_grade,sales_priority_score,regional_media_newness_reason,search_snippet,auto_import_reason,should_exclude_from_call_list,is_chain_store,is_large_franchise,oldest_review_days_ago,user_rating_count,google_user_rating_count,phone_source,enriched_phone_source,enriched_address_source,name_unconfirmed_hot,source_detail_url,source_listing_url,source_site_name,source_type,business_hours,first_seen_at,opening_date,opening_date_source,opening_date_confidence,days_until_opening,days_since_opening,google_business_status'
 
 // phone_source/address_source の内部値 → 人が読める取得元ラベル
 function sourceLabel(v?: string | null): string {
@@ -429,7 +430,9 @@ export async function sweepHotToCases(admin: any, opts: { limit?: number; userId
     ].join('\n')
     // priority: HOT-A / 開業近接 / 営業S は「高」（開業タイミングを逃さない）
     const priorityHigh = c.hot_tier === 'A' || openSoon || c.sales_priority_grade === 'S'
-    const { data: created, error: ce } = await admin.from('cases').insert({ name, address, phone1: phone, industry: normalizeIndustry(c.industry) || classifyIndustry(name) || normalizeIndustry(c.industry_category) || null, status: DEFAULT_STATUS, priority: priorityHigh ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.source_detail_url || c.source_listing_url || c.website_url || c.official_url || null, memo, created_by_id: userId }).select('id').single()
+    // 指定メディア由来は決まった営業担当の新規案件として投入する（巡回時の直接投入と同じ扱い）
+    const assignee = await mediaAssigneePatch(admin, c.source_site_name, c.source_detail_url, c.source_listing_url)
+    const { data: created, error: ce } = await admin.from('cases').insert({ ...assignee, name, address, phone1: phone, industry: normalizeIndustry(c.industry) || classifyIndustry(name) || normalizeIndustry(c.industry_category) || null, status: DEFAULT_STATUS, priority: priorityHigh ? '高' : '中', hp1: c.website_url || c.official_url || null, instagram: c.instagram_url || null, business_hours: c.business_hours || null, source_urls: c.source_detail_url || c.source_listing_url || c.website_url || c.official_url || null, memo, created_by_id: userId }).select('id').single()
     if (ce || !created?.id) { skipped++; await admin.from('lead_candidates').update({ auto_insert_attempted: true, auto_insert_success: false, auto_insert_error: ce?.message || 'case作成失敗' }).eq('id', c.id); continue }
     await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, auto_insert_attempted: true, auto_insert_success: true }).eq('id', c.id)
     imported++

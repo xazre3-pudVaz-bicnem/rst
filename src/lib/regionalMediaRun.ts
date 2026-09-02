@@ -20,6 +20,8 @@ import { enrichCandidate } from './instagramWebRun.js'
 import { classifyIndustry, normalizeIndustry } from './industry.js'
 import { findCaseIdByPhone } from './caseDedup.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
+import { isExcludedSourceUrl } from './sourceBlocklist.js'
+import { mediaAssigneePatch } from './leadAssignee.js'
 
 // サイトのタイプを正規化（記事型 / 店舗ディレクトリ型 / ハイブリッド）
 export function siteTypeOf(site: any): 'local_directory_new_listing' | 'openclose_article' | 'hybrid' {
@@ -409,7 +411,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
 
     // HOT候補の自動投入を一元処理し、結果（新規投入/既存投入済/手動待ち/失敗）を集計＋候補に記録。
     // 戻り値: 候補の投入状態（UI表示用）。casesに実際に作成された場合のみ「今回投入済」。
-    async function autoImportHot(o: { candidateId: string | null; tier: HotTier; temperature: string; phone: string; alreadyImported: boolean; caseData: any }): Promise<string> {
+    async function autoImportHot(o: { candidateId: string | null; tier: HotTier; temperature: string; phone: string; alreadyImported: boolean; caseData: any; site?: any }): Promise<string> {
       if (o.temperature !== 'HOT') return o.temperature // HOLD/EXCLUDED はそのまま
       let attempted = false, success = false, skip = '', errMsg = '', caseId: string | null = null
       if (o.alreadyImported) { skip = '既に投入済'; counts.alreadyImported++ }
@@ -428,7 +430,9 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
           if (dupCaseId) { skip = '既存案件と電話重複のためリンク'; caseId = dupCaseId; counts.alreadyImported++ }
           else {
             attempted = true
-            const { data: created, error } = await admin.from('cases').insert(o.caseData).select('id').single()
+            // 指定メディア（スクショで名指しの地域メディア）由来は決まった営業担当の新規案件として投入する
+            const assignee = await mediaAssigneePatch(admin, o.site?.name, o.site?.list_url, o.site?.base_url, o.caseData?.source_urls)
+            const { data: created, error } = await admin.from('cases').insert({ ...o.caseData, ...assignee }).select('id').single()
             if (error || !created?.id) { errMsg = error?.message || 'case作成失敗'; counts.importFailed++ }
             else { success = true; caseId = created.id; counts.imported++; importedThisRun++; importedCount++ }
           }
@@ -464,6 +468,12 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
       let siteNewest: string | null = null   // 今回一覧の先頭（最新）アイテムURL → 次回の prevLatest
       let siteSeenSkipped = 0, siteOldSkipped = 0, siteNewArticles = 0
       const crawlUrl = site.list_url || site.base_url
+      // 恒久除外ドメイン（ホットペッパー/開店閉店.com 等）。DBに古い行が残っていても巡回しない。
+      if (isExcludedSourceUrl(crawlUrl)) {
+        debug.siteResults.push({ site: site.name, skipped: true, reason: '除外ドメインのため巡回しない' })
+        await admin.from('source_sites').update({ is_active: false, disabled_reason: '除外ドメイン（対象外メディア）', last_crawl_result: '除外ドメインのため無効化', last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {})
+        continue
+      }
       let base: URL
       try { base = new URL(crawlUrl) } catch { debug.siteResults.push({ site: site.name, error: 'invalid base_url' }); await admin.from('source_sites').update({ last_crawl_result: 'URL不正', last_crawled_at: nowIso, updated_at: nowIso }).eq('id', site.id).then(() => {}, () => {}); continue }
 
@@ -668,7 +678,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             candidateId = ins?.id || null
           }
 
-          const importStatus = await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, caseData: {
+          const importStatus = await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, site, caseData: {
             name, address: address || '', phone1: phone, industry: info.industry || null,
             status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, business_hours: info.hours || null, source_urls: item.url,
             memo: [`【AI自動投入 / 店舗ディレクトリ / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : dc.tier}】`, `店舗: ${name}`, `記事タイトル: ${item.title || ''}`, `URL: ${item.url}`, `電話: ${phone || '—'}`, `住所: ${address || '—'}`, `理由: ${dc.reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
@@ -944,7 +954,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
             if (error) { counts.saveError++; if (debug.saveErrors.length < 5) debug.saveErrors.push(error.message) } else { counts.saved++; diag.saved++ }
             candidateId = ins?.id || null
           }
-          await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, caseData: {
+          await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : dc.tier) as any, temperature, phone, alreadyImported, site, caseData: {
             name, address: address || '', phone1: phone, industry: info.industry || null, status: DEFAULT_STATUS, priority: dc.priority === 'high' ? '高' : '中', hp1: official, instagram, business_hours: info.hours || null, source_urls: detailUrl,
             memo: [`【AI自動投入 / ${diag.parser_used} / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : dc.tier}】`, `店舗: ${name}`, `記事タイトル: ${cand.shopName || ''}`, `URL: ${detailUrl}`, `電話: ${phone || '—'}`, `住所: ${address || '—'}`, `理由: ${dc.reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
           } })
@@ -1211,7 +1221,7 @@ export async function runRegionalMedia(admin: any, mapsKey: string | null, rawSe
         }
 
         // HOT自動投入（電話必須）。店名未確定HOT-Bも投入可（営業前に店名確認）
-        await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : sc.tier) as any, temperature, phone, alreadyImported, caseData: {
+        await autoImportHot({ candidateId, tier: (nameUnconfirmedHot ? 'HOT_B' : sc.tier) as any, temperature, phone, alreadyImported, site, caseData: {
           name, address: payload.address || '', phone1: phone, industry: normalizeIndustry(ex.industry) || classifyIndustry(name) || null,
           status: DEFAULT_STATUS, priority: sc.priority === 'high' ? '高' : '中', hp1: payload.website_url, source_urls: link.url,
           memo: [`【AI自動投入 / 地域メディア / ${nameUnconfirmedHot ? 'HOT_B(店名未確定)' : sc.tier}】`, `店舗: ${name}`, `記事タイトル: ${bestTitle}`, `URL: ${link.url}`, `電話: ${phone || '—'}`, `住所: ${payload.address || '—'}`, `理由: ${reason}`, ...(nameUnconfirmedHot ? ['※営業前に店名確認推奨'] : [])].join('\n'), created_by_id: userId,
