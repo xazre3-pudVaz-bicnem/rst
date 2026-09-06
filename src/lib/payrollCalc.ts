@@ -202,10 +202,18 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
   const holidayHours = input.holidayWorkMinutes / 60
 
   // --- 支給 ---
-  // 月給者は base_salary をそのまま基本給に。時給者は実労働×時給。
+  // 月給者は base_salary から欠勤控除を引いた額を基本給に。時給者は実労働×時給。
   const isMonthly = !!(emp.base_salary && emp.base_salary > 0)
+  // 欠勤控除（ノーワーク・ノーペイ）: 月給者のみ、日割単価 = 基本給 ÷ 月平均所定労働日数。
+  // 分母は就業規則依存のため従業員ごとに設定する。未設定なら控除しない
+  // （勝手に給与を減らさない。設定するまでは従来どおり満額＝過大払いの可能性を画面側で警告する）。
+  const absentDays = input.absentDays ?? 0
+  const divisor = emp.monthly_work_days ?? 0
+  const absentDeduction = isMonthly && absentDays > 0 && divisor > 0
+    ? Math.min(yen(emp.base_salary as number), yen(((emp.base_salary as number) / divisor) * absentDays))
+    : 0
   const base = isMonthly
-    ? yen(emp.base_salary as number)
+    ? yen((emp.base_salary as number) - absentDeduction)
     : yen(hourly * (input.workMinutes / 60))
 
   // --- 時間外手当 ---
@@ -238,7 +246,9 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
 
   // --- 社会保険（標準報酬月額 ≒ 基本給+固定残業。通勤・時間外は簡略化のため除外） ---
   // 子ども・子育て支援金(2026.4新設)は健康保険料に合算して徴収する。端数は法定処理。
-  const standardWage = base + fixedOtPay
+  // 標準報酬月額は算定基礎届で決まる固定値のため、欠勤控除で月ごとに動かさない
+  // （月給者は控除前の基本給で算出。時給者は従来どおり実支給ベースの概算）。
+  const standardWage = (isMonthly ? yen(emp.base_salary as number) : base) + fixedOtPay
   const social: SocialComponents = {
     health: roundPremium(standardWage * (rates.healthInsurance + rates.childSupport)),
     care: input.longTermCareApplicable ? roundPremium(standardWage * rates.longTermCare) : 0,
@@ -263,7 +273,8 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
     late_night_minutes: input.lateNightMinutes,
     holiday_work_minutes: input.holidayWorkMinutes,
     paid_leave_days: input.paidLeaveDays ?? 0,
-    absent_days: input.absentDays ?? 0,
+    absent_days: absentDays,
+    absent_deduction: absentDeduction,
     base_salary: base,
     overtime_pay: overtimePay,
     late_night_pay: lateNightPay,

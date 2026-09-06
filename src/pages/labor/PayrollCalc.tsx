@@ -544,7 +544,18 @@ export default function PayrollCalc() {
             <span>出勤 {selected.work_days ?? 0}日</span>
             <span>有給 {selected.paid_leave_days ?? 0}日</span>
             <span>欠勤 {selected.absent_days ?? 0}日</span>
+            {(selected.absent_deduction ?? 0) > 0 && <span>欠勤控除 {fmtYen(selected.absent_deduction)}</span>}
           </div>
+
+          {/* 月給者が欠勤しているのに日割の分母が未設定＝控除されず満額支給になっている警告 */}
+          {(selected.absent_days ?? 0) > 0 && !(selected.absent_deduction ?? 0)
+            && !!empById.get(selected.employee_id)?.base_salary
+            && !empById.get(selected.employee_id)?.monthly_work_days && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-2xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+              欠勤{selected.absent_days}日がありますが、従業員マスタの「月平均所定労働日数」が未設定のため
+              欠勤控除は行われていません（基本給を満額支給）。日割で控除する場合は従業員マスタに日数を設定して再計算してください。
+            </div>
+          )}
 
           {/* 確定済みは編集不可の注記 */}
           {perms.canManage && selected.status === '確定' && (

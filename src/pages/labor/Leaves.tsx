@@ -333,12 +333,14 @@ export default function Leaves() {
       }
       // 年5日取得義務は実取得日数(deduct)を現基準日付与へ計上（半休0.5含む・時間休は呼び出し側で除外済）
       if (deduct > 0 && obligationBal) bump(obligationBal).req5Delta += deduct
+      // 残高はDB側で相対加減算（rst_apply_leave_balance_delta）。画面のスナップショットから
+      // 絶対値を書き戻すと、別々の申請を2人の管理者が同時承認したとき後勝ちで片方の引当が消える。
       await Promise.all(
         [...updates.values()].map((u) =>
-          LeaveBalanceApi.update(u.bal.id, {
-            paid_leave_used_days: (u.bal.paid_leave_used_days ?? 0) + u.usedDelta,
-            paid_leave_remaining_days: (u.bal.paid_leave_remaining_days ?? 0) + u.remainingDelta,
-            required_5days_used: (u.bal.required_5days_used ?? 0) + u.req5Delta,
+          LeaveBalanceApi.applyDelta(u.bal.id, {
+            usedDelta: u.usedDelta,
+            remainingDelta: u.remainingDelta,
+            required5Delta: u.req5Delta,
           }),
         ),
       )

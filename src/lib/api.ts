@@ -1,6 +1,7 @@
 import { supabase } from './supabaseClient'
 import type {
   Appointment,
+  TravelExpense,
   AuditLog,
   Case,
   CallLog,
@@ -773,6 +774,20 @@ export const LeaveBalanceApi = {
     const { error } = await supabase.from('leave_balances').update(payload).eq('id', id)
     if (error) throw new Error(error.message)
   },
+  /**
+   * 残日数・消化日数・年5日計上を「相対値」で加減算する（DB側でアトミック）。
+   * 画面のスナップショットから絶対値を書き戻すと、別々の申請を同時承認した際に
+   * 後勝ちで片方の引当が消えるため、承認処理は必ずこちらを使う。
+   */
+  async applyDelta(id: string, d: { usedDelta: number; remainingDelta: number; required5Delta: number }): Promise<void> {
+    const { error } = await supabase.rpc('rst_apply_leave_balance_delta', {
+      p_id: id,
+      p_used_delta: d.usedDelta,
+      p_remaining_delta: d.remainingDelta,
+      p_required5_delta: d.required5Delta,
+    })
+    if (error) throw new Error(error.message)
+  },
 }
 
 export const LeaveRequestApi = {
@@ -1046,6 +1061,50 @@ export const SharoshiApi = {
   },
   async remove(id: string): Promise<void> {
     const { error } = await supabase.from('sharoshi_shares').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+}
+
+/** 案件ごとの交通費申請（労務管理で担当者ごとに集計） */
+export const TravelExpenseApi = {
+  list: (limit = 2000) => safeList<TravelExpense>('travel_expenses', 'expense_date', false, limit),
+  /** 対象月（YYYY-MM）の申請を取得。集計画面用。 */
+  async listByMonth(month: string, limit = 2000): Promise<TravelExpense[]> {
+    // 月末日は Date(y, m, 0) で算出（api.ts に moment 依存を持ち込まない）
+    const [y, m] = month.split('-').map(Number)
+    const from = `${month}-01`
+    const to = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`
+    const { data, error } = await supabase
+      .from('travel_expenses').select('*')
+      .gte('expense_date', from).lte('expense_date', to)
+      .order('expense_date', { ascending: false }).limit(limit)
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[TravelExpense] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
+    return (data ?? []) as TravelExpense[]
+  },
+  /** 案件詳細で表示する、その案件の交通費申請 */
+  async listByCase(caseId: string, limit = 100): Promise<TravelExpense[]> {
+    const { data, error } = await supabase
+      .from('travel_expenses').select('*').eq('case_id', caseId)
+      .order('expense_date', { ascending: false }).limit(limit)
+    if (error) {
+      if (isMissingTable(error)) { console.warn('[TravelExpense] 未作成のため空表示:', error.message); return [] }
+      throw new Error(error.message)
+    }
+    return (data ?? []) as TravelExpense[]
+  },
+  async create(payload: Partial<TravelExpense>): Promise<TravelExpense> {
+    const { data, error } = await supabase.from('travel_expenses').insert(payload).select().single()
+    return unwrap(data, error)
+  },
+  async update(id: string, payload: Partial<TravelExpense>): Promise<void> {
+    const { error } = await supabase.from('travel_expenses').update(payload).eq('id', id)
+    if (error) throw new Error(error.message)
+  },
+  async remove(id: string): Promise<void> {
+    const { error } = await supabase.from('travel_expenses').delete().eq('id', id)
     if (error) throw new Error(error.message)
   },
 }

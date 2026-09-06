@@ -46,6 +46,31 @@ export interface Case {
 
 export type AppoPriority = 'S' | 'A' | 'B' | 'C'
 
+/** 案件ごとの交通費申請（労務管理で担当者ごとに集計・精算する） */
+export interface TravelExpense {
+  id: string
+  case_id?: string | null
+  case_name?: string | null
+  employee_id?: string | null
+  employee_name?: string | null
+  user_id?: string | null
+  expense_date: string
+  transport_type?: string | null
+  departure?: string | null
+  destination?: string | null
+  round_trip?: boolean | null
+  amount: number
+  purpose?: string | null
+  memo?: string | null
+  status?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  rejected_reason?: string | null
+  created_by_id?: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface Appointment {
   id: string
   // 案件に紐づかない予定（社内MTG等）も登録できるため null 許容
@@ -647,6 +672,8 @@ export interface Employee {
   standard_work_end?: string | null
   standard_break_minutes?: number | null
   weekly_work_days?: number | null
+  /** 月平均所定労働日数。欠勤控除（日割）の分母。未設定なら欠勤控除しない */
+  monthly_work_days?: number | null
   closing_day?: number | null
   payment_day?: number | null
   trial_period_end_date?: string | null
@@ -863,6 +890,8 @@ export interface Payslip {
   holiday_work_minutes?: number | null
   paid_leave_days?: number | null
   absent_days?: number | null
+  /** 欠勤控除額（基本給から差引済み。内訳表示用） */
+  absent_deduction?: number | null
   base_salary?: number | null
   overtime_pay?: number | null
   late_night_pay?: number | null

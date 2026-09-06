@@ -14,8 +14,9 @@ import {
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/toast'
 import { useAuth } from '@/context/AuthContext'
-import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { EmployeeApi, LaborAuditApi } from '@/lib/api'
+import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient'
+import { syncEmployeesFromProfiles } from '@/lib/employeeSync'
 import {
   laborPerms, employeeStatusColor,
   EMPLOYMENT_TYPES, EMPLOYEE_STATUSES, WORK_STYLES, ACCOUNT_TYPES, LABOR_ROLES,
@@ -28,7 +29,7 @@ type FormState = Record<string, string>
 
 const NUMBER_FIELDS = [
   'base_salary', 'hourly_wage', 'fixed_overtime_hours', 'fixed_overtime_pay',
-  'standard_break_minutes', 'weekly_work_days', 'closing_day', 'payment_day',
+  'standard_break_minutes', 'weekly_work_days', 'monthly_work_days', 'closing_day', 'payment_day',
 ] as const
 
 const TEXT_FIELDS = [
@@ -98,6 +99,17 @@ export default function Employees() {
     if (!isSupabaseConfigured) { setLoading(false); return }
     setLoading(true)
     try {
+      // 営業担当（ユーザー）は全員そのまま従業員として扱う。
+      // 一覧の取得前に profiles → employees を冪等同期し、ユーザー追加分を自動で載せる。
+      if (perms.canManage) {
+        try {
+          const r = await syncEmployeesFromProfiles(supabase)
+          const added = [...r.created, ...r.linked]
+          if (added.length) toast.info(`ユーザーから従業員を同期しました: ${added.join('・')}`)
+        } catch (e) {
+          console.warn('[Employees] ユーザー同期スキップ', e)   // 同期の失敗で一覧まで落とさない
+        }
+      }
       const rows = await EmployeeApi.list()
       setEmployees(rows)
     } catch (e) {
@@ -106,7 +118,7 @@ export default function Employees() {
     } finally {
       setLoading(false)
     }
-  }, [toast])
+  }, [toast, perms.canManage])
 
   useEffect(() => { load() }, [load])
 
@@ -357,6 +369,8 @@ export default function Employees() {
               <TextField label="所定終業" type="time" value={form.standard_work_end} onChange={(v) => setField('standard_work_end', v)} placeholder="18:00" />
               <NumberField label="休憩（分）" value={form.standard_break_minutes} onChange={(v) => setField('standard_break_minutes', v)} />
               <NumberField label="週所定労働日数" value={form.weekly_work_days} onChange={(v) => setField('weekly_work_days', v)} />
+              {/* 欠勤控除（日割）の分母。未設定なら月給者の欠勤控除は行わない（従来どおり満額支給） */}
+              <NumberField label="月平均所定労働日数" value={form.monthly_work_days} onChange={(v) => setField('monthly_work_days', v)} />
               <NumberField label="締め日" value={form.closing_day} onChange={(v) => setField('closing_day', v)} />
               <NumberField label="支払日" value={form.payment_day} onChange={(v) => setField('payment_day', v)} />
             </FormSection>

@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -44,12 +45,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [remove],
   )
 
-  const value: ToastContextValue = {
-    toast,
-    success: (m) => toast(m, 'success'),
-    error: (m) => toast(m, 'error'),
-    info: (m) => toast(m, 'info'),
-  }
+  // ここを毎レンダー新しいオブジェクトにすると useToast() の参照が変わり、
+  // useCallback(load, [toast]) → useEffect(load) を持つ画面が
+  // 「取得失敗→トースト表示→Provider再レンダー→参照変化→再取得→失敗…」の無限ループに入る
+  // （労務の各画面でエラートーストが延々と積み上がっていた原因）。参照を固定する。
+  const success = useCallback((m: string) => toast(m, 'success'), [toast])
+  const error = useCallback((m: string) => toast(m, 'error'), [toast])
+  const info = useCallback((m: string) => toast(m, 'info'), [toast])
+  const value: ToastContextValue = useMemo(
+    () => ({ toast, success, error, info }),
+    [toast, success, error, info],
+  )
 
   return (
     <ToastContext.Provider value={value}>
