@@ -51,6 +51,9 @@ export interface TravelExpense {
   id: string
   case_id?: string | null
   case_name?: string | null
+  /** 紐付く訪問結果（訪問結果を編集すると同じ行が更新される） */
+  visit_report_id?: string | null
+  appointment_id?: string | null
   employee_id?: string | null
   employee_name?: string | null
   user_id?: string | null

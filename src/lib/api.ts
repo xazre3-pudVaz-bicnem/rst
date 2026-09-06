@@ -1095,6 +1095,13 @@ export const TravelExpenseApi = {
     }
     return (data ?? []) as TravelExpense[]
   },
+  /** 訪問結果に紐付く交通費（訪問結果モーダルの編集時に読み戻す） */
+  async getByVisitReport(visitReportId: string): Promise<TravelExpense | null> {
+    const { data, error } = await supabase
+      .from('travel_expenses').select('*').eq('visit_report_id', visitReportId).limit(1)
+    if (error) { console.warn('[TravelExpense] getByVisitReport', error.message); return null }
+    return (data?.[0] as TravelExpense) ?? null
+  },
   async create(payload: Partial<TravelExpense>): Promise<TravelExpense> {
     const { data, error } = await supabase.from('travel_expenses').insert(payload).select().single()
     return unwrap(data, error)

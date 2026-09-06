@@ -12,13 +12,14 @@ import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { VisitReportApi, CaseApi } from '@/lib/api'
+import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi } from '@/lib/api'
+import { TRANSPORT_TYPES } from '@/lib/labor'
 import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { useToast } from '@/components/ui/toast'
 import { jpError } from '@/lib/utils'
-import type { Case, VisitReport } from '@/lib/types'
+import type { Case, VisitReport, TravelExpense } from '@/lib/types'
 
 interface Props {
   open: boolean
@@ -55,6 +56,13 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const [payment, setPayment] = useState('')
   const [hpPayType, setHpPayType] = useState<'一括' | '分割'>('一括')
   const [hpInstallments, setHpInstallments] = useState('')
+  // 交通費（この訪問でかかった分。金額を入れたときだけ登録され、労務管理で担当者ごとに集計される）
+  const [expense, setExpense] = useState<TravelExpense | null>(null)
+  const [expAmount, setExpAmount] = useState('')
+  const [expTransport, setExpTransport] = useState<string>('電車')
+  const [expDeparture, setExpDeparture] = useState('')
+  const [expDestination, setExpDestination] = useState('')
+  const [expRoundTrip, setExpRoundTrip] = useState(true)
 
   useEffect(() => {
     if (!open) return
@@ -71,6 +79,15 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
       setSalesRep(editing.sales_rep ?? '')
       setCaseName(editing.case_name ?? '')
+      // 既存の交通費を読み戻す（同じ行を更新するため）
+      TravelExpenseApi.getByVisitReport(editing.id).then((x) => {
+        setExpense(x)
+        setExpAmount(x?.amount != null ? String(x.amount) : '')
+        setExpTransport(x?.transport_type || '電車')
+        setExpDeparture(x?.departure ?? '')
+        setExpDestination(x?.destination ?? selectedCase?.address ?? '')
+        setExpRoundTrip(x ? x.round_trip !== false : true)
+      }, () => { /* 取得できなくても訪問結果の編集は続行 */ })
     } else {
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
@@ -84,8 +101,15 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpInstallments('')
       setSalesRep('')
       setCaseName('')
+      setExpense(null)
+      setExpAmount('')
+      setExpTransport('電車')
+      setExpDeparture('')
+      setExpDestination(selectedCase?.address ?? '')   // 訪問先＝案件の住所を初期値に
+      setExpRoundTrip(true)
     }
-  }, [open, editing])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editing, selectedCase?.id])
 
   const priceNums = {
     ...Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0])),
@@ -99,6 +123,56 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   // 案件(selectedCase)がある通常フローと、案件未登録で直接成約を登録するフロー両対応。
   const effName = selectedCase?.name ?? caseName.trim()
   const effCaseId = selectedCase?.id ?? editing?.case_id ?? null
+
+  /**
+   * この訪問の交通費を保存する（訪問結果1件につき1行）。
+   * 金額が空/0なら、既存行があれば削除＝「入力しなければ登録されない」。
+   * 申請者は訪問した営業担当（未選択ならログインユーザー）。労務の集計キーに使う。
+   */
+  async function saveExpense(visitReportId: string, visitedAtIso: string) {
+    const amount = Number(String(expAmount).replace(/[^0-9.-]/g, ''))
+    const hasAmount = Number.isFinite(amount) && amount > 0
+    if (!hasAmount) {
+      if (expense) await TravelExpenseApi.remove(expense.id).catch(() => { /* 消せなくても訪問結果は保存済み */ })
+      return
+    }
+    // 申請者の従業員レコード: 訪問担当者名で照合し、無ければログインユーザーで照合
+    let employeeId: string | null = null
+    let employeeName = (salesRep && salesRep !== AGENCY) ? salesRep : ''
+    try {
+      const emps = await EmployeeApi.listDirectory()
+      const byName = employeeName ? emps.find((e) => (e.name || '').trim() === employeeName) : null
+      const byUser = user?.id ? emps.find((e) => e.user_id === user.id) : null
+      const me = byName ?? byUser ?? null
+      if (me) { employeeId = me.id; employeeName = me.name || employeeName }
+    } catch { /* 従業員マスタが読めなくても交通費は記録する */ }
+    const body: Partial<TravelExpense> = {
+      case_id: effCaseId,
+      case_name: effName,
+      visit_report_id: visitReportId,
+      appointment_id: appointmentId ?? editing?.appointment_id ?? null,
+      expense_date: moment(visitedAtIso).format('YYYY-MM-DD'),
+      transport_type: expTransport || null,
+      departure: expDeparture.trim() || null,
+      destination: expDestination.trim() || null,
+      round_trip: expRoundTrip,
+      amount,
+      purpose: `訪問（${result}）`,
+    }
+    if (expense) {
+      // 金額や区間を直したら承認前に戻す（承認済みの金額が黙って変わらないようにする）
+      await TravelExpenseApi.update(expense.id, {
+        ...body, status: '申請中', approved_by: null, approved_at: null, rejected_reason: null,
+      })
+    } else {
+      await TravelExpenseApi.create({
+        ...body,
+        employee_id: employeeId, employee_name: employeeName || null,
+        user_id: user?.id ?? null, created_by_id: user?.id ?? null,
+        status: '申請中',
+      })
+    }
+  }
 
   async function handleSave() {
     if (!effName) { toast.error('店舗名を入力してください'); return }
@@ -136,8 +210,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           hp_price: null, maintenance_price: null, seo_price: null, meo_price: null, total_price: null,
         })
       }
-      if (editing) await VisitReportApi.update(editing.id, payload)
-      else await VisitReportApi.create(payload)
+      const saved = editing
+        ? (await VisitReportApi.update(editing.id, payload), editing)
+        : await VisitReportApi.create(payload)
+      await saveExpense(saved.id, payload.visited_at as string)
       // 案件ステータスも訪問結果に合わせて更新（案件未登録の直接成約はスキップ）
       if (effCaseId) await CaseApi.update(effCaseId, { status: result })
       toast.success(`訪問結果（${result}）を登録しました`)
@@ -281,6 +357,43 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                 <SelectItem value={AGENCY}>販売代理店</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* 交通費（任意）。金額を入れたときだけ登録され、労務管理で営業担当ごとに集計される */}
+          <div className="space-y-2 rounded-md border bg-muted/30 p-2">
+            <div className="flex items-center justify-between">
+              <Label>交通費<span className="ml-1 text-2xs font-normal text-muted-foreground">この訪問でかかった分（空欄なら登録しません）</span></Label>
+              {expense?.status && <span className="text-2xs text-muted-foreground">現在: {expense.status}</span>}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-2xs">金額（円）</Label>
+                <Input inputMode="numeric" placeholder="例: 1240" value={expAmount} onChange={(e) => setExpAmount(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs">交通手段</Label>
+                <Select value={expTransport} onValueChange={setExpTransport}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {TRANSPORT_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-2xs">出発地</Label>
+                <Input placeholder="例: 大宮駅" value={expDeparture} onChange={(e) => setExpDeparture(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs">到着地</Label>
+                <Input value={expDestination} onChange={(e) => setExpDestination(e.target.value)} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-2xs">
+              <input type="checkbox" checked={expRoundTrip} onChange={(e) => setExpRoundTrip(e.target.checked)} />
+              往復（金額は往復の実費を入力）
+            </label>
           </div>
 
           <div className="space-y-1">
