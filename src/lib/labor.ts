@@ -25,6 +25,18 @@ export const CLOCK_ACTIONS = ['出勤', '退勤', '休憩開始', '休憩終了'
 // --- 休暇 ---
 export const LEAVE_TYPES = ['有給', '半休', '時間休', '欠勤', '慶弔休暇', '産休', '育休', '介護休暇', '特別休暇'] as const
 
+// --- 交通費 ---
+export const TRANSPORT_TYPES = ['電車', 'バス', 'タクシー', '自家用車', '高速道路', '駐車場', 'その他'] as const
+export const TRAVEL_EXPENSE_STATUSES = ['申請中', '承認済み', '却下', '精算済み'] as const
+export function travelExpenseStatusColor(status?: string | null): string {
+  switch (status) {
+    case '承認済み': return 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300'
+    case '精算済み': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300'
+    case '却下': return 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+    default: return 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'  // 申請中
+  }
+}
+
 // --- 申請承認 ---
 export const REQUEST_TYPES = [
   '打刻修正', '有給申請', '残業申請', '休日出勤申請', 'シフト変更', '遅刻申請',

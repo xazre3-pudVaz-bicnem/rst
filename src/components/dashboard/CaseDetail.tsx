@@ -1,24 +1,27 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { creatorNameOf } from '@/lib/caseCreator'
 import moment from 'moment'
 import {
   Pencil, Trash2, Save, ExternalLink, MapPin, PhoneCall, CalendarClock,
   Copy, Search, Building2, Flag, AlertTriangle, ChevronLeft, ChevronRight, SkipForward, Zap, Bot,
+  Train, Plus,
 } from 'lucide-react'
 import AiCallModal from '@/components/modals/AiCallModal'
+import TravelExpenseModal from '@/components/modals/TravelExpenseModal'
 import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { CaseApi, CallLogApi, AuditApi, changeCaseStatus } from '@/lib/api'
+import { CaseApi, CallLogApi, AuditApi, changeCaseStatus, TravelExpenseApi } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } from '@/lib/constants'
+import { travelExpenseStatusColor } from '@/lib/labor'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { mapUrl, googleSearchUrl, normalizeUrl, copyToClipboard, cn, jpError } from '@/lib/utils'
-import type { Case, CallLog, Recall, Template } from '@/lib/types'
+import type { Case, CallLog, Recall, Template, TravelExpense } from '@/lib/types'
 
 interface Props {
   selectedCase: Case | null
@@ -51,6 +54,19 @@ export default function CaseDetail({
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
   const [aiCallOpen, setAiCallOpen] = useState(false)
+  // 案件ごとの交通費申請
+  const [expenseOpen, setExpenseOpen] = useState(false)
+  const [editingExpense, setEditingExpense] = useState<TravelExpense | null>(null)
+  const [expenses, setExpenses] = useState<TravelExpense[]>([])
+  const loadExpenses = useCallback(async (caseId: string | undefined) => {
+    if (!caseId) { setExpenses([]); return }
+    try { setExpenses(await TravelExpenseApi.listByCase(caseId)) } catch { setExpenses([]) }
+  }, [])
+  useEffect(() => { loadExpenses(selectedCase?.id) }, [selectedCase?.id, loadExpenses])
+  const expenseTotal = useMemo(
+    () => expenses.filter((x) => x.status !== '却下').reduce((a, x) => a + Number(x.amount || 0), 0),
+    [expenses],
+  )
 
   useEffect(() => {
     setSalesRep(selectedCase?.sales_rep ?? '')
@@ -239,6 +255,52 @@ export default function CaseDetail({
             {c.ai_call_next_action && <div className="mt-1 text-2xs text-muted-foreground">次回アクション: {c.ai_call_next_action}</div>}
           </section>
         )}
+        {/* 案件ごとの交通費（申請・履歴）。労務管理で担当者ごとに集計される */}
+        <section className="rounded-lg border bg-muted/20 p-2.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1 text-xs font-bold text-muted-foreground">
+              <Train className="h-3.5 w-3.5" />交通費
+              {expenses.length > 0 && (
+                <span className="ml-1 font-normal">
+                  {expenses.length}件・合計 ¥{expenseTotal.toLocaleString('ja-JP')}
+                </span>
+              )}
+            </span>
+            <Button
+              size="sm" variant="outline" className="h-6 text-2xs" disabled={!canWrite}
+              onClick={() => { setEditingExpense(null); setExpenseOpen(true) }}
+            >
+              <Plus className="h-3 w-3" />申請
+            </Button>
+          </div>
+          {expenses.length === 0 ? (
+            <p className="text-2xs text-muted-foreground">この案件の交通費申請はまだありません。</p>
+          ) : (
+            <div className="space-y-1">
+              {expenses.map((x) => (
+                <div key={x.id} className="flex items-center justify-between gap-2 rounded border bg-card px-2 py-1 text-2xs">
+                  <div className="min-w-0 flex-1 truncate">
+                    <span className="tabular-nums">{moment(x.expense_date).format('MM/DD')}</span>
+                    <span className="ml-1.5 font-medium">¥{Number(x.amount || 0).toLocaleString('ja-JP')}</span>
+                    <span className="ml-1.5 text-muted-foreground">
+                      {x.transport_type ?? ''}{x.round_trip ? '（往復）' : ''}
+                      {x.destination ? ` ${x.departure ? `${x.departure}→` : ''}${x.destination}` : ''}
+                    </span>
+                  </div>
+                  <span className={cn('shrink-0 rounded px-1.5 py-0.5', travelExpenseStatusColor(x.status))}>{x.status ?? '申請中'}</span>
+                  <button
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                    title="編集" disabled={!canWrite}
+                    onClick={() => { setEditingExpense(x); setExpenseOpen(true) }}
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         {/* ステータス変更カード */}
         <section className="rounded-lg border bg-muted/20 p-2.5">
           <div className="mb-2 text-xs font-bold text-muted-foreground">ステータス変更</div>
@@ -316,6 +378,13 @@ export default function CaseDetail({
         </section>
       </div>
       <AiCallModal open={aiCallOpen} onClose={() => setAiCallOpen(false)} selectedCase={c} canWrite={canWrite} onChanged={onChanged} />
+      <TravelExpenseModal
+        open={expenseOpen}
+        onClose={() => { setExpenseOpen(false); setEditingExpense(null) }}
+        selectedCase={c}
+        editing={editingExpense}
+        onSaved={() => loadExpenses(c.id)}
+      />
     </div>
   )
 }

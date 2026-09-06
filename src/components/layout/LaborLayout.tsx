@@ -13,6 +13,7 @@ export const LABOR_NAV: { to: string; label: string; manageOnly?: boolean; admin
   { to: '/labor/shifts', label: 'シフト' },
   { to: '/labor/leaves', label: '休暇' },
   { to: '/labor/approvals', label: '申請承認' },
+  { to: '/labor/travel-expenses', label: '交通費' },
   { to: '/labor/payroll', label: '給与連携' },
   { to: '/labor/payroll-calc', label: '給与計算', manageOnly: true },
   { to: '/labor/year-end', label: '年末調整', manageOnly: true },

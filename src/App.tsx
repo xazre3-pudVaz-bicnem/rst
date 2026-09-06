@@ -28,6 +28,7 @@ const LaborAttendance = lazy(() => import('@/pages/labor/Attendance'))
 const LaborShifts = lazy(() => import('@/pages/labor/Shifts'))
 const LaborLeaves = lazy(() => import('@/pages/labor/Leaves'))
 const LaborApprovals = lazy(() => import('@/pages/labor/Approvals'))
+const LaborTravelExpenses = lazy(() => import('@/pages/labor/TravelExpenses'))
 const LaborPayroll = lazy(() => import('@/pages/labor/Payroll'))
 const LaborDocuments = lazy(() => import('@/pages/labor/Documents'))
 const LaborAlerts = lazy(() => import('@/pages/labor/Alerts'))
@@ -82,6 +83,7 @@ export default function App() {
                 <Route path="/labor/shifts" element={<ProtectedRoute><LaborShifts /></ProtectedRoute>} />
                 <Route path="/labor/leaves" element={<ProtectedRoute><LaborLeaves /></ProtectedRoute>} />
                 <Route path="/labor/approvals" element={<ProtectedRoute><LaborApprovals /></ProtectedRoute>} />
+                <Route path="/labor/travel-expenses" element={<ProtectedRoute><LaborTravelExpenses /></ProtectedRoute>} />
                 <Route path="/labor/payroll" element={<ProtectedRoute><LaborPayroll /></ProtectedRoute>} />
                 <Route path="/labor/documents" element={<ProtectedRoute><LaborDocuments /></ProtectedRoute>} />
                 <Route path="/labor/alerts" element={<ProtectedRoute><LaborAlerts /></ProtectedRoute>} />
