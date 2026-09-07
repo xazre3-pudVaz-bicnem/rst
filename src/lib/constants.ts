@@ -247,11 +247,23 @@ export const PRIORITY_COLORS: Record<string, string> = {
   低: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:border-slate-600',
 }
 
-/** アポの優先度（S=最優先 / A=高 / B=標準 / C=低）。案件の「高/中/低」とは別軸 */
-export const APPO_PRIORITIES = ['S', 'A', 'B', 'C'] as const
+/**
+ * 一覧の優先度ドット用の色（塗りつぶし）。
+ * PRIORITY_COLORS はバッジ用の淡い背景色(bg-red-100)なので、1.5pxのドットに使うと
+ * ほぼ色が見えない。ドットは濃い単色で塗る。
+ */
+export const PRIORITY_DOT_COLORS: Record<string, string> = {
+  高: 'bg-red-600 dark:bg-red-500',
+  中: 'bg-amber-500 dark:bg-amber-400',
+  低: 'bg-slate-400 dark:bg-slate-500',
+}
+
+/** アポの優先度（S=最優先 / A=高 / AB=A寄り / B=標準 / C=低）。案件の「高/中/低」とは別軸 */
+export const APPO_PRIORITIES = ['S', 'A', 'AB', 'B', 'C'] as const
 export const APPO_PRIORITY_COLORS: Record<string, string> = {
   S: 'bg-red-100 text-red-700 border-red-200 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30',
   A: 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-500/20 dark:text-orange-300 dark:border-orange-500/30',
+  AB: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30',
   B: 'bg-sky-100 text-sky-700 border-sky-200 dark:bg-sky-500/20 dark:text-sky-300 dark:border-sky-500/30',
   C: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:border-slate-600',
 }

@@ -44,7 +44,7 @@ export interface Case {
   updated_date: string
 }
 
-export type AppoPriority = 'S' | 'A' | 'B' | 'C'
+export type AppoPriority = 'S' | 'A' | 'AB' | 'B' | 'C'
 
 /** 案件ごとの交通費申請（労務管理で担当者ごとに集計・精算する） */
 export interface TravelExpense {

@@ -7,7 +7,7 @@ import {
   HIGHLIGHT_STATUSES,
   statusColor,
   displayStatus,
-  PRIORITY_COLORS,
+  PRIORITY_DOT_COLORS,
   type QuickFilterKey,
 } from '@/lib/constants'
 import { cn } from '@/lib/utils'
@@ -47,7 +47,7 @@ function CaseRow({
       <span className="w-12 shrink-0 truncate text-[10px] text-muted-foreground">{c.industry || '—'}</span>
       {/* 店名（優先度色のドット＋期限切れ再コール印） */}
       <span className="flex w-[150px] shrink-0 items-center gap-1 overflow-hidden">
-        {c.priority && <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', PRIORITY_COLORS[c.priority])} />}
+        {c.priority && <span title={`優先度 ${c.priority}`} className={cn('h-2 w-2 shrink-0 rounded-full', PRIORITY_DOT_COLORS[c.priority])} />}
         {rc?.overdue && <span className="shrink-0 text-[9px] font-bold text-red-600">●</span>}
         <span className="truncate font-medium">{c.name}</span>
       </span>
