@@ -43,6 +43,67 @@ function unwrap<T>(data: T | null, error: { message: string } | null): T {
   return data as T
 }
 
+/**
+ * 一覧ボードで読む案件の列（memo と source_urls を除く全列）。
+ * この2列だけで案件データ全体の約3分の1を占めるため一覧では読まない。
+ * 詳細を開いたときに CaseApi.get() で全項目を取り直す。
+ */
+export const BOARD_CASE_COLUMNS = [
+  'id', 'name', 'address', 'phone1', 'phone2', 'phone3', 'industry', 'representative',
+  'status', 'sales_rep', 'hp1', 'hp2', 'instagram', 'created_date', 'updated_date',
+  'tags', 'priority', 'created_by_name', 'created_by_user_name', 'assigned_user_name',
+  'do_not_call', 'last_ai_call_at', 'ai_call_status', 'next_ai_call_at',
+  'ai_call_temperature', 'ai_call_next_action', 'business_hours',
+  // ※ organization_id / assigned_to / *_user_id / google_* など一覧で使わないUUID列は読まない。
+  //    1列で38バイト×5,500件＝約0.2MBずつ効くため、詳細を開いたときの CaseApi.get に任せる。
+].join(',')
+
+/**
+ * 全件取得の共通ヘルパ（並列ページ取得）。
+ * Supabaseは1リクエスト1000行が上限のため複数ページに分かれるが、
+ * 順次awaitすると往復回数ぶん待たされる（案件5,500件で6往復・実測883ms、
+ * 回線が細い環境ではこれが体感のラグそのものになる）。
+ * 先に件数を数えて必要ページを並列取得し、往復を1〜2回ぶんの待ち時間に畳む。
+ */
+async function fetchAllPages<T>(
+  table: string,
+  columns: string,
+  orderCol: string,
+  opts: { ascending?: boolean; pageSize?: number; maxPages?: number; missingTableOk?: boolean } = {},
+): Promise<T[]> {
+  const pageSize = opts.pageSize ?? 1000
+  const maxPages = opts.maxPages ?? 30
+  const { count, error: ce } = await supabase.from(table).select('id', { count: 'exact', head: true })
+  if (ce) {
+    if (opts.missingTableOk && isMissingTable(ce)) return []
+    throw new Error(ce.message)
+  }
+  const pages = Math.min(maxPages, Math.max(1, Math.ceil((count ?? 0) / pageSize)))
+  if (!count) return []
+  const results = await Promise.all(
+    Array.from({ length: pages }, (_, i) =>
+      supabase.from(table).select(columns)
+        .order(orderCol, { ascending: opts.ascending ?? false })
+        .range(i * pageSize, i * pageSize + pageSize - 1)),
+  )
+  // ページ取得中にAI巡回等で行が増えると境界がずれて同じ行が複数ページに現れることがあるため、
+  // idで重複を除いてから返す（一覧に同じ案件が2行出る/件数がずれるのを防ぐ）。
+  const seen = new Set<string>()
+  const all: T[] = []
+  for (const r of results) {
+    if (r.error) {
+      if (opts.missingTableOk && isMissingTable(r.error)) return []
+      throw new Error(r.error.message)
+    }
+    for (const row of ((r.data ?? []) as T[])) {
+      const id = String((row as { id?: string }).id ?? '')
+      if (id) { if (seen.has(id)) continue; seen.add(id) }
+      all.push(row)
+    }
+  }
+  return all
+}
+
 export const CaseApi = {
   async list(limit = 500): Promise<Case[]> {
     const { data, error } = await supabase
@@ -86,21 +147,38 @@ export const CaseApi = {
    * maxPages で暴走を防止（既定 30 ページ = 最大 30,000 件）。
    */
   async listAll(pageSize = 1000, maxPages = 30): Promise<Case[]> {
-    const all: Case[] = []
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize
-      const to = from + pageSize - 1
-      const { data, error } = await supabase
-        .from('cases')
-        .select('*')
-        .order('created_date', { ascending: false })
-        .range(from, to)
+    return fetchAllPages<Case>('cases', '*', 'created_date', { pageSize, maxPages })
+  },
+  /**
+   * 一覧ボード用の軽量版（メモ・掲載元URL等の重い列を落とす）。
+   * memo だけで全体の27%（案件5,500件で約1.7MB）を占めるため、一覧では読まず、
+   * 案件を選択したときに CaseApi.get で全項目を取り直す。
+   */
+  async listForBoard(): Promise<Case[]> {
+    return fetchAllPages<Case>('cases', BOARD_CASE_COLUMNS, 'created_date', {})
+  },
+  /**
+   * 重複判定にだけ使う超軽量版（電話・店名住所・HP・Instagram のみ）。
+   * AI投入画面は既存案件との重複チェックのために全件必要だが、全項目だと6MB超になる。
+   */
+  async listForDedup(): Promise<Case[]> {
+    return fetchAllPages<Case>('cases', 'id,name,address,phone1,phone2,phone3,hp1,hp2,instagram', 'created_date', {})
+  },
+  /** 指定IDのメモだけを取り直す（一覧では読んでいないため、CSV出力時などに使う） */
+  async memosByIds(ids: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>()
+    for (let i = 0; i < ids.length; i += 500) {
+      const { data, error } = await supabase.from('cases').select('id,memo').in('id', ids.slice(i, i + 500))
       if (error) throw new Error(error.message)
-      const rows = data ?? []
-      all.push(...rows)
-      if (rows.length < pageSize) break
+      for (const r of (data ?? []) as { id: string; memo: string | null }[]) if (r.memo) out.set(r.id, r.memo)
     }
-    return all
+    return out
+  },
+  /** 案件1件の全項目（一覧では省いている memo / source_urls を含む） */
+  async get(id: string): Promise<Case | null> {
+    const { data, error } = await supabase.from('cases').select('*').eq('id', id).maybeSingle()
+    if (error) throw new Error(error.message)
+    return (data as Case) ?? null
   },
   async create(payload: Partial<Case>): Promise<Case> {
     const { data, error } = await supabase.from('cases').insert(payload).select().single()
@@ -290,20 +368,27 @@ export const CallLogApi = {
     return unwrap(data, error)
   },
   async listAll(pageSize = 1000, maxPages = 30): Promise<CallLog[]> {
-    const all: CallLog[] = []
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize
-      const { data, error } = await supabase
-        .from('call_logs')
-        .select('*')
-        .order('call_at', { ascending: false })
-        .range(from, from + pageSize - 1)
-      if (error) throw new Error(error.message)
-      const rows = data ?? []
-      all.push(...rows)
-      if (rows.length < pageSize) break
-    }
-    return all
+    return fetchAllPages<CallLog>('call_logs', '*', 'call_at', { pageSize, maxPages })
+  },
+  /**
+   * 一覧ボード用の軽量版。ダッシュボードは「案件ごとの最終架電日」とKPI集計にしか使わないため、
+   * 本文（memo/summary 等）を読まない。全件で3.7MB→1.6MBに減る。
+   * 選択中の案件の全文は CallLogApi.listByCase で取り直す。
+   */
+  async listForBoard(): Promise<CallLog[]> {
+    return fetchAllPages<CallLog>(
+      'call_logs',
+      'id,case_id,case_name,call_at,contact_type,result,sales_rep,prev_status,next_status,appo_at,created_by_id,created_date',
+      'call_at', {},
+    )
+  },
+  /** 選択中の案件のコール履歴（本文つき・全項目） */
+  async listByCase(caseId: string, limit = 200): Promise<CallLog[]> {
+    const { data, error } = await supabase
+      .from('call_logs').select('*').eq('case_id', caseId)
+      .order('call_at', { ascending: false }).limit(limit)
+    if (error) throw new Error(error.message)
+    return (data ?? []) as CallLog[]
   },
   async create(payload: Partial<CallLog>): Promise<CallLog> {
     const { data, error } = await supabase.from('call_logs').insert(payload).select().single()
@@ -330,19 +415,7 @@ export const AppointmentApi = {
   },
   async listAll(pageSize = 1000, maxPages = 30): Promise<Appointment[]> {
     const all: Appointment[] = []
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .order('appo_at')
-        .range(from, from + pageSize - 1)
-      if (error) throw new Error(error.message)
-      const rows = data ?? []
-      all.push(...rows)
-      if (rows.length < pageSize) break
-    }
-    return all
+    return fetchAllPages<Appointment>('appointments', '*', 'appo_at', { ascending: true, pageSize, maxPages })
   },
   async create(payload: Partial<Appointment>): Promise<Appointment> {
     const { data, error } = await supabase.from('appointments').insert(payload).select().single()
@@ -368,20 +441,7 @@ export const RecallApi = {
     return unwrap(data, error)
   },
   async listAll(pageSize = 1000, maxPages = 30): Promise<Recall[]> {
-    const all: Recall[] = []
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize
-      const { data, error } = await supabase
-        .from('recalls')
-        .select('*')
-        .order('target_at')
-        .range(from, from + pageSize - 1)
-      if (error) throw new Error(error.message)
-      const rows = data ?? []
-      all.push(...rows)
-      if (rows.length < pageSize) break
-    }
-    return all
+    return fetchAllPages<Recall>('recalls', '*', 'target_at', { ascending: true, pageSize, maxPages })
   },
   async create(payload: Partial<Recall>): Promise<Recall> {
     const { data, error } = await supabase.from('recalls').insert(payload).select().single()
@@ -404,18 +464,7 @@ export const RecallApi = {
 
 export const VisitReportApi = {
   async listAll(pageSize = 1000, maxPages = 30): Promise<VisitReport[]> {
-    const all: VisitReport[] = []
-    for (let page = 0; page < maxPages; page++) {
-      const from = page * pageSize
-      const { data, error } = await supabase
-        .from('visit_reports').select('*')
-        .order('visited_at', { ascending: false }).range(from, from + pageSize - 1)
-      if (error) { if (isMissingTable(error)) return all; throw new Error(error.message) }
-      const rows = (data ?? []) as VisitReport[]
-      all.push(...rows)
-      if (rows.length < pageSize) break
-    }
-    return all
+    return fetchAllPages<VisitReport>('visit_reports', '*', 'visited_at', { pageSize, maxPages, missingTableOk: true })
   },
   async listByCase(caseId: string): Promise<VisitReport[]> {
     const { data, error } = await supabase

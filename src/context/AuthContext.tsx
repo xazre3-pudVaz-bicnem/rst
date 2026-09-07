@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -88,7 +89,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // is_active=false は利用不可（読み込み中=profile未取得 は有効扱いでブロックしない）
   const isActive = forcedAdmin || profile?.is_active !== false
 
-  const value: AuthContextValue = {
+  // 参照が毎レンダー変わると useAuth() を使う全画面が再レンダーされるため固定する
+  const value: AuthContextValue = useMemo(() => ({
     session,
     user,
     loading,
@@ -122,7 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.signOut()
       window.location.href = '/'
     },
-  }
+  }), [session, user, loading, displayName, profile, role, canWrite, isAdmin, isActive])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

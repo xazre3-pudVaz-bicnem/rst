@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { Smartphone, Copy, Upload, Plus, Sparkles, FolderOpen } from 'lucide-react'
@@ -131,6 +131,9 @@ export default function Dashboard() {
   const [criteria, setCriteria] = useState<SearchCriteria | null>(null)
   const [quickFilter, setQuickFilter] = useState<QuickFilterKey>('all')
   const [searchText, setSearchText] = useState('')
+  // 5,000件超を1文字ごとに絞り込み＋並べ替えすると入力が引っかかるため、
+  // 入力欄は即時反映・一覧の絞り込みだけ1テンポ遅らせる（Reactが低優先度で処理する）
+  const deferredSearch = useDeferredValue(searchText)
   const [savedViews, setSavedViews] = useState<SavedView[]>(loadSavedViews)
   const [sortKey, setSortKey] = useState<string>(() => localStorage.getItem('rst_sort') || 'created_desc')
   function changeSort(k: string) {
@@ -157,9 +160,12 @@ export default function Dashboard() {
   const loadAll = useCallback(async () => {
     if (!isSupabaseConfigured) return
     try {
+      // 一覧に必要な列だけを並列ページ取得する。全項目(select *)だと案件+コール履歴で約10MBあり、
+      // 読み込みのたびに数秒待たされていた（memo/本文が全体の3分の1を占める）。
+      // 選択した案件の全項目とコール履歴本文は、選択時に個別取得する。
       const [c, l, r] = await Promise.all([
-        CaseApi.listAll(),
-        CallLogApi.listAll(),
+        CaseApi.listForBoard(),
+        CallLogApi.listForBoard(),
         RecallApi.listAll(),
       ])
       setCases(c)
@@ -191,25 +197,58 @@ export default function Dashboard() {
       .catch(() => setQrUrl(''))
   }, [mobileCallUrl])
 
-  // Realtime: スマホ側の更新を PC に反映
+  // Realtime: スマホ側やAI巡回の更新を PC に反映する。
+  // 以前は変更のたびに全件を読み直していたため、AI投入で案件が連続INSERTされる間は
+  // 数MBの再取得が延々と走り、画面全体が重くなっていた。届いた行だけを差分適用する。
   useEffect(() => {
     if (!isSupabaseConfigured) return
+    // 連続変更で再レンダーが暴れないよう、200ms ぶんまとめて反映する
+    const buf: { table: string; type: string; row: any; id: string }[] = []
     let timer: ReturnType<typeof setTimeout> | null = null
-    const reload = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(loadAll, 400)
+    const flush = () => {
+      timer = null
+      const batch = buf.splice(0, buf.length)
+      if (!batch.length) return
+      const apply = <T extends { id: string }>(prev: T[], table: string, sortDesc: (r: T) => string): T[] => {
+        const events = batch.filter((b) => b.table === table)
+        if (!events.length) return prev
+        const byId = new Map(prev.map((r) => [r.id, r]))
+        let changed = false
+        for (const e of events) {
+          if (e.type === 'DELETE') { if (byId.delete(e.id)) changed = true; continue }
+          const cur = byId.get(e.id)
+          // 差分の行は全項目を含む。一覧では読んでいない列も入るが、詳細表示に使うだけなので害はない。
+          byId.set(e.id, { ...(cur ?? {}), ...e.row } as T)
+          changed = true
+        }
+        if (!changed) return prev
+        return [...byId.values()].sort((a, b) => String(sortDesc(b)).localeCompare(String(sortDesc(a))))
+      }
+      setCases((prev) => apply(prev, 'cases', (c: any) => c.created_date))
+      setCallLogs((prev) => apply(prev, 'call_logs', (l: any) => l.call_at))
+      setRecalls((prev) => {
+        const next = apply(prev, 'recalls', (r: any) => r.target_at)
+        return next === prev ? prev : [...next].reverse()   // 再コールは昇順で保持する
+      })
+    }
+    const onChange = (table: string) => (payload: any) => {
+      const row = (payload.new && Object.keys(payload.new).length ? payload.new : payload.old) ?? {}
+      const id = String(row.id ?? '')
+      if (!id) return
+      buf.push({ table, type: payload.eventType, row: payload.new ?? {}, id })
+      if (!timer) timer = setTimeout(flush, 200)
     }
     const channel = supabase
       .channel('dashboard_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, reload)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recalls' }, reload)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cases' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, onChange('call_logs'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'recalls' }, onChange('recalls'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cases' }, onChange('cases'))
       .subscribe()
     return () => {
       if (timer) clearTimeout(timer)
       supabase.removeChannel(channel)
     }
-  }, [loadAll])
+  }, [])
 
   // Appointments からの ?case=id 連携。スマホでは一覧を経由せず直接その案件の詳細タブを開く。
   useEffect(() => {
@@ -217,9 +256,35 @@ export default function Dashboard() {
     if (cid) { setSelectedCaseId(cid); setActiveTab('detail') }
   }, [searchParams])
 
-  const selectedCase = useMemo(
+  // 一覧の行（memo/掲載元URLを含まない軽量版）。詳細は下で全項目を取り直して差し替える。
+  const listedCase = useMemo(
     () => cases.find((c) => c.id === selectedCaseId) ?? null,
     [cases, selectedCaseId],
+  )
+  // 選択した案件だけ全項目＋コール履歴本文を取得する（一覧の転送量を抑えるため）
+  const [detailCase, setDetailCase] = useState<Case | null>(null)
+  const [detailLogs, setDetailLogs] = useState<CallLog[]>([])
+  const loadDetail = useCallback(async (id: string | null) => {
+    if (!id) { setDetailCase(null); setDetailLogs([]); return }
+    try {
+      const [full, logs] = await Promise.all([CaseApi.get(id), CallLogApi.listByCase(id)])
+      setDetailCase(full)
+      setDetailLogs(logs)
+    } catch (e) {
+      console.warn('[Dashboard] detail', e)   // 取得できなくても一覧の情報で表示は続ける
+    }
+  }, [])
+  useEffect(() => { loadDetail(selectedCaseId) }, [selectedCaseId, loadDetail])
+  const selectedCase = useMemo(
+    () => (detailCase && detailCase.id === selectedCaseId ? { ...listedCase, ...detailCase } as Case : listedCase),
+    [detailCase, listedCase, selectedCaseId],
+  )
+  // 選択案件のコール履歴は本文つきの個別取得を優先し、未取得の間は一覧の軽量版で埋める
+  const detailCallLogs = useMemo(
+    () => (detailLogs.length || (detailCase && detailCase.id === selectedCaseId)
+      ? detailLogs
+      : callLogs.filter((l) => l.case_id === selectedCaseId)),
+    [detailLogs, detailCase, selectedCaseId, callLogs],
   )
 
   // 案件ごとの最終架電日 / 期限切れ再コール
@@ -253,8 +318,8 @@ export default function Dashboard() {
 
   // ---- フィルタ ----
   const filteredCases = useMemo(() => {
-    const phoneQuery = phoneDigits(searchText)
-    const text = searchText.trim()
+    const phoneQuery = phoneDigits(deferredSearch)
+    const text = deferredSearch.trim()
     const arr = cases.filter((c) => {
       // インスタント検索（店舗名・電話・住所）
       if (text) {
@@ -347,7 +412,7 @@ export default function Dashboard() {
       }
     })
     return arr
-  }, [cases, criteria, quickFilter, searchText, recallByCase, lastCallByCase, displayName, sortKey])
+  }, [cases, criteria, quickFilter, deferredSearch, recallByCase, lastCallByCase, displayName, sortKey])
 
   // 詳細検索「リスト投入者」の候補（実データに存在する投入者だけを出す）
   const creatorOptions = useMemo(() => creatorOptionsOf(cases), [cases])
@@ -476,7 +541,7 @@ export default function Dashboard() {
   }
 
   // ---- CSV出力（表示中の案件） ----
-  function exportCsv() {
+  async function exportCsv() {
     const targets = selectionMode && selectedIds.size > 0
       ? filteredCases.filter((c) => selectedIds.has(c.id))
       : filteredCases
@@ -485,6 +550,9 @@ export default function Dashboard() {
       return
     }
     const headers = ['店舗名', '業種', '住所', '電話番号1', '電話番号2', '電話番号3', 'ステータス', '優先度', 'タグ', '担当者', '最終架電日', '次回再コール', 'メモ', '作成日', '更新日']
+    // メモは一覧では読んでいない（転送量が大きいため）。出力対象の分だけ取り直す。
+    let memoById = new Map<string, string>()
+    try { memoById = await CaseApi.memosByIds(targets.map((c) => c.id)) } catch (e) { console.warn('[CSV] memo', e) }
     const rows = targets.map((c) => {
       const last = lastCallByCase.get(c.id)
       const rc = recallByCase.get(c.id)
@@ -493,7 +561,7 @@ export default function Dashboard() {
         c.status, c.priority ?? '', (c.tags ?? []).join('・'), c.sales_rep ?? '',
         last ? moment(last).format('YYYY/MM/DD HH:mm') : '',
         rc ? moment(rc.next).format('YYYY/MM/DD HH:mm') : '',
-        c.memo ?? '', moment(c.created_date).format('YYYY/MM/DD'), moment(c.updated_date).format('YYYY/MM/DD'),
+        memoById.get(c.id) ?? c.memo ?? '', moment(c.created_date).format('YYYY/MM/DD'), moment(c.updated_date).format('YYYY/MM/DD'),
       ]
     })
     downloadCsv(`cases_${moment().format('YYYYMMDD_HHmm')}.csv`, toCsv(headers, rows))
@@ -623,11 +691,11 @@ export default function Dashboard() {
   }
 
   const detailProps = {
-    selectedCase, callLogs, recalls, templates, canWrite,
+    selectedCase, callLogs: detailCallLogs, recalls, templates, canWrite,
     onEdit: () => setModal('editCase'),
     onAddCallLog: () => { setEditingCallLog(null); setModal('newCallLog') },
     onAddRecall: () => setModal('newRecall'),
-    onChanged: loadAll,
+    onChanged: () => { loadAll(); loadDetail(selectedCaseId) },
     onPrev: () => { if (curIdx > 0) selectCase(filteredCases[curIdx - 1].id) },
     onNext: () => { if (curIdx >= 0 && curIdx < filteredCases.length - 1) selectCase(filteredCases[curIdx + 1].id) },
     onNextUncalled: gotoNextUncalled,
@@ -636,11 +704,11 @@ export default function Dashboard() {
   }
 
   const logProps = {
-    callLogs, selectedCase, canWrite,
+    callLogs: detailCallLogs, selectedCase, canWrite,
     onAdd: () => { setEditingCallLog(null); setModal('newCallLog') },
     onAbsent: handleAbsent,
     onEdit: (log: CallLog) => { setEditingCallLog(log); setModal('editCallLog') },
-    onChanged: loadAll,
+    onChanged: () => { loadAll(); loadDetail(selectedCaseId) },
   }
 
   // 初回（案件0件）空状態。読み込み中は空状態をフラッシュさせない

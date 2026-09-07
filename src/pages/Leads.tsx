@@ -192,7 +192,8 @@ export default function Leads() {
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return }
     try {
-      const [lc, cs] = await Promise.all([LeadCandidateApi.list(800), CaseApi.listAll()])
+      // 既存案件は重複判定にしか使わないため、電話/店名/住所/HPだけの軽量版で読む（全項目だと6MB超）
+      const [lc, cs] = await Promise.all([LeadCandidateApi.list(800), CaseApi.listForDedup()])
       setCandidates(lc); setCases(cs)
     } catch (e) {
       console.error('[Leads]', e)
