@@ -224,6 +224,10 @@ export default function Dashboard() {
         if (!changed) return prev
         return [...byId.values()].sort((a, b) => String(sortDesc(b)).localeCompare(String(sortDesc(a))))
       }
+      // スマホ側で選択中の案件にコールが入った場合は、本文つきの履歴を取り直す
+      // （コール履歴パネルは詳細取得の結果を表示しているため、差分適用だけでは出てこない）
+      const { id: curId, load } = detailRef.current
+      if (curId && batch.some((b) => b.table === 'call_logs' && b.row?.case_id === curId)) load(curId)
       setCases((prev) => apply(prev, 'cases', (c: any) => c.created_date))
       setCallLogs((prev) => apply(prev, 'call_logs', (l: any) => l.call_at))
       setRecalls((prev) => {
@@ -275,6 +279,18 @@ export default function Dashboard() {
     }
   }, [])
   useEffect(() => { loadDetail(selectedCaseId) }, [selectedCaseId, loadDetail])
+  /**
+   * 一覧と「選択中の案件の詳細（コール履歴の本文を含む）」を両方更新する。
+   * コール履歴パネルは一覧の軽量データではなく詳細取得の結果を表示しているため、
+   * 保存後に loadAll だけを呼ぶと、登録したコールが画面に出てこない。保存系は必ずこちらを使う。
+   */
+  const refreshAll = useCallback(() => {
+    loadAll()
+    loadDetail(selectedCaseId)
+  }, [loadAll, loadDetail, selectedCaseId])
+  // realtime購読は張り替えたくないので、最新の選択案件と詳細取得をrefで参照する
+  const detailRef = useRef({ id: selectedCaseId, load: loadDetail })
+  detailRef.current = { id: selectedCaseId, load: loadDetail }
   const selectedCase = useMemo(
     () => (detailCase && detailCase.id === selectedCaseId ? { ...listedCase, ...detailCase } as Case : listedCase),
     [detailCase, listedCase, selectedCaseId],
@@ -453,7 +469,7 @@ export default function Dashboard() {
         created_by_id: user?.id ?? null,
       })
       toast.success('「不在」をコール履歴に記録しました')
-      loadAll()
+      refreshAll()
     } catch (e) {
       toast.error('記録に失敗しました: ' + (e instanceof Error ? e.message : e))
     }
@@ -534,7 +550,7 @@ export default function Dashboard() {
       AuditApi.log({ action: 'bulk', entity: 'case', detail: `${ids.length}件を一括削除`, actor_id: user?.id ?? null, actor_name: displayName })
       toast.success(`${ids.length}件を削除しました`)
       setSelectedIds(new Set())
-      await loadAll()
+      await refreshAll()
     } catch (e) {
       toast.error('一括削除に失敗しました: ' + (e instanceof Error ? e.message : e))
     }
@@ -607,7 +623,7 @@ export default function Dashboard() {
         console.warn(`[${label}]`, e)
       }
     }
-    await loadAll()
+    await refreshAll()
     toast.success(`${label}が完了しました。${added}件追加しました。`)
   }
 
@@ -695,7 +711,7 @@ export default function Dashboard() {
     onEdit: () => setModal('editCase'),
     onAddCallLog: () => { setEditingCallLog(null); setModal('newCallLog') },
     onAddRecall: () => setModal('newRecall'),
-    onChanged: () => { loadAll(); loadDetail(selectedCaseId) },
+    onChanged: refreshAll,
     onPrev: () => { if (curIdx > 0) selectCase(filteredCases[curIdx - 1].id) },
     onNext: () => { if (curIdx >= 0 && curIdx < filteredCases.length - 1) selectCase(filteredCases[curIdx + 1].id) },
     onNextUncalled: gotoNextUncalled,
@@ -708,7 +724,7 @@ export default function Dashboard() {
     onAdd: () => { setEditingCallLog(null); setModal('newCallLog') },
     onAbsent: handleAbsent,
     onEdit: (log: CallLog) => { setEditingCallLog(log); setModal('editCallLog') },
-    onChanged: () => { loadAll(); loadDetail(selectedCaseId) },
+    onChanged: refreshAll,
   }
 
   // 初回（案件0件）空状態。読み込み中は空状態をフラッシュさせない
@@ -809,7 +825,7 @@ export default function Dashboard() {
                 <CaseList {...listProps} />
               </div>
               <div className="h-[190px] shrink-0">
-                <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={loadAll} />
+                <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={refreshAll} />
               </div>
             </div>
 
@@ -844,7 +860,7 @@ export default function Dashboard() {
                   <CaseList {...listProps} />
                 </div>
                 <div className="h-[160px] shrink-0">
-                  <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={loadAll} />
+                  <RecallList recalls={recalls} cases={cases} canWrite={canWrite} onAdd={() => setModal('newRecall')} onSelectCase={selectCase} onChanged={refreshAll} />
                 </div>
               </TabsContent>
 
@@ -867,7 +883,7 @@ export default function Dashboard() {
       <AutoSearchRunner
         settings={autoSettings}
         existingCases={cases}
-        onAdded={(n) => { setAutoBadge((b) => b + n); loadAll() }}
+        onAdded={(n) => { setAutoBadge((b) => b + n); refreshAll() }}
       />
 
       {/* モーダル群 */}
@@ -876,7 +892,7 @@ export default function Dashboard() {
         onClose={() => setModal(null)}
         editingCase={modal === 'editCase' ? selectedCase : null}
         existingCases={cases}
-        onSaved={loadAll}
+        onSaved={refreshAll}
       />
       <SearchModal
         open={modal === 'search'}
@@ -891,7 +907,7 @@ export default function Dashboard() {
         onClose={() => setModal(null)}
         selectedCase={selectedCase}
         editingLog={modal === 'editCallLog' ? editingCallLog : null}
-        onSaved={loadAll}
+        onSaved={refreshAll}
         onRepNameChange={handleRepNameChange}
       />
       <RecallFormModal
@@ -899,13 +915,13 @@ export default function Dashboard() {
         onClose={() => setModal(null)}
         cases={cases}
         defaultCaseId={selectedCaseId}
-        onSaved={loadAll}
+        onSaved={refreshAll}
       />
       <ImportModal
         open={modal === 'import'}
         onClose={() => setModal(null)}
         existingCases={cases}
-        onImported={loadAll}
+        onImported={refreshAll}
       />
       <AutoSearchSettingsModal
         open={modal === 'autoSearch'}
@@ -919,7 +935,7 @@ export default function Dashboard() {
         onClose={() => setShowBulk(false)}
         cases={cases}
         selectedIds={[...selectedIds]}
-        onDone={() => { setSelectedIds(new Set()); loadAll() }}
+        onDone={() => { setSelectedIds(new Set()); refreshAll() }}
       />
     </div>
   )
