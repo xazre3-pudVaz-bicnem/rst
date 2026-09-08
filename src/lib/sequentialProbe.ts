@@ -690,11 +690,31 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   //  → 今回有効0件（＝フロンティア到達）ならフロンティア(last_valid+1)へ引き戻し、次回そこを再チェックする。
   //  有効を見つけている間は前進（小さなギャップは前方スキャンで飛び越える）。保険として2000件以上の先行も引き戻す。
   const knownValid = Number(res.lastValidId ?? site.last_valid_id ?? 0)
+  // ただしサイト側のIDが飛んでいる（欠番が探索窓より広い）と、引き戻しが永久ループになる。
+  // 同じフロンティアで有効0件が FRONTIER_STALL_LIMIT 回続いたら、欠番を飛び越えて前進する。
+  //  実測: いこーよは 61386〜61405 が全て404・61500は有効なのに、7日間その先へ進めていなかった。
+  const FRONTIER_STALL_LIMIT = 3
+  const prevStall = Number(site.frontier_stall_count) || 0
+  let stall = prevStall
   if (probeMode !== 'safe' && firstUnconfirmed == null && knownValid > 0 && (res.valid === 0 || nextId - knownValid > 2000)) {
-    nextId = knownValid + 1
-    nextIdBasis = res.valid === 0
-      ? `有効0件(フロンティア到達)のためフロンティア(最後の有効ID ${knownValid}の次)から再チェック`
-      : `有効IDから2000件以上先行したためフロンティアへ引き戻し`
+    if (res.valid === 0) {
+      stall = prevStall + 1
+      if (stall >= FRONTIER_STALL_LIMIT) {
+        // 欠番とみなして通過（フロンティア自体=last_valid_idは動かさないので、後から有効化された場合は
+        // 手動の「開始IDを指定して再探索」で戻せる）。
+        nextIdBasis = `フロンティア(${knownValid}の次)で有効0件が${stall}回続いたため欠番と判断し ${lastChecked + 1} から前進`
+        nextId = lastChecked + 1
+        stall = 0
+      } else {
+        nextId = knownValid + 1
+        nextIdBasis = `有効0件(フロンティア到達 ${stall}/${FRONTIER_STALL_LIMIT}回目)のためフロンティア(最後の有効ID ${knownValid}の次)から再チェック`
+      }
+    } else {
+      nextId = knownValid + 1
+      nextIdBasis = `有効IDから2000件以上先行したためフロンティアへ引き戻し`
+    }
+  } else if (res.valid > 0) {
+    stall = 0   // 有効が見つかったら停滞カウンタはリセット
   }
   res.nextId = nextId; res.nextIdBasis = nextIdBasis; res.consecutiveNotFound = consecutiveNotFound
   // invalid の主理由（最多）
@@ -713,7 +733,8 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     last_valid_id: res.lastValidId ?? site.last_valid_id ?? null, last_invalid_id: res.invalid > 0 ? res.toId : (site.last_invalid_id ?? null),
     fetch_failed_ids: fetchFailedIds.slice(0, 100), parser_failed_ids: parserFailedIds.slice(0, 100), retry_ids: retryIds,
     last_success_at: res.valid > 0 ? opts.nowIso : (site.last_success_at ?? null), last_error_at: (res.fetchFail > 0 || res.parserFail > 0) ? opts.nowIso : (site.last_error_at ?? null),
-    last_probe_started_at: startedAt, last_probe_finished_at: opts.nowIso, consecutive_not_found_count: consecutiveNotFound,
+    last_probe_started_at: startedAt, last_probe_finished_at: opts.nowIso, last_probe_at: opts.nowIso,
+    consecutive_not_found_count: consecutiveNotFound, frontier_stall_count: stall,
     total_checked_count: (Number(site.total_checked_count) || 0) + totalChecked, total_valid_count: (Number(site.total_valid_count) || 0) + totalValid, total_invalid_count: (Number(site.total_invalid_count) || 0) + totalInvalid,
     probe_result_summary: `今回${res.fromId}〜${res.toId} / valid${res.valid} invalid${res.invalid} fetch失敗${res.fetchFail} parser失敗${res.parserFail} / lead保存${res.saved} cases${res.imported} / 次回ID${nextId}（${nextIdBasis}）`.slice(0, 200),
     last_crawled_at: opts.nowIso, updated_at: opts.nowIso,
