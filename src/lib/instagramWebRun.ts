@@ -8,6 +8,7 @@ import { searchLight, placeDetails, phoneOf, parseGoogleOpening } from './google
 import { isForeignText, isForeignAddress, isJapanAddress, isJapanPhone } from './japanFilter.js'
 import { buildHotReject, type HotCheck } from './hotReject.js'
 import { fetchInstagramProfile, expandMapUrl, fetchPage, extractAddressLoose, regionFromUsername } from './enrichProfile.js'
+import { scrapeContact } from './contactScrape.js'
 import { caseImportGate, applyGateDowngrade } from './importGate.js'
 import { getHotCities } from './hotspots.js'
 import { scoreCandidate, tierToTemperature, autoImportAllowed, type InjectMode } from './hotTier.js'
@@ -394,11 +395,12 @@ const SRC_LABEL: Record<string, string> = { google_places: 'Google Places', goog
  */
 export async function enrichCandidate(
   mapsKey: string | null,
-  ctx: { shop: string; username: string; areaHint: string; industry: string; havePhone: string; haveAddress: string; instagramUrl?: string },
+  ctx: { shop: string; username: string; areaHint: string; industry: string; havePhone: string; haveAddress: string; instagramUrl?: string; officialUrl?: string },
   opts: { maxQueries: number; perQuery: number; skipQuery?: Set<string>; onQuery?: (q: string) => void; fetchProfile?: boolean },
 ): Promise<EnrichResult> {
   let phone = ctx.havePhone || '', address = ctx.haveAddress || '', prefecture = '', city = ''
-  let official = '', reservation = '', line = '', instagram = ctx.instagramUrl || '', place_id = ''
+  // 候補が既に公式サイトURLを持っていれば最初から使う（無料の連絡先取得はここが起点になる）
+  let official = ctx.officialUrl || '', reservation = '', line = '', instagram = ctx.instagramUrl || '', place_id = ''
   let phoneSource = phone ? 'snippet' : '', addressSource = address ? 'snippet' : '', googleMapsUrl = ''
   let og: any = { has: false, raw: null, confidence: 0, year: null, month: null, day: null, daysUntil: null, daysSince: null }
   let businessStatus = ''
@@ -475,15 +477,17 @@ export async function enrichCandidate(
       }
     } else if (opts.fetchProfile !== false) { failReasons.push('Google Mapsリンクなし') }
 
-    // 3) 外部リンク（最大3件・Maps以外の公式/予約サイト）から電話・住所
+    // 3) 公式サイトから電話・住所（API課金なし＝Google Places停止後の主経路）。
+    //    JSON-LD → tel:リンク → 本文 の順に見て、トップに無ければ お問い合わせ/アクセス を最大2枚辿る。
     if ((!phone || !address) && official && /^https?:\/\//i.test(official)) {
       linksChecked++
-      const pr = await fetchPage(official)
-      if (pr.ok) {
-        const c = extractContacts(pr.html.replace(/<[^>]+>/g, ' '))
-        if (c.phone) setPhone(c.phone, 'official_site', official)
-        if (c.address) { const r = extractAddressLoose(c.address || pr.html); setAddr(c.address, r.prefecture, r.city, 'official_site', official) }
-      } else if (pr.timedOut) failReasons.push('外部リンク確認タイムアウト')
+      const sc = await scrapeContact(official, {
+        need: !phone && !address ? 'both' : (!phone ? 'phone' : 'address'),
+        budgetMs: 8000,
+      })
+      if (sc.phone) setPhone(sc.phone, 'official_site', sc.foundUrl || official)
+      if (sc.address) { const r = extractAddressLoose(sc.address); setAddr(sc.address, r.prefecture, r.city, 'official_site', sc.foundUrl || official) }
+      if (!sc.pagesFetched) failReasons.push('公式サイトを取得できず')
     }
 
     // 4) Google Places照合: 電話番号優先 → 店名+市区町村（電話一致は同一店舗の強シグナル）

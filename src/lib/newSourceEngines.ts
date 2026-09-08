@@ -348,7 +348,27 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     else q = q.or('auto_insert_skipped_reason.ilike.%電話番号なし%,auto_insert_skipped_reason.ilike.%住所なし%,auto_insert_skipped_reason.ilike.%フォロワー数を確認できず%,auto_insert_skipped_reason.ilike.%ユーザー名が特定できず%')
     const { data: rows } = await q
     const list = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id).slice(0, limit)
-    for (const c of list) {
+    // 外部補完(enrich)の先読み。1件ずつ直列に待つと時間予算のほとんどが待ち時間で消え、
+    // 35秒枠で十数件しか処理できず数千件の滞留が減らない（HOT条件は変えずに件数を増やすには
+    // ここの回転数を上げるのが唯一の手）。DB書き込み・重複判定・投入は従来どおり逐次のまま、
+    // 遅いenrichだけを先に並列で走らせて待ち時間を重ねる。
+    const PREFETCH = 4
+    const enrichAhead = new Map<string, Promise<any>>()
+    const kickEnrich = (c: any) => {
+      if (enrichAhead.has(c.id)) return
+      const shop0 = c.extracted_shop_name || c.name || ''
+      if (!shop0 || shop0 === '店名未確定') return
+      // フォロワー確認分岐はenrichを使わないので先読みしない（無駄な外部呼び出しを増やさない）
+      if (/フォロワー|ユーザー名が特定できず/.test(String(c.auto_insert_skipped_reason || ''))) return
+      enrichAhead.set(c.id, withTimeout(enrichCandidate(mapsKey!, {
+        shop: shop0, username: '', areaHint: c.extracted_area || c.address || '',
+        industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '',
+        officialUrl: c.official_url || '', instagramUrl: c.instagram_url || '',
+      }, { maxQueries: 1, perQuery: 5 }), 12000, null))
+    }
+    for (const [i, c] of list.entries()) {
+      // 自分の分と、先の PREFETCH-1 件ぶんの補完を先に起動しておく
+      for (let k = i; k < Math.min(list.length, i + PREFETCH); k++) kickEnrich(list[k])
       // enrich(≤12s)＋case投入の余白。【不変条件】敷居は必ず予算より小さく保つ（予算連動・恒久0件バグの再発防止）
       if (remain() < Math.min(10000, Math.floor(budgetMs / 3))) break
       const shop = c.extracted_shop_name || c.name || ''
@@ -391,7 +411,7 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
         if (cr?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: cr.id }).eq('id', c.id); counts.imported++ }
         continue
       }
-      const e = await withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null)
+      const e = await (enrichAhead.get(c.id) ?? withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '', officialUrl: c.official_url || '', instagramUrl: c.instagram_url || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null))
       if (!e) continue
       counts.enriched++
       const phone = c.phone_number || e.phone || ''

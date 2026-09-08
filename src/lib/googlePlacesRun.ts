@@ -196,7 +196,32 @@ export function phoneOf(p: any): string {
 }
 
 /** 第1段階: 軽い検索（1ページ）。pageToken指定で次ページ。nextPageToken も返す。rect指定で地域ブロック検索。 */
+// ============================================================
+// Google Places 遮断スイッチ
+//  課金を停止したため、呼んでも必ずエラーが返る。ところが各呼び出しには
+//  8〜10秒のタイムアウトが入っているので、放置すると1件ごとに10秒近く待たされ、
+//  補完キューの時間予算が待ち時間だけで溶ける（＝投入件数が減る）。
+//  1) 環境変数 PLACES_DISABLED=1 で完全停止
+//  2) 課金/権限系のエラーを1度でも受けたら、そのプロセスでは6時間呼ばない（自動遮断）
+//  課金を再開したら PLACES_DISABLED を外すだけで元に戻る。
+// ============================================================
+let placesBlockedUntil = 0
+const PLACES_KILL = String(process.env.PLACES_DISABLED || '').trim() === '1'
+/** Placesを呼ばない状態か */
+export function isPlacesDisabled(): boolean {
+  return PLACES_KILL || Date.now() < placesBlockedUntil
+}
+/** 課金停止・権限エラーを検知したら自動遮断（6時間） */
+function tripPlacesBreaker(message?: string | null): void {
+  const m = String(message || '')
+  if (/billing|BILLING_DISABLED|PERMISSION_DENIED|REQUEST_DENIED|API key not valid|not authorized|disabled|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+    placesBlockedUntil = Date.now() + 6 * 3600 * 1000
+    console.warn('[Places] 課金/権限エラーを検知したため6時間停止します:', m.slice(0, 200))
+  }
+}
+
 export async function searchLight(apiKey: string, query: string, maxResultCount: number, pageToken?: string, rect?: any): Promise<{ status: number; places: any[]; error: string | null; nextPageToken: string | null }> {
+  if (isPlacesDisabled()) return { status: 0, places: [], error: 'places_disabled', nextPageToken: null }
   try {
     const body: any = {
       textQuery: query, languageCode: 'ja', regionCode: 'JP',
@@ -220,7 +245,11 @@ export async function searchLight(apiKey: string, query: string, maxResultCount:
     clearTimeout(to)
     let json: any = {}
     try { json = text ? JSON.parse(text) : {} } catch { json = {} }
-    if (!res.ok) return { status: res.status, places: [], error: String(json?.error?.message || text || `HTTP ${res.status}`).slice(0, 400), nextPageToken: null }
+    if (!res.ok) {
+      const msg = String(json?.error?.message || text || `HTTP ${res.status}`).slice(0, 400)
+      tripPlacesBreaker(msg)
+      return { status: res.status, places: [], error: msg, nextPageToken: null }
+    }
     return { status: res.status, places: Array.isArray(json.places) ? json.places : [], error: null, nextPageToken: json.nextPageToken || null }
   } catch (e: any) {
     return { status: 0, places: [], error: String(e?.message || e), nextPageToken: null }
@@ -248,6 +277,7 @@ export async function searchPaged(apiKey: string, query: string, perPage: number
 
 /** 第2段階: 詳細取得（電話・レビュー日・開店日）。openingDate/reviewsが400なら自動でBASEに落とす */
 export async function placeDetails(apiKey: string, placeId: string): Promise<any | null> {
+  if (isPlacesDisabled()) return null
   async function attempt(ext: boolean) {
     // タイムアウト必須（60秒関数上限で504になるのを防ぐ）。Place Detailsは10秒で打ち切る。
     const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 10000)
@@ -265,6 +295,7 @@ export async function placeDetails(apiKey: string, placeId: string): Promise<any
   try {
     let r = await attempt(detailExtSupported)
     if (detailExtSupported && r.status === 400) { detailExtSupported = false; r = await attempt(false) }
+    if (!r.ok) tripPlacesBreaker(String(r.json?.error?.message || `HTTP ${r.status}`))
     return r.ok ? r.json : null
   } catch {
     return null

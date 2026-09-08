@@ -70,7 +70,13 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
   // 内部予算はハード上限より必ず手前で切る（最後のDB書き込み分の余白）。
   const innerBudgetMs = Math.max(15000, sourceHardMs - 20000)
   const startMs = Date.now()
-  const mapsKey = env.GOOGLE_MAPS_API_KEY || null
+  // Google Places の利用可否。課金を停止したら app_config.places_enabled = {"enabled":false} にすると
+  // この巡回では一切呼ばなくなる（キーをnull扱いにするので各処理のPlaces分岐ごと素通りする）。
+  // 呼んでもエラーが返るだけだが、1件ごとに8〜10秒のタイムアウト待ちが発生し、
+  // 補完キューの時間予算が待ち時間で溶ける＝投入件数が減るため、根元で止める。
+  const placesCfg = await readCfg(admin, 'places_enabled')
+  const placesOn = placesCfg?.enabled !== false && String(env.PLACES_DISABLED || '') !== '1'
+  const mapsKey = placesOn ? (env.GOOGLE_MAPS_API_KEY || null) : null
 
   // ゾンビrun掃除（60s上限で強制終了され status='running' のまま残った過去runをerror化）
   await admin.from('auto_crawl_runs').update({ status: 'error', finished_at: new Date().toISOString(), error_message: 'タイムアウト/強制終了(300s上限)の可能性' }).eq('status', 'running').lt('started_at', new Date(startMs - 330000).toISOString()).then(() => {}, () => {})
@@ -265,9 +271,17 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
       const { data: lastQ } = await admin.from('auto_lead_runs').select('source,created_date').in('source', QUEUES).order('created_date', { ascending: false }).limit(60)
       const lastBy = new Map<string, number>()
       for (const r of (lastQ || []) as any[]) { if (!lastBy.has(r.source)) lastBy.set(r.source, Date.parse(r.created_date || 0)) }
-      const pick = [...QUEUES].sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))[0]
-      const rq = await runReprocessQueue(admin, mapsKey, pick, { limit: 60, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null)
+      // 最終実行が古い順。補完の先読み並列化で1回あたりの処理件数が約3倍になったため、
+      // 上限60件では枠を使い切れない（実測: 35秒枠で48件処理）。120件に引き上げる。
+      const ordered = [...QUEUES].sort((a, b) => (lastBy.get(a) ?? 0) - (lastBy.get(b) ?? 0))
+      const rq = await runReprocessQueue(admin, mapsKey, ordered[0], { limit: 120, runBudgetMs: Math.min(35000, rH - 12000) }, opts.userId || null)
       agg.cases_inserted_count += rq?.imported || 0
+      // 予算が残っていれば2本目のキューも回す（滞留が数千件あり、1巡回1本では追いつかないため）。
+      const rH2 = budgetMs - (Date.now() - startMs)
+      if (ordered[1] && rH2 > 25000) {
+        const rq2 = await runReprocessQueue(admin, mapsKey, ordered[1], { limit: 120, runBudgetMs: Math.min(30000, rH2 - 12000) }, opts.userId || null)
+        agg.cases_inserted_count += rq2?.imported || 0
+      }
     }
   } catch { /* noop */ }
   try {
