@@ -164,6 +164,10 @@ export const CaseApi = {
   async listForDedup(): Promise<Case[]> {
     return fetchAllPages<Case>('cases', 'id,name,address,phone1,phone2,phone3,hp1,hp2,instagram', 'created_date', {})
   },
+  /** 案件ID→営業担当 の対応だけを全件取得（KPIの帰属フォールバック用・約0.3MB） */
+  async listRepOnly(): Promise<Case[]> {
+    return fetchAllPages<Case>('cases', 'id,sales_rep', 'created_date', {})
+  },
   /** 指定IDのメモだけを取り直す（一覧では読んでいないため、CSV出力時などに使う） */
   async memosByIds(ids: string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>()
@@ -378,9 +382,21 @@ export const CallLogApi = {
   async listForBoard(): Promise<CallLog[]> {
     return fetchAllPages<CallLog>(
       'call_logs',
-      'id,case_id,case_name,call_at,contact_type,result,sales_rep,prev_status,next_status,appo_at,created_by_id,created_date',
+      // summary は isCall() が「通話メモ/再コール完了」を除外するのに必要（落とすと架電数が過大になる）
+      'id,case_id,case_name,call_at,contact_type,result,summary,sales_rep,prev_status,next_status,appo_at,created_by_id,created_date',
       'call_at', {},
     )
+  },
+  /** 指定日時以降のコール履歴（KPIの期間集計用。件数上限ではなく期間で絞る） */
+  async listSince(sinceIso: string, limit = 5000): Promise<CallLog[]> {
+    const { data, error } = await supabase
+      .from('call_logs')
+      .select('id,case_id,call_at,contact_type,result,summary,sales_rep,created_by_id')
+      .gte('call_at', sinceIso)
+      .order('call_at', { ascending: false })
+      .limit(limit)
+    if (error) throw new Error(error.message)
+    return (data ?? []) as CallLog[]
   },
   /** 選択中の案件のコール履歴（本文つき・全項目） */
   async listByCase(caseId: string, limit = 200): Promise<CallLog[]> {

@@ -10,8 +10,8 @@ import KpiTargetPanel from '@/components/dashboard/KpiTargetPanel'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { Button } from '@/components/ui/button'
 import { SkeletonCards, SkeletonRows } from '@/components/ui/skeleton'
-import { CaseApi, CallLogApi, RecallApi, AppointmentApi } from '@/lib/api'
-import { isCall } from '@/lib/kpi'
+import { CaseApi, CallLogApi, RecallApi, AppointmentApi, ProfileApi } from '@/lib/api'
+import { isCall, callerNameOf } from '@/lib/kpi'
 import { useAuth } from '@/context/AuthContext'
 import {
   APPO_STATUSES, UNCALLED_STATUSES, PROSPECT_STATUSES, statusColor,
@@ -28,6 +28,8 @@ export default function SalesDashboard() {
   const [callLogs, setCallLogs] = useState<CallLog[]>([])
   const [recalls, setRecalls] = useState<Recall[]>([])
   const [appointments, setAppointments] = useState<Appointment[]>([])
+  // コールを誰の実績にするかの解決に使う（記録者ID→氏名）
+  const [profileById, setProfileById] = useState<Map<string, string>>(new Map())
   const [loading, setLoading] = useState(true)
   const [showTemplates, setShowTemplates] = useState(false)
   const [goal, setGoal] = useState<number>(() => {
@@ -61,10 +63,11 @@ export default function SalesDashboard() {
     if (!isSupabaseConfigured) { setLoading(false); return }
     setLoading(true)
     try {
-      const [c, l, r, a] = await Promise.all([
-        CaseApi.listAll(), CallLogApi.listAll(), RecallApi.listAll(), AppointmentApi.list(1000),
+      const [c, l, r, a, ps] = await Promise.all([
+        CaseApi.listAll(), CallLogApi.listAll(), RecallApi.listAll(), AppointmentApi.list(1000), ProfileApi.list(),
       ])
       setCases(c); setCallLogs(l); setRecalls(r); setAppointments(a)
+      setProfileById(new Map(ps.map((p) => [p.id, p.full_name || ''])))
     } catch (e) {
       console.error('[SalesDashboard]', e)
     } finally {
@@ -88,8 +91,13 @@ export default function SalesDashboard() {
     })
 
     const uncalled = cases.filter((c) => UNCALLED_STATUSES.includes(c.status as never))
-    // 本日の架電数は実際の架電のみ（ステータス変更ログ・再コール完了・通話メモは除外）。不在・接触は含む
-    const todayCalls = callLogs.filter((l) => isCall(l) && moment(l.call_at).isBetween(startToday, endToday, undefined, '[]'))
+    // 本日の架電数は「自分が叩いた分」のみ。実際の架電だけ（ステータス変更ログ・再コール完了・
+    // 通話メモは除外）。不在・接触は含む。帰属は全画面共通の callerNameOf を使う。
+    // ※以前は全ユーザーの架電を合算していたため、自分の目標バーに他人の件数が混ざっていた。
+    const todayCalls = callLogs.filter((l) =>
+      isCall(l)
+      && moment(l.call_at).isBetween(startToday, endToday, undefined, '[]')
+      && (!displayName || callerNameOf(l, { profileById, caseById }) === displayName))
     // 本日のアポ数KPIは案件に紐づくアポ（コール由来）のみ。案件なしの予定（社内MTG等）は除外
     const todayAppos = appointments.filter((a) => a.case_id && moment(a.appo_at).isBetween(startToday, endToday, undefined, '[]'))
 
@@ -124,7 +132,7 @@ export default function SalesDashboard() {
       staleProspects, appoNoFollow,
       todoCount: overdueRecalls.length + todayRecalls.length,
     }
-  }, [cases, callLogs, recalls, appointments, displayName])
+  }, [cases, callLogs, recalls, appointments, displayName, profileById])
 
   // デスクトップ通知（期限切れ/今日の再コールがある場合に一度だけ）
   useEffect(() => {

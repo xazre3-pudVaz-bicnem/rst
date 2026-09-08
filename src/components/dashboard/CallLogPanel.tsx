@@ -8,6 +8,7 @@ import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
+import { callerNameOf } from '@/lib/kpi'
 import type { Case, CallLog, VisitReport } from '@/lib/types'
 
 interface Props {
@@ -35,7 +36,7 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
     return () => { alive = false }
   }, [])
   /** 実際に記録した人。created_by_id 優先、無ければログのsales_rep。 */
-  const recorderOf = (l: CallLog) => (l.created_by_id && profileById.get(l.created_by_id)) || l.sales_rep || ''
+  const recorderOf = (l: CallLog) => callerNameOf(l, { profileById })   // 帰属は全画面共通
 
   // 選択案件の訪問結果（成約/失注）をコール履歴の下に表示
   const [visits, setVisits] = useState<VisitReport[]>([])

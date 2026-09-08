@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { CaseApi, CallLogApi, AppointmentApi, ProfileApi } from '@/lib/api'
-import { isCall } from '@/lib/kpi'
+import { isCall, callerNameOf } from '@/lib/kpi'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import type { Appointment, Case, CallLog } from '@/lib/types'
 
@@ -33,7 +33,15 @@ export default function KpiBar() {
 
   useEffect(() => {
     if (!open || loaded) return
-    Promise.all([CaseApi.list(1000), CallLogApi.list(2000), AppointmentApi.list(1000), ProfileApi.list()])
+    // 直近N件で取ると、架電数の多い担当のログで枠が埋まり、他の担当の当月分が窓から落ちて
+    // 0件に見えることがある。件数ではなく「今月頭以降」の期間で取る。
+    // 案件は帰属フォールバック用にID→担当だけを全件読む（列2つなので軽い）。
+    Promise.all([
+      CaseApi.listRepOnly(),
+      CallLogApi.listSince(moment().startOf('month').toISOString()),
+      AppointmentApi.list(1000),
+      ProfileApi.list(),
+    ])
       .then(([c, l, a, ps]) => {
         setCases(c)
         setCallLogs(l)
@@ -57,8 +65,7 @@ export default function KpiBar() {
       // コールは「叩いた本人(記録者=created_by_id)」に帰属。未割当案件への架電も本人に計上。
       const logs = callLogs.filter((l) => {
         if (!moment(l.call_at).isBetween(start, end, undefined, '[]')) return false
-        const caller = (l.created_by_id && profileById.get(l.created_by_id)) || l.sales_rep || caseById.get(l.case_id)?.sales_rep || ''
-        return caller === rep
+        return callerNameOf(l, { profileById, caseById }) === rep   // 帰属は全画面共通
       })
       // 実際の架電のみ（ステータス変更ログ・再コール完了・通話メモは除外）。不在・接触は含む
       const calls = logs.filter(isCall).length

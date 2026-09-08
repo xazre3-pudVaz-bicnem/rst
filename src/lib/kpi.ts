@@ -96,6 +96,21 @@ interface KpiSource {
 }
 
 /**
+ * コール1件を「誰の実績か」に割り当てる共通ロジック。
+ * 優先順: 記録者(created_by_id→氏名) → ログのsales_rep → 案件の担当。
+ * 叩いた本人に帰属させるのが原則（未割当案件への架電も本人の実績に乗せる）。
+ * ※ 画面ごとに数え方が違うと同じ人の件数が画面によってズレるため、必ずここを通す。
+ */
+export function callerNameOf(
+  l: CallLog,
+  src: { profileById?: Map<string, string>; caseById?: Map<string, Case> },
+): string {
+  const byProfile = l.created_by_id ? src.profileById?.get(l.created_by_id) : ''
+  const byCase = l.case_id ? src.caseById?.get(l.case_id)?.sales_rep ?? '' : ''
+  return byProfile || l.sales_rep || byCase || ''
+}
+
+/**
  * 指定月・指定担当（''=全体）の実績を集計。
  * today を渡すと当月はその日の終わりまでで締める。
  */
@@ -109,8 +124,7 @@ export function kpiActuals(month: string, salesRep: string, src: KpiSource, toda
     return m.isSameOrAfter(first) && m.isSameOrBefore(end)
   }
   const caseRepOf = (caseId?: string | null) => (caseId ? src.caseById.get(caseId)?.sales_rep ?? '' : '')
-  // コールは「叩いた本人(記録者=created_by_id)」に帰属。未割当案件への架電も本人の実績に乗せる。
-  const callerOf = (l: CallLog) => (l.created_by_id && src.profileById?.get(l.created_by_id)) || l.sales_rep || caseRepOf(l.case_id)
+  const callerOf = (l: CallLog) => callerNameOf(l, src)   // 帰属は全画面で共通
   const match = (rep: string) => !salesRep || rep === salesRep
 
   const call = src.callLogs.filter((l) => isCall(l) && inRange(l.call_at) && match(callerOf(l))).length

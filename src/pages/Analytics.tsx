@@ -14,7 +14,7 @@ import {
   DEAL_STATUSES, DOC_SENT_STATUSES, PROSPECT_STATUSES, LOST_STATUSES,
 } from '@/lib/constants'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
-import { isCall, isAnswered, isRepContact, pct } from '@/lib/kpi'
+import { isCall, isAnswered, isRepContact, pct, callerNameOf } from '@/lib/kpi'
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient'
 import { cn } from '@/lib/utils'
 import type { Appointment, Case, CallLog, Profile, Recall } from '@/lib/types'
@@ -103,7 +103,7 @@ export default function Analytics() {
   // コールは「叩いた本人（記録者=created_by_id）」に帰属。未割当案件への架電も本人の実績に乗せる。
   // 記録者が取れない古いログのみ sales_rep→案件担当 にフォールバック。
   const callRep = useCallback(
-    (l: CallLog) => profileName.get(l.created_by_id ?? '') || l.sales_rep || caseById.get(l.case_id)?.sales_rep || '未割当',
+    (l: CallLog) => callerNameOf(l, { profileById: profileName, caseById }) || '未割当',
     [caseById, profileName],
   )
   const caseCreator = useCallback(
