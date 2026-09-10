@@ -13,8 +13,9 @@ import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
 import VisitReportModal from '@/components/modals/VisitReportModal'
 import type { Case, VisitReport } from '@/lib/types'
+import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import {
-  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo,
+  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal,
   COMMISSION_RATE, COMMISSION_SPLIT, COMMISSION_PAY_DAY, type PayStatus,
 } from '@/lib/commission'
 
@@ -205,6 +206,7 @@ export default function Deals() {
             <span>計上 {commission.activeDeals}件</span>
             {commission.unpaidDeals > 0 && <span className="text-red-600 dark:text-red-400">未払い設定 {commission.unpaidDeals}件（該当月は除外）</span>}
             {commission.unassigned > 0 && <span className="text-amber-700 dark:text-amber-400">担当未設定で未配分 {yen(commission.unassigned)}</span>}
+            {commission.agencyDeals > 0 && <span className="text-violet-700 dark:text-violet-300">販売代理店の成約 {commission.agencyDeals}件は対象外</span>}
           </div>
           {commission.people.length === 0 ? (
             <p className="py-3 text-center text-xs text-muted-foreground">この期間に歩合が発生した案件はありません</p>
@@ -332,11 +334,21 @@ export default function Deals() {
                     {r.commission_unpaid && (
                       <span className="mt-0.5 block"><span className="rounded bg-red-100 px-1 py-px text-[9px] font-bold text-red-700 dark:bg-red-500/20 dark:text-red-300">未払い{r.unpaid_since ? ` ${moment(r.unpaid_since).format('YYYY/M')}〜` : ''}</span></span>
                     )}
+                    {isAgencyDeal(r) && (
+                      <span className="mt-0.5 block"><span className="rounded bg-violet-100 px-1 py-px text-[9px] font-bold text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">歩合対象外</span></span>
+                    )}
                     {r.contract_end_month && (
                       <span className="mt-0.5 block"><span className="rounded bg-slate-200 px-1 py-px text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-300">解約 {moment(r.contract_end_month).format('YYYY/M')}</span></span>
                     )}
                   </td>
-                  <td className="px-2 py-1.5"><RepCell name={r.list_rep} /></td>
+                  <td className="px-2 py-1.5">
+                    {r.list_rep === AI_CREATOR_LABEL ? (
+                      <span className="whitespace-nowrap">
+                        <span className="rounded bg-indigo-100 px-1 py-px text-[9px] font-bold text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">AI投入</span>
+                        <span className="ml-1 text-2xs text-muted-foreground">→ {r.appo_rep || 'アポ担当未設定'}</span>
+                      </span>
+                    ) : <RepCell name={r.list_rep} />}
+                  </td>
                   <td className="px-2 py-1.5"><RepCell name={r.appo_rep} /></td>
                   <td className="px-2 py-1.5"><RepCell name={r.sales_rep} /></td>
                   {CONTRACT_PRODUCTS.map((p) => {

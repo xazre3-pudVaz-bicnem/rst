@@ -11,9 +11,26 @@
 //   - 未払い（入金待ち）に設定した案件は、未払い開始月以降の歩合を計上しない
 //     （支払済みの過去月は遡って消さない）
 //   - 担当が未設定の役割の分は「未割当」として誰にも配らない
+//   - AI投入リスト（リスト担当=「AI自動投入」）はアポ担当がリスト担当を兼ねる
+//     ＝リスト分10%もアポ担当に配る（人がリストを作っていないため）
+//   - 販売代理店が営業担当の成約は歩合計算の対象外（代理店とは別契約で精算するため）。
+//     販売代理店は歩合の受取人にもならない
 // ============================================================
 import moment from 'moment'
 import type { VisitReport } from './types'
+import { AI_CREATOR_LABEL } from './caseCreator.js'
+
+/**
+ * 役割ごとの受取人。AI投入リストはリスト分をアポ担当が受け取る。
+ * 未設定なら空文字（＝未配分）。
+ */
+export function commissionRecipient(r: Pick<VisitReport, 'list_rep' | 'appo_rep' | 'sales_rep'>, role: CommissionRole): string {
+  if (role === 'list') {
+    const list = r.list_rep?.trim() || ''
+    return list === AI_CREATOR_LABEL ? (r.appo_rep?.trim() || '') : list
+  }
+  return (role === 'appo' ? r.appo_rep : r.sales_rep)?.trim() || ''
+}
 
 /** 売上に対する歩合原資の割合 */
 export const COMMISSION_RATE = 0.2
@@ -21,6 +38,13 @@ export const COMMISSION_RATE = 0.2
 export const COMMISSION_SPLIT = { list: 0.1, appo: 0.4, sales: 0.5 } as const
 export type CommissionRole = keyof typeof COMMISSION_SPLIT
 export const ROLE_LABEL: Record<CommissionRole, string> = { list: 'リスト', appo: 'アポ', sales: '営業' }
+
+/** 販売代理店（歩合計算の対象外） */
+export const AGENCY_REP = '販売代理店'
+/** 販売代理店が営業担当の成約か（＝歩合計算の対象外） */
+export function isAgencyDeal(r: Pick<VisitReport, 'sales_rep'>): boolean {
+  return (r.sales_rep?.trim() || '') === AGENCY_REP
+}
 
 /** 月キー（YYYY-MM） */
 const mk = (d: moment.Moment) => d.format('YYYY-MM')
@@ -97,6 +121,8 @@ export interface CommissionSummary {
   unpaidDeals: number
   /** 期間内に売上が発生した案件数 */
   activeDeals: number
+  /** 販売代理店の成約のため対象外にした案件数（期間内に売上が発生したもの） */
+  agencyDeals: number
 }
 
 /**
@@ -108,6 +134,7 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
   const dealsByName = new Map<string, Set<string>>()
   let revenue = 0, pool = 0, unassigned = 0, unpaidDeals = 0
   const activeIds = new Set<string>()
+  const agencyIds = new Set<string>()
 
   const months: string[] = []
   for (let m = moment(from + '-01'); mk(m) <= to; m = m.add(1, 'month')) months.push(mk(m))
@@ -118,13 +145,16 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
     for (const month of months) {
       const rev = dealRevenueForMonth(r, month)
       if (rev <= 0) continue
+      // 販売代理店の成約は歩合計算の対象外（売上・原資にも含めない）
+      if (isAgencyDeal(r)) { agencyIds.add(r.id); continue }
       activeIds.add(r.id)
       revenue += rev
       const dealPool = rev * COMMISSION_RATE
       pool += dealPool
       for (const role of Object.keys(COMMISSION_SPLIT) as CommissionRole[]) {
         const amount = Math.round(dealPool * COMMISSION_SPLIT[role])
-        const who = (role === 'list' ? r.list_rep : role === 'appo' ? r.appo_rep : r.sales_rep)?.trim() || ''
+        const who = commissionRecipient(r, role)
+        if (who === AGENCY_REP) continue          // 販売代理店は受取人にしない（未配分にも数えない）
         if (!who) { unassigned += amount; continue }
         const p = byName.get(who) ?? { name: who, list: 0, appo: 0, sales: 0, total: 0, deals: 0 }
         p[role] += amount
@@ -139,7 +169,7 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
   const people = [...byName.values()]
     .map((p) => ({ ...p, deals: dealsByName.get(p.name)?.size ?? 0 }))
     .sort((a, b) => b.total - a.total)
-  return { people, revenue: Math.round(revenue), pool: Math.round(pool), unassigned, unpaidDeals, activeDeals: activeIds.size }
+  return { people, revenue: Math.round(revenue), pool: Math.round(pool), unassigned, unpaidDeals, activeDeals: activeIds.size, agencyDeals: agencyIds.size }
 }
 
 // ============================================================

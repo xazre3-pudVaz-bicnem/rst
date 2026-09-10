@@ -115,9 +115,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpInstallments('')
       setSalesRep('')
       setCaseName('')
-      // リスト担当は「案件をリストに入れた人」を初期値に（AI自動投入なら人がいないので空）
-      const listed = selectedCase ? creatorNameOf(selectedCase) : ''
-      setListRep(listed && listed !== AI_CREATOR_LABEL ? listed : '')
+      // リスト担当は「案件をリストに入れた人」を初期値に。
+      // AI投入の案件は「AI自動投入」＝アポ担当がリスト担当を兼ねる（リスト分もアポ担当へ）。
+      setListRep(selectedCase ? creatorNameOf(selectedCase) : '')
       setAppoRep('')
       setUnpaid(false)
       setUnpaidSince('')
@@ -389,6 +389,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           {/* 歩合の分配先と入金状況（成約のみ）。売上の20%を リスト10% / アポ40% / 営業50% で分配 */}
           {result === '成約' && (
             <div className="space-y-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+              {salesRep === AGENCY && (
+                <p className="rounded bg-violet-100 px-2 py-1 text-2xs text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">
+                  営業担当が販売代理店の成約は歩合計算の対象外です（リスト・アポの分も計算しません）
+                </p>
+              )}
               <Label className="text-emerald-700 dark:text-emerald-400">
                 歩合の分配
                 <span className="ml-1 text-2xs font-normal text-muted-foreground">
@@ -402,8 +407,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                     <SelectTrigger><SelectValue placeholder="未設定" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value={NONE}>未設定（配分なし）</SelectItem>
-                      {Array.from(new Set([...repNames, listRep].filter((n) => n && n !== AGENCY))).map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-                      <SelectItem value={AGENCY}>販売代理店</SelectItem>
+                      <SelectItem value={AI_CREATOR_LABEL}>AI自動投入（アポ担当が兼任）</SelectItem>
+                      {Array.from(new Set([...repNames, listRep].filter((n) => n && n !== AGENCY && n !== AI_CREATOR_LABEL))).map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
@@ -414,7 +419,6 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                     <SelectContent>
                       <SelectItem value={NONE}>未設定（配分なし）</SelectItem>
                       {Array.from(new Set([...repNames, appoRep].filter((n) => n && n !== AGENCY))).map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-                      <SelectItem value={AGENCY}>販売代理店</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
