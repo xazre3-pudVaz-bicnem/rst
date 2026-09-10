@@ -14,6 +14,8 @@ import {
 } from '@/components/ui/select'
 import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi } from '@/lib/api'
 import { TRANSPORT_TYPES } from '@/lib/labor'
+import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
+import { COMMISSION_RATE, COMMISSION_SPLIT } from '@/lib/commission'
 import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
@@ -42,6 +44,13 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const { user } = useAuth()
   const { names: repNames } = useAssignableUsers()
   const [salesRep, setSalesRep] = useState('')
+  // 歩合の分配先（売上20%を リスト10% / アポ40% / 営業50%）。営業担当は salesRep。
+  const [listRep, setListRep] = useState('')
+  const [appoRep, setAppoRep] = useState('')
+  // 未払い（入金待ち）: 開始月以降の歩合を計上しない。解約月: その月まで月額の歩合を計上。
+  const [unpaid, setUnpaid] = useState(false)
+  const [unpaidSince, setUnpaidSince] = useState('')        // YYYY-MM
+  const [contractEndMonth, setContractEndMonth] = useState('') // YYYY-MM
   const [caseName, setCaseName] = useState('')  // 案件未登録の直接成約登録用の店舗名（selectedCaseが無いとき使用）
   const toast = useToast()
   const [busy, setBusy] = useState(false)
@@ -78,6 +87,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpPayType(editing.hp_payment_type === '分割' ? '分割' : '一括')
       setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
       setSalesRep(editing.sales_rep ?? '')
+      setListRep(editing.list_rep ?? '')
+      setAppoRep(editing.appo_rep ?? '')
+      setUnpaid(!!editing.commission_unpaid)
+      setUnpaidSince(editing.unpaid_since ? moment(editing.unpaid_since).format('YYYY-MM') : '')
+      setContractEndMonth(editing.contract_end_month ? moment(editing.contract_end_month).format('YYYY-MM') : '')
       setCaseName(editing.case_name ?? '')
       // 既存の交通費を読み戻す（同じ行を更新するため）
       TravelExpenseApi.getByVisitReport(editing.id).then((x) => {
@@ -101,6 +115,13 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpInstallments('')
       setSalesRep('')
       setCaseName('')
+      // リスト担当は「案件をリストに入れた人」を初期値に（AI自動投入なら人がいないので空）
+      const listed = selectedCase ? creatorNameOf(selectedCase) : ''
+      setListRep(listed && listed !== AI_CREATOR_LABEL ? listed : '')
+      setAppoRep('')
+      setUnpaid(false)
+      setUnpaidSince('')
+      setContractEndMonth('')
       setExpense(null)
       setExpAmount('')
       setExpTransport('電車')
@@ -190,6 +211,12 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       }
       if (result === '成約') {
         Object.assign(payload, {
+          list_rep: listRep || null,
+          appo_rep: appoRep || null,
+          commission_unpaid: unpaid,
+          // 開始月未指定で未払いにしたら今月から止める（過去の支払済み月は遡って消さない）
+          unpaid_since: unpaid ? `${unpaidSince || moment().format('YYYY-MM')}-01` : null,
+          contract_end_month: contractEndMonth ? `${contractEndMonth}-01` : null,
           lost_reason: null,
           contract_date: contractDate || null,
           min_contract_months: num(minMonths),
@@ -358,6 +385,66 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               </SelectContent>
             </Select>
           </div>
+
+          {/* 歩合の分配先と入金状況（成約のみ）。売上の20%を リスト10% / アポ40% / 営業50% で分配 */}
+          {result === '成約' && (
+            <div className="space-y-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+              <Label className="text-emerald-700 dark:text-emerald-400">
+                歩合の分配
+                <span className="ml-1 text-2xs font-normal text-muted-foreground">
+                  売上の{Math.round(COMMISSION_RATE * 100)}%を リスト{Math.round(COMMISSION_SPLIT.list * 100)}% / アポ{Math.round(COMMISSION_SPLIT.appo * 100)}% / 営業{Math.round(COMMISSION_SPLIT.sales * 100)}%（営業担当は上で選択）
+                </span>
+              </Label>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-2xs">リスト担当</Label>
+                  <Select value={listRep || NONE} onValueChange={(v) => setListRep(v === NONE ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="未設定" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE}>未設定（配分なし）</SelectItem>
+                      {Array.from(new Set([...repNames, listRep].filter((n) => n && n !== AGENCY))).map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                      <SelectItem value={AGENCY}>販売代理店</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-2xs">アポ担当</Label>
+                  <Select value={appoRep || NONE} onValueChange={(v) => setAppoRep(v === NONE ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="未設定" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE}>未設定（配分なし）</SelectItem>
+                      {Array.from(new Set([...repNames, appoRep].filter((n) => n && n !== AGENCY))).map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                      <SelectItem value={AGENCY}>販売代理店</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="flex items-center gap-2 text-2xs font-medium">
+                    <input type="checkbox" checked={unpaid} onChange={(e) => { setUnpaid(e.target.checked); if (e.target.checked && !unpaidSince) setUnpaidSince(moment().format('YYYY-MM')) }} />
+                    未払い（入金待ち）
+                  </label>
+                  {unpaid && (
+                    <div className="space-y-0.5">
+                      <Input type="month" value={unpaidSince} onChange={(e) => setUnpaidSince(e.target.value)} />
+                      <p className="text-[10px] leading-snug text-muted-foreground">この月以降の歩合を計上しません（支払済みの過去月はそのまま）</p>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-2xs">解約月（任意）</Label>
+                  <div className="flex items-center gap-1">
+                    <Input type="month" value={contractEndMonth} onChange={(e) => setContractEndMonth(e.target.value)} />
+                    {contractEndMonth && (
+                      <button type="button" className="shrink-0 text-2xs text-muted-foreground hover:underline" onClick={() => setContractEndMonth('')}>解除</button>
+                    )}
+                  </div>
+                  <p className="text-[10px] leading-snug text-muted-foreground">この月まで月額の歩合を計上します</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* 交通費（任意）。金額を入れたときだけ登録され、労務管理で営業担当ごとに集計される */}
           <div className="space-y-2 rounded-md border bg-muted/30 p-2">

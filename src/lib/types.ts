@@ -117,6 +117,17 @@ export interface VisitReport {
   seo_price?: number | null
   meo_price?: number | null
   total_price?: number | null
+  // ---- 歩合（売上の20%を リスト10% / アポ40% / 営業50% で分配。営業担当は sales_rep） ----
+  /** リスト担当（案件をリストに入れた人） */
+  list_rep?: string | null
+  /** アポ担当（アポを取った人） */
+  appo_rep?: string | null
+  /** 未払い（入金待ち）。立っている間は unpaid_since 以降の月の歩合を計上しない */
+  commission_unpaid?: boolean | null
+  /** 未払いの開始月（YYYY-MM-01）。支払済みの過去月の歩合を遡って消さないため月単位で持つ */
+  unpaid_since?: string | null
+  /** 解約月（YYYY-MM-01）。この月まで月額の歩合を計上する */
+  contract_end_month?: string | null
   created_by_id?: string | null
   created_date?: string
   updated_date?: string
