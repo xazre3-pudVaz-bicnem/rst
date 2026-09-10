@@ -421,6 +421,12 @@ export const CallLogApi = {
 }
 
 export const AppointmentApi = {
+  /** 訪問予定1件（訪問結果の登録で予定日時を引くのに使う） */
+  async get(id: string): Promise<Appointment | null> {
+    const { data, error } = await supabase.from('appointments').select('*').eq('id', id).maybeSingle()
+    if (error) { console.warn('[Appointment] get', error.message); return null }
+    return (data as Appointment) ?? null
+  },
   async list(limit = 500): Promise<Appointment[]> {
     const { data, error } = await supabase
       .from('appointments')

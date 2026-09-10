@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi } from '@/lib/api'
+import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi, AppointmentApi } from '@/lib/api'
 import { TRANSPORT_TYPES } from '@/lib/labor'
 import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { COMMISSION_RATE, COMMISSION_SPLIT, isExcludedRecipient } from '@/lib/commission'
@@ -55,6 +55,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const toast = useToast()
   const [busy, setBusy] = useState(false)
   const [visitedAt, setVisitedAt] = useState(() => moment().format('YYYY-MM-DDTHH:mm'))
+  // 訪問予定に紐づく訪問結果は、訪問日時を予定の日時で固定する（入力した時刻ではなく予定どおりの日時で記録）。
+  // 予定の無い「成約を直接登録」だけは自由に入力できる。
+  const [lockedVisitAt, setLockedVisitAt] = useState<string | null>(null)
   const [result, setResult] = useState<'成約' | '失注'>('成約')
   const [lostReason, setLostReason] = useState('')
   const [memo, setMemo] = useState('')
@@ -132,6 +135,21 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing, selectedCase?.id])
 
+  // 訪問予定の日時を取得して訪問日時に固定する（新規: appointmentId / 編集: 保存済みの appointment_id）
+  useEffect(() => {
+    if (!open) { setLockedVisitAt(null); return }
+    const apptId = appointmentId ?? editing?.appointment_id ?? null
+    if (!apptId) { setLockedVisitAt(null); return }
+    let cancelled = false
+    AppointmentApi.get(apptId).then((a) => {
+      if (cancelled || !a?.appo_at) return
+      const at = moment(a.appo_at).format('YYYY-MM-DDTHH:mm')
+      setLockedVisitAt(at)
+      setVisitedAt(at)
+    })
+    return () => { cancelled = true }
+  }, [open, appointmentId, editing?.appointment_id])
+
   const priceNums = {
     ...Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0])),
     hp_payment_type: hpPayType,
@@ -203,7 +221,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
         case_id: effCaseId,
         case_name: effName,
         appointment_id: appointmentId ?? editing?.appointment_id ?? null,
-        visited_at: moment(visitedAt).toISOString(),
+        visited_at: moment(lockedVisitAt || visitedAt).toISOString(),
         result,
         memo: memo.trim() || null,
         sales_rep: salesRep || null,
@@ -273,8 +291,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
             </div>
           )}
           <div className="space-y-1">
-            <Label>訪問日時</Label>
-            <DateTime15Input value={visitedAt} onChange={setVisitedAt} />
+            <Label>
+              訪問日時
+              {lockedVisitAt && <span className="ml-1 text-2xs font-normal text-muted-foreground">訪問予定の日時で固定</span>}
+            </Label>
+            <DateTime15Input value={visitedAt} onChange={setVisitedAt} disabled={!!lockedVisitAt} />
           </div>
 
           <div className="space-y-1">
