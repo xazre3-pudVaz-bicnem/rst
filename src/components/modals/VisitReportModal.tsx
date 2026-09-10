@@ -15,7 +15,7 @@ import {
 import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi } from '@/lib/api'
 import { TRANSPORT_TYPES } from '@/lib/labor'
 import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
-import { COMMISSION_RATE, COMMISSION_SPLIT } from '@/lib/commission'
+import { COMMISSION_RATE, COMMISSION_SPLIT, isExcludedRecipient } from '@/lib/commission'
 import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
@@ -389,6 +389,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           {/* 歩合の分配先と入金状況（成約のみ）。売上の20%を リスト10% / アポ40% / 営業50% で分配 */}
           {result === '成約' && (
             <div className="space-y-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+              {[listRep, appoRep, salesRep].some((n) => isExcludedRecipient(n) && n !== AGENCY) && (
+                <p className="rounded bg-slate-100 px-2 py-1 text-2xs text-slate-600 dark:bg-slate-700/60 dark:text-slate-300">
+                  織田春樹（社長）の担当分は歩合を計算しません（他の担当には通常どおり配分）
+                </p>
+              )}
               {salesRep === AGENCY && (
                 <p className="rounded bg-violet-100 px-2 py-1 text-2xs text-violet-700 dark:bg-violet-500/20 dark:text-violet-300">
                   営業担当が販売代理店の成約は歩合計算の対象外です（リスト・アポの分も計算しません）

@@ -207,6 +207,7 @@ export default function Deals() {
             {commission.unpaidDeals > 0 && <span className="text-red-600 dark:text-red-400">未払い設定 {commission.unpaidDeals}件（該当月は除外）</span>}
             {commission.unassigned > 0 && <span className="text-amber-700 dark:text-amber-400">担当未設定で未配分 {yen(commission.unassigned)}</span>}
             {commission.agencyDeals > 0 && <span className="text-violet-700 dark:text-violet-300">販売代理店の成約 {commission.agencyDeals}件は対象外</span>}
+            {commission.excluded > 0 && <span>社長の担当分（計算なし） {yen(commission.excluded)}</span>}
           </div>
           {commission.people.length === 0 ? (
             <p className="py-3 text-center text-xs text-muted-foreground">この期間に歩合が発生した案件はありません</p>

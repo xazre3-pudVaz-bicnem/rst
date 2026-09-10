@@ -15,6 +15,8 @@
 //     ＝リスト分10%もアポ担当に配る（人がリストを作っていないため）
 //   - 販売代理店が営業担当の成約は歩合計算の対象外（代理店とは別契約で精算するため）。
 //     販売代理店は歩合の受取人にもならない
+//   - 社長（織田春樹）は歩合を受け取らない。案件自体は対象のままで、社長の担当分だけを
+//     計算しない（同じ案件の他の担当＝アポを取った人などには通常どおり配る）
 // ============================================================
 import moment from 'moment'
 import type { VisitReport } from './types'
@@ -41,6 +43,13 @@ export const ROLE_LABEL: Record<CommissionRole, string> = { list: 'リスト', a
 
 /** 販売代理店（歩合計算の対象外） */
 export const AGENCY_REP = '販売代理店'
+/** 歩合を受け取らない人（社長）。この人の担当分は計算しない（未配分にも数えない） */
+export const COMMISSION_EXCLUDED_PEOPLE: readonly string[] = ['織田春樹']
+/** 歩合の受取人にならない名前か（社長・販売代理店） */
+export function isExcludedRecipient(name?: string | null): boolean {
+  const n = (name || '').trim()
+  return !!n && (n === AGENCY_REP || COMMISSION_EXCLUDED_PEOPLE.includes(n))
+}
 /** 販売代理店が営業担当の成約か（＝歩合計算の対象外） */
 export function isAgencyDeal(r: Pick<VisitReport, 'sales_rep'>): boolean {
   return (r.sales_rep?.trim() || '') === AGENCY_REP
@@ -117,6 +126,8 @@ export interface CommissionSummary {
   pool: number
   /** 担当未設定のため配られなかった額 */
   unassigned: number
+  /** 受取人が社長のため計算しなかった額（原資 = 配分額 + 未配分 + この額） */
+  excluded: number
   /** 未払いで除外した案件数 */
   unpaidDeals: number
   /** 期間内に売上が発生した案件数 */
@@ -132,7 +143,7 @@ export interface CommissionSummary {
 export function summarizeCommission(reports: VisitReport[], from: string, to: string): CommissionSummary {
   const byName = new Map<string, PersonCommission>()
   const dealsByName = new Map<string, Set<string>>()
-  let revenue = 0, pool = 0, unassigned = 0, unpaidDeals = 0
+  let revenue = 0, pool = 0, unassigned = 0, excluded = 0, unpaidDeals = 0
   const activeIds = new Set<string>()
   const agencyIds = new Set<string>()
 
@@ -154,7 +165,8 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
       for (const role of Object.keys(COMMISSION_SPLIT) as CommissionRole[]) {
         const amount = Math.round(dealPool * COMMISSION_SPLIT[role])
         const who = commissionRecipient(r, role)
-        if (who === AGENCY_REP) continue          // 販売代理店は受取人にしない（未配分にも数えない）
+        // 社長・販売代理店は受取人にしない。未配分とは分けて数える（担当を入れ忘れた分と区別するため）
+        if (isExcludedRecipient(who)) { excluded += amount; continue }
         if (!who) { unassigned += amount; continue }
         const p = byName.get(who) ?? { name: who, list: 0, appo: 0, sales: 0, total: 0, deals: 0 }
         p[role] += amount
@@ -169,7 +181,7 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
   const people = [...byName.values()]
     .map((p) => ({ ...p, deals: dealsByName.get(p.name)?.size ?? 0 }))
     .sort((a, b) => b.total - a.total)
-  return { people, revenue: Math.round(revenue), pool: Math.round(pool), unassigned, unpaidDeals, activeDeals: activeIds.size, agencyDeals: agencyIds.size }
+  return { people, revenue: Math.round(revenue), pool: Math.round(pool), unassigned, excluded, unpaidDeals, activeDeals: activeIds.size, agencyDeals: agencyIds.size }
 }
 
 // ============================================================
