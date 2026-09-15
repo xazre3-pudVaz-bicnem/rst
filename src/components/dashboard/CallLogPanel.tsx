@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi, VisitReportApi, ProfileApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
@@ -58,6 +58,8 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
     }
   }
 
+  const blocked = isCallBlocked(selectedCase?.status)
+
   return (
     <div className="flex h-full flex-col border-l">
       <div className="flex items-center justify-between gap-1 border-b bg-card p-2">
@@ -67,16 +69,21 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
             size="sm"
             variant="outline"
             onClick={onAbsent}
-            disabled={!selectedCase || !canWrite}
-            title="不在をコール履歴として記録（ステータスは変更しません）"
+            disabled={!selectedCase || !canWrite || blocked}
+            title={blocked ? CALL_BLOCKED_MESSAGE : '不在をコール履歴として記録（ステータスは変更しません）'}
           >
             <PhoneMissed className="h-3.5 w-3.5" />不在
           </Button>
-          <Button size="sm" onClick={onAdd} disabled={!selectedCase || !canWrite}>
+          <Button size="sm" onClick={onAdd} disabled={!selectedCase || !canWrite || blocked} title={blocked ? CALL_BLOCKED_MESSAGE : undefined}>
             <Plus className="h-3.5 w-3.5" />登録
           </Button>
         </div>
       </div>
+      {blocked && (
+        <div className="border-b bg-gray-100 px-2 py-1.5 text-2xs text-gray-600 dark:bg-gray-700/40 dark:text-gray-300">
+          対象外案件のためコールできません（履歴の閲覧・編集は可能）
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto p-2">
         {logs.length === 0 && (
           <div className="p-4 text-center text-xs text-muted-foreground">

@@ -206,6 +206,17 @@ export const PROSPECT_STATUSES = ['見込み', '激アツ', '特別保有', '特
 /** 未架電扱い */
 export const UNCALLED_STATUSES = ['未架電', '新規'] as const
 
+/**
+ * コール禁止のステータス。この状態の案件には架電できない（手動コール登録・不在記録・
+ * 電話リンク・スマホ連動・AI架電のすべてを止める）。過去のコール履歴の閲覧・編集は可能。
+ */
+export const CALL_BLOCKED_STATUSES = ['対象外案件'] as const
+export const CALL_BLOCKED_MESSAGE = 'ステータスが「対象外案件」のためコールできません。架電する場合はステータスを変更してください。'
+/** コール禁止の案件か */
+export function isCallBlocked(status?: string | null): boolean {
+  return (CALL_BLOCKED_STATUSES as readonly string[]).includes(displayStatus(status))
+}
+
 /** よく使うクイックフィルター定義 */
 export type QuickFilterKey =
   | 'all'

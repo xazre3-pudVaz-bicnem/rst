@@ -7,7 +7,7 @@ import { RecallApi, CallLogApi, AuditApi } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { cn, jpError, roundTo15 } from '@/lib/utils'
-import { statusColor } from '@/lib/constants'
+import { statusColor, isCallBlocked } from '@/lib/constants'
 import type { Case, Recall } from '@/lib/types'
 
 interface Props {
@@ -169,7 +169,7 @@ export default function RecallList({ recalls, cases, canWrite, onAdd, onSelectCa
                           {c?.sales_rep && (
                             <span className="shrink-0 rounded-sm bg-muted px-1 text-[9px] text-muted-foreground">{c.sales_rep}</span>
                           )}
-                          {c?.phone1 && (
+                          {c?.phone1 && !isCallBlocked(c.status) && (
                             <a
                               href={`tel:${c.phone1}`}
                               className="hidden shrink-0 items-center gap-0.5 text-2xs text-muted-foreground hover:underline sm:inline-flex"

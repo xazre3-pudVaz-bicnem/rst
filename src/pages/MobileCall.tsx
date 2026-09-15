@@ -17,7 +17,7 @@ import {
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient'
 import { CallSessionApi, CallLogApi, RecallApi, CaseApi } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
-import { LS_CALL_SESSION_KEY, CONTACT_RESULTS, NO_CONTACT_RESULTS, STATUSES } from '@/lib/constants'
+import { LS_CALL_SESSION_KEY, CONTACT_RESULTS, NO_CONTACT_RESULTS, STATUSES, isCallBlocked } from '@/lib/constants'
 import { jpError } from '@/lib/utils'
 import type { CallSession } from '@/lib/types'
 
@@ -202,8 +202,13 @@ export default function MobileCall() {
 
           {/* 電話をかける */}
           <div className="flex flex-col gap-2">
+            {isCallBlocked(session.status) && (
+              <div className="rounded-xl bg-gray-100 px-3 py-3 text-center text-sm font-bold text-gray-700 dark:bg-gray-700/50 dark:text-gray-300">
+                対象外案件のためコールできません
+              </div>
+            )}
             {phones.length === 0 && <div className="text-center text-xs text-muted-foreground">電話番号がありません</div>}
-            {phones.map((p, i) => (
+            {!isCallBlocked(session.status) && phones.map((p, i) => (
               <a
                 key={i}
                 href={`tel:${p}`}

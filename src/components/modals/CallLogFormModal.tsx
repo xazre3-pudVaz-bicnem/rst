@@ -29,6 +29,8 @@ import {
   GENDERS,
   NO_CONTACT_RESULTS,
   RECEIVER_ATTRS,
+  isCallBlocked,
+  CALL_BLOCKED_MESSAGE,
 } from '@/lib/constants'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { generateSummary } from '@/lib/summary'
@@ -191,6 +193,8 @@ export default function CallLogFormModal({
   }
 
   async function handleSave() {
+    // 対象外案件への新規コールは記録させない（画面側のボタンも無効化済み。ここは最終ガード）
+    if (!editingLog && isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
     if (!selectedCase) return
     setBusy(true)
     try {

@@ -42,6 +42,8 @@ import {
   UNCALLED_STATUSES,
   RECALL_STATUSES,
   type QuickFilterKey,
+  isCallBlocked,
+  CALL_BLOCKED_MESSAGE,
 } from '@/lib/constants'
 import { generateSessionKey, isValidSessionKey, phoneDigits, toCsv, downloadCsv } from '@/lib/utils'
 import { useToast } from '@/components/ui/toast'
@@ -455,7 +457,15 @@ export default function Dashboard() {
   }
 
   // 「不在」をコール履歴として記録（ステータスは変更しない＝コール結果として扱う）
+  /** 新規コール登録を開く（コール禁止の案件は止める） */
+  function openNewCallLog() {
+    if (isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
+    setEditingCallLog(null)
+    setModal('newCallLog')
+  }
+
   async function handleAbsent() {
+    if (isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
     if (!selectedCase || !canWrite) return
     try {
       await CallLogApi.create({
@@ -672,6 +682,7 @@ export default function Dashboard() {
         setModal('newCase')
       } else if (e.key === 'c' && selectedCaseId && canWrite) {
         e.preventDefault()
+        if (isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
         setEditingCallLog(null)
         setModal('newCallLog')
       } else if (e.key === 'r' && selectedCaseId && canWrite) {
@@ -709,7 +720,7 @@ export default function Dashboard() {
   const detailProps = {
     selectedCase, callLogs: detailCallLogs, recalls, templates, canWrite,
     onEdit: () => setModal('editCase'),
-    onAddCallLog: () => { setEditingCallLog(null); setModal('newCallLog') },
+    onAddCallLog: openNewCallLog,
     onAddRecall: () => setModal('newRecall'),
     onChanged: refreshAll,
     onPrev: () => { if (curIdx > 0) selectCase(filteredCases[curIdx - 1].id) },
@@ -721,7 +732,7 @@ export default function Dashboard() {
 
   const logProps = {
     callLogs: detailCallLogs, selectedCase, canWrite,
-    onAdd: () => { setEditingCallLog(null); setModal('newCallLog') },
+    onAdd: openNewCallLog,
     onAbsent: handleAbsent,
     onEdit: (log: CallLog) => { setEditingCallLog(log); setModal('editCallLog') },
     onChanged: refreshAll,

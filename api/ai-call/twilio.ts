@@ -10,6 +10,7 @@
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
 import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml } from '../../src/lib/twilioCall.js'
 import { createCalendarEvent, getAvailableSlots, isCalendarConfigured } from '../../src/lib/googleCalendar.js'
+import { isCallBlocked, CALL_BLOCKED_MESSAGE } from '../../src/lib/constants.js'
 
 // サーバー間シークレット認証（realtime音声サーバーからのツール呼び出し用）
 function verifyServerSecret(req: any): boolean {
@@ -322,8 +323,10 @@ export default async function handler(req: any, res: any) {
     // NG案件には絶対に発信しない
     let caseName: string | null = caseId ? null : 'Twilio接続テスト'
     if (caseId) {
-      const { data: kase } = await admin.from('cases').select('do_not_call,name').eq('id', caseId).maybeSingle()
+      const { data: kase } = await admin.from('cases').select('do_not_call,name,status').eq('id', caseId).maybeSingle()
       if (kase?.do_not_call) return res.status(400).json({ ok: false, error: 'この案件はNG指定のため発信できません。' })
+      // 対象外案件には発信しない（画面側でも止めているが、API直叩きでも発信させない）
+      if (isCallBlocked(kase?.status)) return res.status(400).json({ ok: false, error: CALL_BLOCKED_MESSAGE })
       caseName = kase?.name ?? null
     }
     // 二重発信防止: 同じ「本来の発信先」で発信中ジョブが直近90秒以内にあれば拒否

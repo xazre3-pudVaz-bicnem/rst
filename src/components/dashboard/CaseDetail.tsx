@@ -15,7 +15,7 @@ import { CaseApi, CallLogApi, AuditApi, changeCaseStatus } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
-import { STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus } from '@/lib/constants'
+import { STATUSES, PRIORITIES, PRIORITY_COLORS, statusColor, displayStatus, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { mapUrl, googleSearchUrl, normalizeUrl, copyToClipboard, cn, jpError } from '@/lib/utils'
 import type { Case, CallLog, Recall, Template } from '@/lib/types'
@@ -147,10 +147,14 @@ export default function CaseDetail({
     </div>
   )
 
+  const callBlocked = isCallBlocked(c.status)
+
   const phoneCell = (p?: string | null) =>
     p ? (
       <span className="inline-flex items-center gap-1.5">
-        <a href={`tel:${p}`} className="text-primary hover:underline">{p}</a>
+        {callBlocked
+          ? <span title={CALL_BLOCKED_MESSAGE}>{p}</span>
+          : <a href={`tel:${p}`} className="text-primary hover:underline">{p}</a>}
         <button onClick={() => copy(p, '電話番号')} className="text-muted-foreground hover:text-foreground" title="コピー">
           <Copy className="h-3 w-3" />
         </button>
@@ -201,17 +205,23 @@ export default function CaseDetail({
           <Button variant="outline" size="sm" onClick={onNextUncalled} title="次の未架電へ"><SkipForward className="h-3.5 w-3.5" />次の未架電</Button>
           {/* AI架電テスト。NG(再架電しない)の場合は赤表示で「架電不可」。モーダルから管理者はNG解除可。 */}
           <Button
-            variant="outline" size="sm" onClick={() => setAiCallOpen(true)} disabled={!canWrite}
-            title={c.do_not_call ? 'この案件はNG指定のため架電できません（モーダルから管理者は解除可）' : 'AIがこの番号にテスト架電します（モック）'}
+            variant="outline" size="sm" onClick={() => setAiCallOpen(true)} disabled={!canWrite || callBlocked}
+            title={callBlocked ? CALL_BLOCKED_MESSAGE : c.do_not_call ? 'この案件はNG指定のため架電できません（モーダルから管理者は解除可）' : 'AIがこの番号にテスト架電します（モック）'}
             className={cn(c.do_not_call && 'border-red-400 text-red-600 hover:bg-red-50')}
           >
-            <Bot className="h-3.5 w-3.5" />{c.do_not_call ? 'NG・架電不可' : 'AI架電テスト'}
+            <Bot className="h-3.5 w-3.5" />{callBlocked ? '対象外・コール不可' : c.do_not_call ? 'NG・架電不可' : 'AI架電テスト'}
           </Button>
           <Button variant="outline" size="sm" onClick={onEdit} disabled={!canWrite}><Pencil className="h-3.5 w-3.5" />編集</Button>
           <Button variant="destructive" size="sm" onClick={handleDelete} disabled={!canWrite}><Trash2 className="h-3.5 w-3.5" />削除</Button>
         </div>
       </div>
 
+      {callBlocked && (
+        <div className="flex items-center gap-1.5 border-b bg-gray-100 px-3 py-1 text-2xs text-gray-700 dark:bg-gray-700/40 dark:text-gray-300">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          対象外案件のためコールできません。架電する場合はステータスを変更してください。
+        </div>
+      )}
       {/* データ品質警告 */}
       {warnings.length > 0 && (
         <div className="flex items-center gap-1.5 border-b bg-amber-50 px-3 py-1 text-2xs text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
@@ -227,7 +237,7 @@ export default function CaseDetail({
           <section className={cn('rounded-lg border p-2.5', c.do_not_call ? 'border-red-300 bg-red-50/50 dark:bg-red-500/10' : 'bg-muted/20')}>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="flex items-center gap-1 text-xs font-bold text-muted-foreground"><Bot className="h-3.5 w-3.5" />AIテレアポ</span>
-              <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setAiCallOpen(true)} disabled={!canWrite}>架電ログ・発信</Button>
+              <Button size="sm" variant="outline" className="h-6 text-2xs" onClick={() => setAiCallOpen(true)} disabled={!canWrite || callBlocked} title={callBlocked ? CALL_BLOCKED_MESSAGE : undefined}>架電ログ・発信</Button>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
               {c.do_not_call && <span className="rounded-full bg-red-500 px-2 py-0.5 font-bold text-white">NG（再架電しない）</span>}

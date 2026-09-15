@@ -6,6 +6,7 @@
 // 既存機能は変更しない。実通話はプロバイダ層(aiCallProvider)で差し替え可能。
 // ============================================================
 import { supabase } from './supabaseClient'
+import { isCallBlocked, CALL_BLOCKED_MESSAGE } from './constants'
 import type { AiCallScript, AiCallJob, AiCallStatus, Appointment, Case } from './types'
 import { getCallProvider } from './aiCallProvider'
 import { syncAppointmentResult, type SyncResult } from './calendarSync'
@@ -158,6 +159,7 @@ export interface RunTestCallOpts { userId?: string | null; forceStatus?: AiCallS
 /** 1件テスト発信（モック）。発信中ジョブ作成→プロバイダ実行→結果保存→NGは再架電防止。 */
 export async function runTestCall(kase: Case, script: AiCallScript | null, opts: RunTestCallOpts = {}): Promise<AiCallJob> {
   if ((kase as any).do_not_call) throw new Error('この会社はNG（再架電しない）に設定されています。架電できません。')
+  if (isCallBlocked(kase.status)) throw new Error(CALL_BLOCKED_MESSAGE)
   const phone = kase.phone1 || ''
   if (!phone) throw new Error('電話番号が未登録のため架電できません。')
 

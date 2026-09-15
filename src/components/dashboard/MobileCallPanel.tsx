@@ -1,4 +1,5 @@
 import { Phone } from 'lucide-react'
+import { isCallBlocked } from '@/lib/constants'
 import type { Case } from '@/lib/types'
 
 interface Props {
@@ -26,12 +27,17 @@ export default function MobileCallPanel({ selectedCase }: Props) {
         <div className="text-2xs text-muted-foreground">{selectedCase.address}</div>
       </div>
       <div className="flex w-full max-w-xs flex-col gap-2">
+        {isCallBlocked(selectedCase.status) && (
+          <div className="rounded-lg bg-gray-100 px-3 py-2 text-center text-xs font-medium text-gray-700 dark:bg-gray-700/50 dark:text-gray-300">
+            対象外案件のためコールできません
+          </div>
+        )}
         {phones.length === 0 && (
           <div className="text-center text-xs text-muted-foreground">
             電話番号がありません
           </div>
         )}
-        {phones.map((p, i) => (
+        {!isCallBlocked(selectedCase.status) && phones.map((p, i) => (
           <a
             key={i}
             href={`tel:${p}`}
