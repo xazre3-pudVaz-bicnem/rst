@@ -196,10 +196,21 @@ export function parseTabelog(html: string, mojibake: boolean): JalanSpot {
   if (!address) address = (body.match(/(?:所在地|住所)[:：\s]*([〒\d都道府県][^\n。｜|]{4,50})/)?.[1] || '').trim()
   if (!address) address = extractAddressLoose(body).address
 
-  // 電話: rstinfo-table__tel-num（食べログ詳細ページの電話）→ 本文
-  let phone = extractJpPhone(html.match(/class=["'][^"']*rstinfo-table__tel-num[^"']*["'][^>]*>([\s\S]*?)</i)?.[1] || '')
-  if (!phone) phone = extractJpPhone(html.match(/<strong[^>]*tel[^>]*>([\s\S]*?)<\/strong>/i)?.[1] || '')
-  if (!phone) phone = extractJpPhone(body)
+  // 電話: 食べログが持つ構造化データから取る（信頼度順）。
+  //  以前は class="rstinfo-table__tel-num" を部分一致で探していたため、外側の「…tel-num-wrap」に先に
+  //  一致して中身が空になり、ページ全体の本文から電話を推測していた。本文には広告・近隣店の番号が
+  //  混ざるため、別の店の番号を拾う事故があった（実例: 東京の店で新潟の番号を抽出）。
+  //  開店前の店は「未開通」と表示され、後日番号が入る → 空のまま返し、再確認キューで拾い直す。
+  const telOk = (v: string) => !!v && !/未開通|不明|お待ち|非公開/.test(v)
+  const dataPhone = html.match(/data-phone-number=["']([^"']+)["']/i)?.[1] || ''
+  const ldPhone = html.match(/"telephone"s*:s*"([^"]+)"/i)?.[1] || ''
+  const exactTel = html.match(/class=["']rstinfo-table__tel-num["'][^>]*>([\s\S]*?)</i)?.[1] || ''
+  let phone = ''
+  for (const cand of [dataPhone, ldPhone, stripTags(exactTel)]) {
+    if (!telOk(cand)) continue
+    const v = extractJpPhone(cand)
+    if (v) { phone = v; break }
+  }
 
   // ジャンル: og:title の「エリア/ジャンル」部分、または rstinfo
   const genre = (og.match(/-\s*[^/|｜]+\/([^|｜]+?)\s*[|｜]/)?.[1] || stripTags(html.match(/class=["'][^"']*rdheader-subinfo__item-text[^"']*["'][^>]*>([\s\S]*?)</i)?.[1] || '')).trim().slice(0, 16)
@@ -381,6 +392,8 @@ export interface ProbeResult {
   timeouts: number; dupSkip: number; mojibake: number; fetchFail: number; parserFail: number; consecutiveNotFound: number
   startId: number; fromId: number; toId: number; nextId: number; nextIdBasis: string; probeMode: string; lastFoundId: number | null; lastValidId: number | null
   backfillFrom: number | null; backfillTo: number | null; items: any[]; reason: string; invalidTopReason: string
+  /** 再確認（公開前404・電話未開通の見直し）の結果 */
+  recheck?: { probed: number; valid: number; imported: number; saved: number }
 }
 
 /** 1サイトの連番探索（既定=安全確認モード: 最後にvalidだったIDの次から再開）。DB保存込み。 */
@@ -390,6 +403,12 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   probeMode?: 'safe' | 'advance'   // safe=last_valid_id+1 / advance=last_checked_id+1
   dayRemaining: number; autoImportPerRun: number; autoImportPerDay: number; importedToday: number; delayMs: number
   noRender?: boolean   // 一括探索: 重いレンダリングfallback(ScrapingBee~18s)を無効化して高速化
+  /** 再確認: 連番の範囲ではなく、このIDだけを探索する（前方探索・戻り確認は行わない） */
+  explicitIds?: number[]
+  /** 再確認: 探索位置（current_probe_id 等）を動かさない */
+  keepCursor?: boolean
+  /** 再確認: 過去に有効だったページも取り直す（電話が後から入った店を拾うため） */
+  recheckValid?: boolean
 }): Promise<ProbeResult> {
   const probeMode: 'safe' | 'advance' = opts.probeMode || (site.probe_mode === 'advance' ? 'advance' : 'safe')
   const res: ProbeResult = {
@@ -423,17 +442,20 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   const renderMode = String(site.rendering_mode || 'auto')
 
   // 探索対象IDリスト: 前方20 ＋ 戻り確認(last_checked_id-backfill 〜 last_checked_id)
+  //  再確認モード(explicitIds)では指定IDだけを見る
   const ids: number[] = []
-  for (let i = 0; i < forward; i++) ids.push(startId + i)
-  if (backfill > 0 && site.last_checked_id != null) {
+  if (opts.explicitIds?.length) ids.push(...opts.explicitIds)
+  else for (let i = 0; i < forward; i++) ids.push(startId + i)
+  if (!opts.explicitIds?.length && backfill > 0 && site.last_checked_id != null) {
     const bEnd = Number(site.last_checked_id)
     const bStart = bEnd - backfill + 1
     res.backfillFrom = bStart; res.backfillTo = bEnd
     for (let id = bStart; id <= bEnd; id++) if (id > 0 && !ids.includes(id)) ids.push(id)
   }
 
+  const probeLimit = opts.explicitIds?.length ? ids.length : forward + backfill
   for (const probedId of ids) {
-    if (res.probed >= forward + backfill) break
+    if (res.probed >= probeLimit) break
     if (consecutiveNotFound >= maxNotFound && probedId >= startId) {
       res.reason = `not_found ${consecutiveNotFound}連続で前方探索停止`
       // 前方分を打ち切り、戻り確認のみ残す
@@ -450,7 +472,7 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
       const last = lg?.[0]
       const isConfirmedInvalidRow = (x: any) => x && x.valid_page === false && (x.probe_status === 'invalid' || /^invalid/.test(String(x.invalid_reason || '')))
       if (last) {
-        if (last.valid_page === true) { res.dupSkip++; continue }            // validは再取得しない
+        if (last.valid_page === true && !opts.recheckValid) { res.dupSkip++; continue }            // validは再取得しない（再確認時は取り直す）
         // 確認済みinvalid（404/不存在）が連続している時だけ一時スキップ。fetch_failed/parser_failed は常に再試行（飛ばさない）。
         if (isConfirmedInvalidRow(last)) {
           const invalidStreak = (() => { let c = 0; for (const x of (lg || [])) { if (isConfirmedInvalidRow(x)) c++; else break } return c })()
@@ -667,6 +689,11 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
     if (res.items.length < 40) res.items.push({ probedId, url, valid: true, status: r.status, charset: r.charset, name: finalName, phone, address, category, newness_type, parserUsed, probeStatus: 'valid', rendered, saveResult: 'success', temperature: hot_tier ? `HOT-${hot_tier}` : temperature } as any)
   }
 
+  if (opts.keepCursor) {
+    await admin.from('source_sites').update({ last_probe_at: opts.nowIso, updated_at: opts.nowIso }).eq('id', site.id).then(() => {}, () => {})
+    res.reason = res.reason || `再確認 ${res.probed}件（有効${res.valid}・投入${res.imported}）`
+    return res
+  }
   const lastChecked = res.toId || (startId + forward - 1)
   // 最新のvalid ID（今回 or 既存）
   const newLastValid = res.lastValidId ?? site.last_valid_id ?? null
@@ -742,6 +769,68 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
   return res
 }
 
+// ============================================================
+// 再確認キュー（取りこぼし防止）
+//  食べログは新店のページを「ID発行 → しばらく非公開(404) → 公開」の順で出す。また開店前の店は
+//  電話が「未開通」で、後から番号が入る。探索は一度見たIDに戻らないため、どちらも永久に取りこぼしていた
+//  （実測: 食べログ公式の新規オープン順60件のうち、404のまま放置12件・電話なしで止まった44件）。
+//  → 直近の404と、電話が無かった有効ページを一定間隔で見直す。判定基準（HOT条件）は通常の探索と同じ。
+// ============================================================
+const RECHECK_404_DAYS = 10          // 何日前までの404を見直すか（公開は数日以内が大半）
+const RECHECK_PHONE_DAYS = 30        // 電話なしの有効ページを何日間見直すか（開店前〜開店直後）
+const RECHECK_MIN_HOURS = 20         // 同じIDを見直す最短間隔
+const RECHECK_404_PER_SITE = 10
+const RECHECK_PHONE_PER_SITE = 6
+
+async function selectRecheckIds(admin: any, site: any, nowMs: number): Promise<number[]> {
+  const frontier = Number(site.last_valid_id) || 0
+  if (!frontier) return []
+  const since404 = new Date(nowMs - RECHECK_404_DAYS * 86400000).toISOString()
+  const recentCut = nowMs - RECHECK_MIN_HOURS * 3600000
+  // その範囲の探索結果（IDごとの最新確認時刻と、有効になったことがあるか）
+  const { data: rows } = await admin.from('sequential_probe_results')
+    .select('probed_id,valid_page,probe_status,checked_at')
+    .eq('source_site_id', site.id).gte('checked_at', since404)
+    .order('checked_at', { ascending: false }).limit(2000)
+  const latest = new Map<number, number>()
+  const everValid = new Set<number>()
+  const was404 = new Set<number>()
+  for (const r of (rows || []) as any[]) {
+    const id = Number(r.probed_id)
+    if (!Number.isFinite(id)) continue
+    const t = Date.parse(r.checked_at)
+    if (!latest.has(id) || t > (latest.get(id) as number)) latest.set(id, t)
+    if (r.valid_page) everValid.add(id)
+    else if (r.probe_status === 'invalid') was404.add(id)
+  }
+  // 1) 公開前だった404: 探索位置より手前・まだ有効になっていない・最近見ていない。探索位置に近い（新しい）IDから
+  const ids404 = [...was404]
+    .filter((id) => id < frontier && !everValid.has(id) && (latest.get(id) ?? 0) < recentCut)
+    .sort((a, b) => b - a)
+    .slice(0, RECHECK_404_PER_SITE)
+
+  // 2) 電話が無かった有効ページ（未開通など）: 未投入のもの。最終確認が古い順
+  const sincePhone = new Date(nowMs - RECHECK_PHONE_DAYS * 86400000).toISOString()
+  const { data: cands } = await admin.from('lead_candidates')
+    .select('probed_id,last_seen_at')
+    .eq('source_site_name', site.name).eq('imported_to_cases', false)
+    .is('phone_number', null).gte('first_seen_at', sincePhone)
+    .lt('last_seen_at', new Date(recentCut).toISOString())
+    .order('last_seen_at', { ascending: true }).limit(RECHECK_PHONE_PER_SITE)
+  const idsPhone = ((cands || []) as any[]).map((c) => Number(c.probed_id)).filter((n) => Number.isFinite(n) && n > 0)
+
+  return [...new Set([...idsPhone, ...ids404])]
+}
+
+/** 同じドメインに同時に何本まで探索を走らせるか（食べログは多重アクセスで遮断された実績があるため絞る） */
+function hostConcurrency(host: string): number {
+  if (/tabelog\.com$/i.test(host)) return 3
+  return 6
+}
+function hostOf(site: any): string {
+  try { return new URL(String(site.url_template || site.base_url || '').replace('{ID}', '1')).host.replace(/^www\./, '') } catch { return 'unknown' }
+}
+
 /** 全 sequential_id_probe サイトを実行（連番探索タブ用） */
 export async function runAllSequentialProbes(admin: any, mapsKey: string | null, rawSettings: any, userId: string | null) {
   const s = rawSettings || {}
@@ -752,7 +841,8 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
   const { data: runRow } = await admin.from('auto_lead_runs').insert({ source: 'sequential_probe', status: 'running', created_by_id: userId }).select('id').single()
   const runId: string | null = runRow?.id ?? null
   try {
-    const { data: sites } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').eq('is_active', true).limit(50)
+    // 上限50だと食べログ47都道府県＋他ソースで溢れ、超過分が黙って一度も回らなくなるため引き上げ
+    const { data: sites } = await admin.from('source_sites').select('*').eq('source_type', 'sequential_id_probe').eq('is_active', true).limit(200)
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { count: probedTodayCount } = await admin.from('sequential_probe_results').select('id', { count: 'exact', head: true }).gte('checked_at', startToday.toISOString())
     let dayRemaining = Math.max(0, (Number(s.probeDailyCap) || 500) - (probedTodayCount || 0))
@@ -767,15 +857,68 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     const perSiteCapMs = Math.max(8000, Math.min(40000, Number(s.perSiteCapMs) || 26000))  // 1ソース上限（cursorはこの範囲で更新される）
     const activeSites = (sites || []).filter((site: any) => site.probe_enabled !== false)
     const perSourceDay = Math.max(bulkForward, Math.floor(dayRemaining / Math.max(1, activeSites.length)))
-    const results: any[] = await Promise.all(activeSites.map((site: any) => Promise.race([
-      runSequentialProbe(admin, mapsKey, site, {
+    // 時間予算: 呼び出し元の上限より手前で新しいサイトの着手をやめる（着手済みは perSiteCapMs で必ず終わる）
+    const runStart = Date.now()
+    const runBudgetMs = Math.max(30000, Number(s.runBudgetMs) || 200000)
+    const canStart = () => Date.now() - runStart < runBudgetMs - perSiteCapMs
+
+    // 1サイトぶん: 通常の前方探索 → 残り時間があれば再確認（公開前404・電話未開通の見直し）
+    const runSite = async (site: any): Promise<any> => {
+      const siteStart = Date.now()
+      const main = await runSequentialProbe(admin, mapsKey, site, {
         userId, runId, nowIso, mode,
         forwardCount: bulkForward, backfillCount: 0, startIdOverride: undefined, force: !!s.force,
         probeMode: s.probeMode === 'advance' ? 'advance' : (site.probe_mode === 'advance' ? 'advance' : 'safe'),
         dayRemaining: perSourceDay, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: bulkDelay, noRender: true,
-      }).then((r: any) => ({ ...r, __site: site })),
-      new Promise<any>((rs) => setTimeout(() => rs({ __timeout: true, __site: site }), perSiteCapMs)),
-    ])))
+      })
+      // 再確認は食べログのみ（公開前404・電話未開通の実績があるソース）。時間が残っている時だけ
+      if (site.parser_type === 'tabelog_detail' && Date.now() - siteStart < perSiteCapMs * 0.55) {
+        const { data: fresh } = await admin.from('source_sites').select('*').eq('id', site.id).maybeSingle()
+        const recheckIds = await selectRecheckIds(admin, fresh || site, Date.now())
+        if (recheckIds.length) {
+          const rc = await runSequentialProbe(admin, mapsKey, fresh || site, {
+            userId, runId, nowIso: new Date().toISOString(), mode,
+            explicitIds: recheckIds, keepCursor: true, recheckValid: true, force: false,
+            forwardCount: recheckIds.length, backfillCount: 0,
+            dayRemaining: recheckIds.length, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: bulkDelay, noRender: true,
+          })
+          main.recheck = { probed: rc.probed, valid: rc.valid, imported: rc.imported, saved: rc.saved }
+          main.probed += rc.probed; main.valid += rc.valid; main.saved += rc.saved; main.saveError += rc.saveError
+          main.hot += rc.hot; main.hotA += rc.hotA; main.hotB += rc.hotB; main.hold += rc.hold; main.excluded += rc.excluded
+          main.imported += rc.imported; main.alreadyImported += rc.alreadyImported; main.importFailed += rc.importFailed
+          main.fetchFail += rc.fetchFail; main.parserFail += rc.parserFail; main.timeouts += rc.timeouts; main.dupSkip += rc.dupSkip
+          main.items = [...main.items, ...rc.items].slice(0, 60)
+        }
+      }
+      return main
+    }
+
+    // ドメインごとにワーカーを立て、同時数を制限しつつ「最後に探索した時刻が古い順」に回す。
+    // 以前は全サイトを一斉に並列実行しており、食べログ47都道府県を同時に叩いた2日後に遮断された。
+    const byHost = new Map<string, any[]>()
+    for (const site of activeSites) {
+      const h = hostOf(site)
+      byHost.set(h, [...(byHost.get(h) || []), site])
+    }
+    const results: any[] = []
+    debug.hosts = [...byHost.entries()].map(([h, list]) => ({ host: h, sites: list.length, concurrency: hostConcurrency(h) }))
+    await Promise.all([...byHost.entries()].map(async ([host, list]) => {
+      const queue = [...list].sort((a: any, b: any) =>
+        (Date.parse(a.last_probe_at || 0) || 0) - (Date.parse(b.last_probe_at || 0) || 0))
+      const worker = async () => {
+        while (queue.length && canStart()) {
+          const site = queue.shift()
+          const r = await Promise.race([
+            runSite(site).then((x: any) => ({ ...x, __site: site })),
+            new Promise<any>((rs) => setTimeout(() => rs({ __timeout: true, __site: site }), perSiteCapMs)),
+          ])
+          results.push(r)
+        }
+        if (queue.length) debug.deferred = (debug.deferred || 0) + queue.length   // 予算切れ＝次回に回す（古い順なので次回優先される）
+        queue.length = 0
+      }
+      await Promise.all(Array.from({ length: Math.min(hostConcurrency(host), list.length) }, worker))
+    }))
     for (const pr of results) {
       const site = pr.__site
       if (pr.__timeout) { (debug as any).siteTimeout = ((debug as any).siteTimeout || 0) + 1; debug.siteResults.push({ site: site?.name, timeout: true }); continue }
