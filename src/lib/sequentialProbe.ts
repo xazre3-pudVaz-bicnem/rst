@@ -24,6 +24,8 @@ import { caseImportGate, applyGateDowngrade } from './importGate.js'
 
 const UA = 'RST-CRM-bot/1.0 (+lead research; respects robots.txt)'
 const PROBE_TIMEOUT_MS = 8000
+/** 最新の有効IDより先（公開待ちの帯）で、連続404のIDを見直す間隔（時間） */
+const FRONTIER_RETRY_HOURS = 2
 
 // じゃらん由来の投入先担当（ユーザー指示で固定＝織田春樹）。profilesから氏名一致で解決しキャッシュ。
 const JALAN_ASSIGNEE_NAME = '織田春樹'
@@ -477,7 +479,13 @@ export async function runSequentialProbe(admin: any, mapsKey: string | null, sit
         if (isConfirmedInvalidRow(last)) {
           const invalidStreak = (() => { let c = 0; for (const x of (lg || [])) { if (isConfirmedInvalidRow(x)) c++; else break } return c })()
           const ageH = (Date.now() - Date.parse(last.checked_at)) / 3600000
-          if (invalidStreak >= sameIdRetryLimit && ageH < invalidRetryIntervalH) { res.dupSkip++; continue }
+          // 最新の有効IDより先（＝公開待ちの帯）は2時間おきに見直す。ここを24時間止めると、
+          // 探索範囲の全IDが「3回連続404」で丸ごと凍結され、公開された新店を最大24時間拾えなくなる
+          // （実測: 東京の探索範囲40件がすべて凍結、9/15 4時以降に公開された 13326855 を13時間以上未確認）。
+          // 再確認モードは選定側で間隔を管理しているので、ここでは止めない。
+          const nearFrontier = probedId > (Number(site.last_valid_id) || 0)
+          const retryH = nearFrontier ? FRONTIER_RETRY_HOURS : invalidRetryIntervalH
+          if (!opts.explicitIds?.length && invalidStreak >= sameIdRetryLimit && ageH < retryH) { res.dupSkip++; continue }
         }
       }
     }
