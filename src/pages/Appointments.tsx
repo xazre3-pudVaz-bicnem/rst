@@ -74,8 +74,14 @@ export default function Appointments() {
     if (!isSupabaseConfigured) return
     try {
       const [a, c] = await Promise.all([AppointmentApi.list(500), CaseApi.list(500)])
+      // 案件は新しい順500件しか読まないため、それより古い案件に紐づく予定は
+      // 編集画面で案件欄が空になり（保存もできず）、予定カードに電話・住所も出なかった。
+      // 予定が参照している案件だけは、500件の枠に関係なく追加で読み込む。
+      const have = new Set(c.map((x) => x.id))
+      const missing = [...new Set(a.map((x) => x.case_id).filter((id): id is string => !!id && !have.has(id)))]
+      const extra = missing.length ? await CaseApi.listByIds(missing).catch(() => [] as Case[]) : []
       setAppointments(a)
-      setCases(c)
+      setCases([...c, ...extra])
     } catch (e) {
       console.error('[Appointments]', e)
     }
@@ -145,7 +151,12 @@ export default function Appointments() {
       toast.error('日時を入力してください')
       return
     }
-    const c = form.case_id ? cases.find((x) => x.id === form.case_id) : null
+    const found = form.case_id ? cases.find((x) => x.id === form.case_id) : null
+    // 一覧に無い案件（削除済み等）でも、編集前から紐づいていた案件なら紐付け・案件名を保持する
+    const keepLinked = !found && !!form.case_id && editing?.case_id === form.case_id
+    const c = found ?? (keepLinked
+      ? ({ id: editing!.case_id!, name: editing!.case_name ?? '', address: editing!.address ?? '' } as Case)
+      : null)
     // 案件なしのときは件名（用件）を必須にする
     if (!c && !form.title.trim()) {
       toast.error('案件を選択するか、件名を入力してください')
@@ -428,6 +439,9 @@ export default function Appointments() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>（案件なし・その他の予定）</SelectItem>
+                  {editing?.case_id && !cases.some((c) => c.id === editing.case_id) && (
+                    <SelectItem value={editing.case_id}>{editing.case_name || '（案件名なし）'}</SelectItem>
+                  )}
                   {cases.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {c.name}

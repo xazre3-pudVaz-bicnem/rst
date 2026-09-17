@@ -168,6 +168,17 @@ export const CaseApi = {
   async listRepOnly(): Promise<Case[]> {
     return fetchAllPages<Case>('cases', 'id,sales_rep', 'created_date', {})
   },
+  /** 指定IDの案件をまとめて取得（訪問予定が参照する案件を、新しい順500件の枠に関係なく読むため） */
+  async listByIds(ids: string[]): Promise<Case[]> {
+    const uniq = [...new Set(ids.filter(Boolean))]
+    const out: Case[] = []
+    for (let i = 0; i < uniq.length; i += 200) {
+      const { data, error } = await supabase.from('cases').select('*').in('id', uniq.slice(i, i + 200))
+      if (error) throw new Error(error.message)
+      out.push(...((data ?? []) as Case[]))
+    }
+    return out
+  },
   /** 指定IDのメモだけを取り直す（一覧では読んでいないため、CSV出力時などに使う） */
   async memosByIds(ids: string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>()
