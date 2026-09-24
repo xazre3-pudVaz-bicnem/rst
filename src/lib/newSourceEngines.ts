@@ -337,7 +337,8 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     // 【重要】last_enriched_at 昇順(未処理=nullを先頭)で並べる。処理した候補は last_enriched_at が
     //   更新され後ろに回るため、300件窓が固定化せず全バックログを順に巡回できる（従来は並び順なしで
     //   先頭300件しか届かず、確定名候補の大半（数千件）に永久に到達できていなかった）。
-    let q = admin.from('lead_candidates').select('id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url,auto_insert_skipped_reason,instagram_url,search_snippet,ai_comment')
+    const SELECT_COLS = 'id,name,extracted_shop_name,extracted_area,extracted_industry,extracted_prefecture,phone_number,address,lead_temperature,is_chain_store,duplicate_of_case_id,imported_to_cases,official_url,website_url,extracted_official_url,auto_insert_skipped_reason,instagram_url,search_snippet,ai_comment'
+    let q = admin.from('lead_candidates').select(SELECT_COLS)
       .eq('lead_temperature', 'HOLD').not('name', 'is', null)
       .not('name', 'in', '("店名未確定","（店名未確定）","連番探索候補")')
       .order('last_enriched_at', { ascending: true, nullsFirst: true })
@@ -347,7 +348,18 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
     // 汎用キューは「一時要因」の理由だけを対象（記事/まとめ・チェーン等の品質理由をHOTへ誤復活させない）
     else q = q.or('auto_insert_skipped_reason.ilike.%電話番号なし%,auto_insert_skipped_reason.ilike.%住所なし%,auto_insert_skipped_reason.ilike.%フォロワー数を確認できず%,auto_insert_skipped_reason.ilike.%ユーザー名が特定できず%')
     const { data: rows } = await q
-    const list = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id).slice(0, limit)
+    // 公式サイト/Instagram のURLを持つ候補を優先する。
+    //  無料で電話を取れるのは「サイトを見に行く」経路だけ（検索APIの残高切れ時は特に）。
+    //  URLが無い候補を同じ枠で回すと、打つ手が無いものに時間予算を使い切ってしまう。
+    //  URL無しにも枠の2割は残す（掲載ページの再取得やInstagramの取得元が後から埋まる場合があるため）。
+    const hasUrl = (c: any) => !!(c.official_url || c.website_url || c.extracted_official_url || c.instagram_url)
+    const pool = (rows || []).filter((c: any) => !c.is_chain_store && !c.duplicate_of_case_id)
+    const withUrl = pool.filter(hasUrl)
+    const noUrl = pool.filter((c: any) => !hasUrl(c))
+    const noUrlQuota = Math.max(0, Math.floor(limit * 0.2))
+    const list = [...withUrl.slice(0, limit - Math.min(noUrlQuota, noUrl.length)), ...noUrl.slice(0, noUrlQuota)].slice(0, limit)
+    counts.withUrl = withUrl.length
+    counts.noUrl = noUrl.length
     // 外部補完(enrich)の先読み。1件ずつ直列に待つと時間予算のほとんどが待ち時間で消え、
     // 35秒枠で十数件しか処理できず数千件の滞留が減らない（HOT条件は変えずに件数を増やすには
     // ここの回転数を上げるのが唯一の手）。DB書き込み・重複判定・投入は従来どおり逐次のまま、
@@ -363,8 +375,9 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
       enrichAhead.set(c.id, withTimeout(enrichCandidate(mapsKey!, {
         shop: shop0, username: '', areaHint: c.extracted_area || c.address || '',
         industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '',
-        officialUrl: c.official_url || '', instagramUrl: c.instagram_url || '',
-      }, { maxQueries: 1, perQuery: 5 }), 12000, null))
+        officialUrl: c.official_url || c.website_url || c.extracted_official_url || '', instagramUrl: c.instagram_url || '',
+        // サイトのURLが分かっている候補は検索を使わない（残高を使わず、失敗する検索の待ち時間も省く）
+      }, { maxQueries: hasUrl(c) ? 0 : 1, perQuery: 5 }), 12000, null))
     }
     for (const [i, c] of list.entries()) {
       // 自分の分と、先の PREFETCH-1 件ぶんの補完を先に起動しておく
@@ -411,7 +424,7 @@ export async function runReprocessQueue(admin: any, mapsKey: string | null, type
         if (cr?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: new Date().toISOString(), imported_case_id: cr.id }).eq('id', c.id); counts.imported++ }
         continue
       }
-      const e = await (enrichAhead.get(c.id) ?? withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '', officialUrl: c.official_url || '', instagramUrl: c.instagram_url || '' }, { maxQueries: 1, perQuery: 5 }), 12000, null))
+      const e = await (enrichAhead.get(c.id) ?? withTimeout(enrichCandidate(mapsKey!, { shop, username: '', areaHint: c.extracted_area || c.address || '', industry: c.extracted_industry || '', havePhone: c.phone_number || '', haveAddress: c.address || '', officialUrl: c.official_url || c.website_url || c.extracted_official_url || '', instagramUrl: c.instagram_url || '' }, { maxQueries: hasUrl(c) ? 0 : 1, perQuery: 5 }), 12000, null))
       if (!e) continue
       counts.enriched++
       const phone = c.phone_number || e.phone || ''
