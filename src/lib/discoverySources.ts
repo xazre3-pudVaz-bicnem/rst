@@ -87,7 +87,6 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'dated_opening_search', label: '日付指定オープン検索(過去7日)', group: '新規候補', mode: 'serp', defaultEnabled: true, signalType: 'new_article', freshness: 'week',
     queries: ['"{md}オープン" 店舗', '"{md} オープン" 電話', '"{md}にオープン"', '"{md}グランドオープン"', '"{md} 開院"'] },
   // Googleニュース RSS（キー不要・Serper消費ゼロ）: 直近7日の新店ニュースを直接取込
-  { type: 'google_news_rss_opening', label: 'Googleニュース新店(RSS)', group: '新規候補', mode: 'foundation', defaultEnabled: true, signalType: 'new_article', note: '本稼働: Googleニュース RSSで直近7日の新店記事を取込（検索APIキー不要・Serper消費ゼロ）' },
   // 開業予定日キュー: Google確認済みの開業予定/開業直後の候補を最優先HOT-Aで投入（開業前後が営業の黄金期）
   { type: 'opening_soon_promotion', label: '開業予定日キュー(HOT-A)', group: '新規候補', mode: 'foundation', defaultEnabled: true, signalType: 'new_gbp', note: '本稼働: FUTURE_OPENING/開業予定日45日以内/開業30日以内の候補（Google openingDate裏取り済み）をHOT-A・優先度高で自動投入' },
   { type: 'job_opening_search', label: 'オープニングスタッフ求人', group: '求人由来', mode: 'serp', defaultEnabled: true, signalType: 'job_opening', freshness: 'month',
@@ -103,8 +102,8 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
   { type: 'official_site_news_crawl', label: '公式サイト新着情報', group: '公式サイト新着', mode: 'serp', defaultEnabled: true, signalType: 'official_news', freshness: 'month',
     queries: ['"新規オープン" "公式サイト"', '"グランドオープン" "公式"', '"開院のお知らせ"', '"開業のお知らせ"', '"移転オープンのお知らせ"', '"リニューアルオープンのお知らせ"', '"プレオープンのお知らせ"'] },
   // 既定OFF: 実行配線がまだ無い（autoCrawl/runEngineSource のどこからも呼ばれない）。ONだと稼働中に見えて誤解を招くため。
-  //   sitemap差分は sitemap_recent_url_scan、RSSは google_news_rss_opening が実稼働でカバー済み。実装時にONへ戻す。
-  { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: false, signalType: 'official_news', note: '未実装（sitemap_recent_url_scan / google_news_rss_opening で代替中）。対象URL登録＋実装後に有効化' },
+  //   sitemap差分は sitemap_recent_url_scan が実稼働でカバー済み（RSSのGoogleニュース取込は成果0のため停止）。実装時にONへ戻す。
+  { type: 'rss_sitemap_crawl', label: 'RSS / sitemap差分', group: '新店シグナル', mode: 'foundation', defaultEnabled: false, signalType: 'official_news', note: '未実装（sitemap_recent_url_scan で代替中）。対象URL登録＋実装後に有効化' },
   { type: 'construction_opening_signal_search', label: '看板・内装・開業準備ワード', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'construction_signal', freshness: 'month',
     queries: ['看板がつきました オープン', '内装工事中 オープン予定', '店舗準備中 オープン', '開店準備中', '物件決まりました 店舗', 'まもなくオープン', 'プレオープン準備中', '予約受付開始 新店'] },
   { type: 'chamber_commerce_new_member_crawl', label: '商工会議所・商店街 新入会員', group: '新店シグナル', mode: 'serp', defaultEnabled: true, signalType: 'chamber_new_member',
@@ -269,7 +268,7 @@ export const DISCOVERY_SOURCES: DiscoverySourceDef[] = [
 ]
 
 // 追加しない（明示除外）source_type
-export const EXCLUDED_SOURCE_TYPES = ['kaiten_heiten_portal_search', 'shopping_mall_new_shop_crawl', 'google_places_no_website_scan', 'gbp_content_weakness_scan', 'brand_serp_weakness_scan', 'reservation_portal_dependency_scan', 'franchise_new_store_search', 'competitor_gap_scan']
+export const EXCLUDED_SOURCE_TYPES = ['google_news_rss_opening', 'kaiten_heiten_portal_search', 'shopping_mall_new_shop_crawl', 'google_places_no_website_scan', 'gbp_content_weakness_scan', 'brand_serp_weakness_scan', 'reservation_portal_dependency_scan', 'franchise_new_store_search', 'competitor_gap_scan']
 
 // 専用エンジンで本稼働している source_type（run.ts が newSourceEngines.runEngineSource に振り分ける）。
 // UIでは「土台」ではなく「本稼働」バッジを出す。ここに無い foundation は真の土台（OCR/Meta API等・整備中）。
@@ -278,7 +277,7 @@ export const ENGINE_SOURCE_TYPES = [
   //   実際には一度も走らないのに、UIで「本稼働」バッジが出て動いているように見えてしまうため（実態は土台のまま）。
   //   外部API(crt.sh)の確認が済んで defaultEnabled:true にする時に、ここへ戻すこと。
   'new_domain_registration_scan', 'wordpress_first_post_scan', 'sitemap_recent_url_scan',
-  'document_to_lead_import', 'event_vendor_list_import', 'google_news_rss_opening', 'opening_soon_promotion', 'public_open_data_crawl',
+  'document_to_lead_import', 'event_vendor_list_import', 'opening_soon_promotion', 'public_open_data_crawl',
   'hold_reason_reprocess_queue', 'missing_phone_recheck_queue', 'phone_to_address_enrichment_queue', 'places_recheck_queue', 'first_review_detected_scan',
   'lead_freshness_scoring', 'callability_score_engine', 'multi_signal_priority_boost', 'successful_query_expander',
   'lead_exclusion_classifier', 'sales_angle_classifier', 'calling_priority_queue', 'industry_fit_score', 'ai_duplicate_merge', 'area_hotspot_expansion',

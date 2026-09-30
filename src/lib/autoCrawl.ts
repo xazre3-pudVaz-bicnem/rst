@@ -159,7 +159,9 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     }
     // 本稼働エンジン系（Googleニュース RSS/エキテン公開日/WordPress初回投稿/sitemap直近更新/SSL新規発行）も
     // 自動巡回でローテーション実行（これまで手動実行のみで、自動では一度も回っていなかった）。古い順に2件/回。
-    const engineTypes = ['google_news_rss_opening', 'public_open_data_crawl', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
+    // google_news_rss_opening は 2026-07-11〜09-30 で候補4,082件を拾って投入0件・HOT0件（1回16.6秒×180回）。
+    // 記事に店舗の電話・住所が載らずHOT条件に届かないため停止。枠は他の取得元に回す。
+    const engineTypes = ['public_open_data_crawl', 'portal_published_date_search', 'wordpress_first_post_scan', 'sitemap_recent_url_scan', 'new_ssl_certificate_domain_scan']
       .filter((t) => toggles[t] !== false)
     // エンジンtypeと auto_lead_runs.source の名前が食い違うものを正規化してから最終実行時刻を引く。
     // エキテンは type='portal_published_date_search' だが実行は source='ekiten_discovery' で記録されるため、
