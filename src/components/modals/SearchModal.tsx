@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { INDUSTRIES, STATUSES } from '@/lib/constants'
+import { INDUSTRIES, STATUSES, LAST_CALL_RESULTS, LAST_CALL_NONE } from '@/lib/constants'
 import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { useAssignableUsers, withCurrent } from '@/hooks/useAssignableUsers'
 import { cn } from '@/lib/utils'
@@ -29,6 +29,8 @@ export interface SearchCriteria {
   sales_rep: string
   /** リスト投入者名（'' = すべて。人が介在しない自動投入は AI_CREATOR_LABEL） */
   created_by: string
+  /** 最終コールの結果（'' = すべて / LAST_CALL_NONE = 未コール） */
+  lastCallResult: string
   status: string
   uncalledOnly: boolean
   overdueRecallOnly: boolean
@@ -38,7 +40,7 @@ export interface SearchCriteria {
 }
 
 const EMPTY: SearchCriteria = {
-  name: '', address: '', phone: '', industries: [], sales_rep: '', created_by: '', status: '',
+  name: '', address: '', phone: '', industries: [], sales_rep: '', created_by: '', lastCallResult: '', status: '',
   uncalledOnly: false, overdueRecallOnly: false, hasRecall: 'any',
   lastCallFrom: '', lastCallTo: '',
 }
@@ -48,8 +50,8 @@ export function normalizeCriteria(c: SearchCriteria | null): SearchCriteria | nu
   if (!c) return c
   const anyC = c as unknown as { industry?: string; industries?: string[] }
   const industries = Array.isArray(anyC.industries) ? anyC.industries : (anyC.industry ? [anyC.industry] : [])
-  // created_by は後から追加した項目。保存済みビューには無いため既定値で補う。
-  return { ...c, industries, created_by: c.created_by ?? '' }
+  // created_by / lastCallResult は後から追加した項目。保存済みビューには無いため既定値で補う。
+  return { ...c, industries, created_by: c.created_by ?? '', lastCallResult: c.lastCallResult ?? '' }
 }
 
 const ALL = '__all__'
@@ -141,6 +143,17 @@ export default function SearchModal({ open, initial, creators = [], onClose, onS
               <SelectContent>
                 <SelectItem value={ALL}>すべて</SelectItem>
                 {creatorOptions.map((n) => <SelectItem key={n} value={n}>{n === AI_CREATOR_LABEL ? `${n}（自動）` : n}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>最終コール結果<span className="ml-1 text-2xs font-normal text-muted-foreground">直近のコール履歴の結果</span></Label>
+            <Select value={c.lastCallResult || ALL} onValueChange={(v) => set('lastCallResult', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>すべて</SelectItem>
+                <SelectItem value={LAST_CALL_NONE}>コール履歴なし</SelectItem>
+                {LAST_CALL_RESULTS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

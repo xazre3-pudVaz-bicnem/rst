@@ -13,6 +13,7 @@ import AutoSearchRunner from '@/components/dashboard/AutoSearchRunner'
 import CaseFormModal from '@/components/modals/CaseFormModal'
 import SearchModal, { normalizeCriteria, type SearchCriteria } from '@/components/modals/SearchModal'
 import { creatorNameOf, creatorOptionsOf } from '@/lib/caseCreator'
+import { isCall } from '@/lib/kpi'
 import CallLogFormModal from '@/components/modals/CallLogFormModal'
 import RecallFormModal from '@/components/modals/RecallFormModal'
 import ImportModal from '@/components/modals/ImportModal'
@@ -44,6 +45,7 @@ import {
   type QuickFilterKey,
   isCallBlocked,
   CALL_BLOCKED_MESSAGE,
+  LAST_CALL_NONE,
 } from '@/lib/constants'
 import { generateSessionKey, isValidSessionKey, phoneDigits, toCsv, downloadCsv } from '@/lib/utils'
 import { useToast } from '@/components/ui/toast'
@@ -315,6 +317,18 @@ export default function Dashboard() {
     return m
   }, [callLogs])
 
+  // 案件ごとの「最終コールの結果」。ステータス変更ログや通話メモは実際の架電ではないので除く（isCall）
+  const lastCallResultByCase = useMemo(() => {
+    const at = new Map<string, string>()
+    const res = new Map<string, string>()
+    for (const l of callLogs) {
+      if (!isCall(l)) continue
+      const prev = at.get(l.case_id)
+      if (!prev || l.call_at > prev) { at.set(l.case_id, l.call_at); res.set(l.case_id, (l.result ?? '').trim()) }
+    }
+    return res
+  }, [callLogs])
+
   const recallByCase = useMemo(() => {
     const m = new Map<string, { next: string; overdue: boolean; today: boolean }>()
     const now = moment()
@@ -399,6 +413,10 @@ export default function Dashboard() {
         if (criteria.industries?.length && !criteria.industries.includes(c.industry ?? '')) return false
         if (criteria.sales_rep && c.sales_rep !== criteria.sales_rep) return false
         if (criteria.created_by && creatorNameOf(c) !== criteria.created_by) return false
+        if (criteria.lastCallResult) {
+          const last = lastCallResultByCase.get(c.id) ?? ''
+          if (criteria.lastCallResult === LAST_CALL_NONE ? !!last : last !== criteria.lastCallResult) return false
+        }
         if (criteria.status && c.status !== criteria.status) return false
         if (criteria.uncalledOnly && !UNCALLED_STATUSES.includes(c.status as never)) return false
         if (criteria.overdueRecallOnly && !rc?.overdue) return false
@@ -430,7 +448,7 @@ export default function Dashboard() {
       }
     })
     return arr
-  }, [cases, criteria, quickFilter, deferredSearch, recallByCase, lastCallByCase, displayName, sortKey])
+  }, [cases, criteria, quickFilter, deferredSearch, recallByCase, lastCallByCase, lastCallResultByCase, displayName, sortKey])
 
   // 詳細検索「リスト投入者」の候補（実データに存在する投入者だけを出す）
   const creatorOptions = useMemo(() => creatorOptionsOf(cases), [cases])

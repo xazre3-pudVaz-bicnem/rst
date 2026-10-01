@@ -138,6 +138,11 @@ export const CONTACT_RESULTS = [
 
 export const NO_CONTACT_RESULTS = ['不在', '忙しい', '断られた', '今は代表いません', '代表ここに来ません'] as const
 
+/** 案件の詳細検索「最終コール結果」で選べる値（接触時の結果＋不在） */
+export const LAST_CALL_RESULTS = [...CONTACT_RESULTS, '不在', '今は代表いません', '忙しい'] as const
+/** コール履歴が1件も無い案件を指す番兵 */
+export const LAST_CALL_NONE = '__none__'
+
 export const RECEIVER_ATTRS = ['配偶者', '子供', '親', '店長', '受付'] as const
 
 export const AGES = ['20代', '30代', '40代', '50代', '60代', '70代以上'] as const
