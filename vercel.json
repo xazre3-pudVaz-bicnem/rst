@@ -9,6 +9,6 @@
   },
   "regions": ["hnd1"],
   "crons": [
-    { "path": "/api/cron/auto-lead-crawl", "schedule": "0 * * * *" }
+    { "path": "/api/cron/auto-lead-crawl", "schedule": "*/20 * * * *" }
   ]
 }

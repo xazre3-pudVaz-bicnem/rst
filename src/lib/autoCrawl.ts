@@ -126,7 +126,9 @@ export async function runAutoCrawl(admin: any, env: NodeJS.ProcessEnv, opts: Cra
     const cfg = await readCfg(admin, 'regional_auto')
     if (cfg.regionalEnabled === false) return { skipped: true }
     // 全サイト対象（last_crawled_at 昇順=長く巡回していないサイトから）。全巡回時は13s、地域メディア単独実行時は40s（時間予算は設定より優先）
-    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 100, maxSitesPerDay: focused ? 100 : 150, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
+    // 巡回が20分おき(1日72回)になったため、1日150サイトの上限では午前中に使い切ってしまう。
+    // 1回あたりのサイト数は据え置き、1日の上限だけ引き上げて全サイトを回せるようにする。
+    return runRegionalMedia(admin, mapsKey, { ...getDefaultRegionalSettings(), ...cfg, ...(master.regional || {}), runMode: 'all', batchSites: focused ? 80 : 100, maxSitesPerDay: focused ? 100 : 600, runBudgetMs: innerBudgetMs, maxDetailFetchesPerRun: pb(60, 80) }, opts.userId || null)
   } })
   if (wantType('instagram') && serperAllowedThisRun) types.push({ key: 'instagram', type: 'instagram_web', name: 'Instagram Web検索', minMs: 8000, run: async () => {
     const cfg = await readCfg(admin, 'instagram_web_auto')
