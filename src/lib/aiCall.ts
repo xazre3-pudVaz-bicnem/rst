@@ -100,6 +100,77 @@ export const TwilioApi = {
   },
 }
 
+// ============================================================
+// パワーダイヤラー（繋がるまで自動・話すのは人）のクライアント層。
+//   サーバー(/api/ai-call/twilio?action=dialer-*)が電話側、こちらが画面側。
+//   自動で付いた結果（留守電/不在/話中）は pending_outcomes として降りてくるので、
+//   画面側が既存のコール履歴として書き込み、書き終えたら ack で消す。
+// ============================================================
+export type DialerStatus = '待機中' | '接続中' | '通話待機' | '発信中' | '通話中' | '結果待ち' | '停止'
+export interface DialerOutcome {
+  id: string
+  at: string
+  caseId: string | null
+  caseName: string | null
+  phone: string | null
+  /** machine=留守電 / noanswer=不在 / busy=話中 / skip=発信せず飛ばした / error=発信失敗 */
+  kind: 'machine' | 'noanswer' | 'busy' | 'skip' | 'error'
+  note: string
+}
+export interface DialerSession {
+  id: string
+  rep_phone: string
+  status: DialerStatus
+  amd_mode: 'sync' | 'async' | 'off'
+  test_mode: boolean
+  test_number: string | null
+  auto_next: boolean
+  queue: string[]
+  cursor: number
+  current_case_id: string | null
+  current_case_name: string | null
+  current_phone: string | null
+  current_started_at: string | null
+  stats: Record<string, number>
+  pending_outcomes: DialerOutcome[]
+  last_note: string | null
+  updated_date: string
+}
+
+async function dialerPost(action: string, body: any): Promise<any> {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  if (!token) return { ok: false, error: 'ログインが必要です' }
+  const r = await fetch(`/api/ai-call/twilio?action=${action}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body || {}),
+  })
+  return r.json().catch(() => ({ ok: false, error: 'サーバー応答なし' }))
+}
+
+export const DialerApi = {
+  /** 開始。まず自分のケータイが鳴り、出るとカンファレンスで待機 → 裏でリストへ発信が始まる。 */
+  start(opts: { repPhone: string; caseIds: string[]; testMode: boolean; testNumber?: string; amdMode?: 'sync' | 'async' | 'off'; autoNext?: boolean; repName?: string }) {
+    return dialerPost('dialer-start', opts)
+  },
+  /** 進行状況。sessionId 未指定なら自分の最後のセッション（画面を開き直しても続けられる）。 */
+  state(sessionId?: string | null): Promise<{ ok: boolean; session?: DialerSession | null; error?: string }> {
+    return dialerPost('dialer-state', { sessionId: sessionId ?? null })
+  },
+  /** 次の1件へ発信。 */
+  next(sessionId: string) { return dialerPost('dialer-next', { sessionId }) },
+  /** 呼び出し中の相手を止めて次へ。 */
+  skip(sessionId: string) { return dialerPost('dialer-skip', { sessionId }) },
+  /** 終了（自分の電話も切る）。 */
+  stop(sessionId: string) { return dialerPost('dialer-stop', { sessionId }) },
+  /** 自動結果をコール履歴に書き終えたので待ち行列から外す。 */
+  ack(sessionId: string, ids: string[]) { return dialerPost('dialer-ack', { sessionId, ids }) },
+  /** 進行中の設定変更（自動で次へ / 留守電判定 / リスト追加）。 */
+  config(sessionId: string, patch: { autoNext?: boolean; amdMode?: 'sync' | 'async' | 'off'; caseIds?: string[] }) {
+    return dialerPost('dialer-config', { sessionId, ...patch })
+  },
+}
+
 /** AI推奨ステータスを案件へ反映（管理者確認後）。recordCallOutcome を通し、ジョブに反映済みフラグを立てる。 */
 export async function applyAiJudgment(job: AiCallJob, kase: Case, opts: { nextAtIso?: string | null; salesRep?: string | null; userId?: string | null } = {}): Promise<string> {
   const outcome = (job.recommended_status || '再架電') as AiCallStatus

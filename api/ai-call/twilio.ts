@@ -4,11 +4,12 @@
 //   POST ?action=start        … 要ログイン(管理者)。テスト番号へ1件発信。ai_call_jobs作成→Twilio発信。
 //   POST ?action=twiml        … Twilioが通話時に取得するTwiML(固定メッセージ)。認証なし。
 //   POST ?action=callback     … Twilioの状態通知(開始/終了/通話時間/失敗)。ai_call_jobsへ保存。認証なし。
+//   POST ?action=dialer-*     … パワーダイヤラー（繋がるまで自動・話すのは人）。dialer_sessions で進行管理。
 // 安全: AI_CALL_PROVIDER=twilio かつ Twilio環境変数が揃うときのみ実発信。NG案件は発信不可。二重発信防止。
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml, buildConferenceTwiml, buildHangupTwiml, hangupTwilioCall, isHumanAnswer } from '../../src/lib/twilioCall.js'
 import { createCalendarEvent, getAvailableSlots, isCalendarConfigured } from '../../src/lib/googleCalendar.js'
 import { isCallBlocked, CALL_BLOCKED_MESSAGE } from '../../src/lib/constants.js'
 
@@ -71,6 +72,121 @@ function formBody(req: any): Record<string, string> {
   const out: Record<string, string> = {}
   new URLSearchParams(raw).forEach((v, k) => { out[k] = v })
   return out
+}
+
+
+// ============================================================
+// パワーダイヤラー（AIは「繋がるまで」担当・話すのは人）
+//   1) 担当者のケータイを呼び、カンファレンスに無音で待機させる
+//   2) その裏でリストへ1件ずつ発信。留守電判定で「人」と分かった瞬間だけカンファレンスへ合流
+//   3) 留守電・不在・話中は自動で次へ。記録すべき内容は pending_outcomes に積み、画面側が
+//      既存のコール履歴ロジック（ステータス変更・再コール設定を含む）で書き込む
+// ============================================================
+const DIALER_RING_SEC = 20          // 呼び出し秒数。20秒で出なければ不在として次へ
+const DIALER_AMD_TIMEOUT_SEC = 12   // 留守電判定の上限。既定30秒は長く、出た人を待たせてしまう
+const DIALER_SKIP_MAX = 30          // 1回の実行で飛ばせる件数（電話番号なし等）。無限ループ防止
+
+function dialerUrl(req: any, action: string, sessionId: string): string {
+  return `${baseUrl(req)}/api/ai-call/twilio?action=${action}&session=${sessionId}`
+}
+/** 結果の待ち行列に1件積む。画面側が拾って既存ロジックでコール履歴に書く。 */
+function dialerOutcome(caseId: string | null, caseName: string | null, phone: string | null, kind: string, note: string) {
+  return { id: Math.random().toString(36).slice(2, 10), at: new Date().toISOString(), caseId, caseName, phone, kind, note }
+}
+function bumpStats(stats: any, key: string) {
+  const s = { ...(stats || {}) }
+  s[key] = Number(s[key] || 0) + 1
+  return s
+}
+async function loadDialerSession(admin: any, id: string): Promise<any | null> {
+  if (!id) return null
+  const { data } = await admin.from('dialer_sessions').select('*').eq('id', id).maybeSingle()
+  return data || null
+}
+async function saveDialerSession(admin: any, id: string, patch: any): Promise<void> {
+  await admin.from('dialer_sessions').update({ ...patch, updated_date: new Date().toISOString() }).eq('id', id).then(() => {}, () => {})
+}
+
+/**
+ * キューの次の案件へ発信する。発信できない案件（番号なし/NG指定/対象外）は理由を積んで飛ばす。
+ * キューが尽きたら status='通話待機' のままで done を返す（担当者の通話は切らない）。
+ */
+async function dialerDialNext(admin: any, req: any, session: any): Promise<{ ok: boolean; done?: boolean; error?: string; caseId?: string | null }> {
+  const queue: string[] = Array.isArray(session.queue) ? session.queue : []
+  let cursor = Number(session.cursor || 0)
+  let stats = session.stats || {}
+  const pending: any[] = Array.isArray(session.pending_outcomes) ? [...session.pending_outcomes] : []
+  let skipped = 0
+
+  while (cursor < queue.length && skipped < DIALER_SKIP_MAX) {
+    const caseId = queue[cursor]
+    cursor += 1
+    const { data: kase } = await admin.from('cases').select('id,name,phone1,phone2,phone3,do_not_call,status').eq('id', caseId).maybeSingle()
+    if (!kase) { pending.push(dialerOutcome(caseId, null, null, 'skip', '案件が見つかりません')); stats = bumpStats(stats, 'skipped'); skipped++; continue }
+    // 代表番号(phone1)優先。空なら2番目・3番目を使う
+    const phone = [kase.phone1, kase.phone2, kase.phone3].map((x: any) => String(x || '').trim()).find(Boolean) || ''
+    if (kase.do_not_call) { pending.push(dialerOutcome(caseId, kase.name, phone, 'skip', 'NG指定のため発信しません')); stats = bumpStats(stats, 'skipped'); skipped++; continue }
+    if (isCallBlocked(kase.status)) { pending.push(dialerOutcome(caseId, kase.name, phone, 'skip', CALL_BLOCKED_MESSAGE)); stats = bumpStats(stats, 'skipped'); skipped++; continue }
+    if (!phone) { pending.push(dialerOutcome(caseId, kase.name, null, 'skip', '電話番号がありません')); stats = bumpStats(stats, 'skipped'); skipped++; continue }
+
+    // テストモードON時は、案件の番号ではなく確認用番号へ発信する（実店舗を鳴らさない）
+    const dial = session.test_mode ? String(session.test_number || '').trim() : phone
+    if (!dial) {
+      await saveDialerSession(admin, session.id, { cursor: cursor - 1, pending_outcomes: pending, stats, status: '通話待機', last_note: 'テストモードONですが確認用番号が未設定です' })
+      return { ok: false, error: 'テストモードONです。確認用の番号（自分の番号）を設定してください。' }
+    }
+    const pf = preflight(dial)
+    if (!pf.ok) { pending.push(dialerOutcome(caseId, kase.name, phone, 'skip', '発信前チェックに失敗: ' + pf.errors.join(' / '))); stats = bumpStats(stats, 'skipped'); skipped++; continue }
+
+    const amd = String(session.amd_mode || 'sync')
+    const r = await initiateTwilioCall({
+      toRaw: dial,
+      // 相手が出た時のTwiMLはURLで取る。留守電判定(sync)なら AnsweredBy が付いて来るので
+      // 「人なら担当者へ繋ぐ / 留守電なら切る」をその応答で分岐できる。
+      twimlUrl: dialerUrl(req, 'dialer-answer', session.id),
+      statusCallbackUrl: dialerUrl(req, 'dialer-callback', session.id),
+      record: false,
+      timeout: DIALER_RING_SEC,
+      machineDetection: amd === 'off' ? undefined : 'Enable',
+      machineDetectionTimeout: DIALER_AMD_TIMEOUT_SEC,
+      asyncAmd: amd === 'async',
+      asyncAmdUrl: dialerUrl(req, 'dialer-amd', session.id),
+    })
+    if (!r.ok) {
+      pending.push(dialerOutcome(caseId, kase.name, phone, 'error', String(r.error || '発信に失敗しました').slice(0, 200)))
+      stats = bumpStats(stats, 'failed'); skipped++
+      continue
+    }
+    await saveDialerSession(admin, session.id, {
+      cursor, pending_outcomes: pending, stats: bumpStats(stats, 'dialed'), status: '発信中',
+      current_case_id: kase.id, current_case_name: kase.name, current_phone: phone,
+      current_call_sid: r.sid, current_started_at: new Date().toISOString(),
+      last_note: session.test_mode ? `テストモード: 実際の発信先は確認用番号です（${kase.name} には鳴っていません）` : null,
+    })
+    return { ok: true, caseId: kase.id }
+  }
+
+  const done = cursor >= queue.length
+  await saveDialerSession(admin, session.id, {
+    cursor, pending_outcomes: pending, stats, status: '通話待機',
+    current_case_id: null, current_case_name: null, current_phone: null, current_call_sid: null, current_started_at: null,
+    last_note: done ? 'リストの最後まで発信しました' : null,
+  })
+  return { ok: true, done }
+}
+
+/** 自動結果（留守電/不在/話中/失敗）を積んで、自動で次へ進む。 */
+async function dialerAutoAdvance(admin: any, req: any, session: any, kind: string, note: string, statKey: string): Promise<void> {
+  const pending: any[] = Array.isArray(session.pending_outcomes) ? [...session.pending_outcomes] : []
+  pending.push(dialerOutcome(session.current_case_id, session.current_case_name, session.current_phone, kind, note))
+  await saveDialerSession(admin, session.id, {
+    pending_outcomes: pending, stats: bumpStats(session.stats, statKey), status: '通話待機',
+    current_case_id: null, current_case_name: null, current_phone: null, current_call_sid: null, current_started_at: null, last_note: note,
+  })
+  if (!session.auto_next) return
+  const fresh = await loadDialerSession(admin, session.id)
+  if (!fresh || fresh.status === '停止' || !fresh.rep_call_sid) return
+  await dialerDialNext(admin, req, fresh).catch(() => {})
 }
 
 export default async function handler(req: any, res: any) {
@@ -364,6 +480,209 @@ export default async function handler(req: any, res: any) {
     }
     await admin.from('ai_call_jobs').update({ provider_call_sid: r.sid, updated_date: nowIso }).eq('id', job.id).then(() => {}, () => {})
     return res.status(200).json({ ok: true, jobId: job.id, sid: r.sid, to: r.debug.to, intended, redirected: !!(caseId && testMode), mode: useRealtime ? 'realtime' : 'fixed', realtimeAvailable: isRealtimeAvailable(), callModeEnv: getCallMode(), debug: r.debug })
+  }
+
+
+  // ============================================================
+  // パワーダイヤラー
+  // ============================================================
+
+  // ---- 相手が出た時のTwiML（Twilioが取得・認証なし。sessionはUUIDなので推測不可）----
+  //   留守電判定(sync)の AnsweredBy で分岐: 人 → カンファレンスへ合流 / 留守電・FAX → 即切って次へ
+  if (action === 'dialer-answer') {
+    const b = formBody(req)
+    const sessionId = String(req.query?.session || '')
+    const sid = String(b.CallSid || '')
+    const session = await loadDialerSession(admin, sessionId)
+    res.setHeader('Content-Type', 'text/xml; charset=utf-8')
+    // 停止後や、既に見捨てた発信（スキップ後の遅い応答）は繋がず切る
+    if (!session || session.status === '停止' || (session.current_call_sid && sid && session.current_call_sid !== sid)) {
+      return res.status(200).send(buildHangupTwiml())
+    }
+    const answeredBy = String(b.AnsweredBy || '')
+    if (String(session.amd_mode || 'sync') === 'sync' && !isHumanAnswer(answeredBy)) {
+      const note = answeredBy.startsWith('fax') ? 'FAXでした（自動判定）' : '留守番電話でした（自動判定）'
+      res.status(200).send(buildHangupTwiml())
+      await dialerAutoAdvance(admin, req, session, 'machine', note, 'machine').catch(() => {})
+      return
+    }
+    // 人が出た → 待機している担当者と即つなぐ
+    await saveDialerSession(admin, sessionId, { status: '通話中', last_note: null })
+    return res.status(200).send(buildConferenceTwiml(session.conference_name, { endOnExit: false }))
+  }
+
+  // ---- Twilioの状態通知（認証なし・sessionとCallSidで担当者側/発信先側を判定）----
+  if (action === 'dialer-callback') {
+    const b = formBody(req)
+    const sessionId = String(req.query?.session || '')
+    const sid = String(b.CallSid || '')
+    const st = String(b.CallStatus || '').toLowerCase()
+    const session = await loadDialerSession(admin, sessionId)
+    if (!session || session.status === '停止') return res.status(200).json({ ok: true })
+
+    // 担当者（自分のケータイ）側
+    if (sid && sid === session.rep_call_sid) {
+      if (st === 'in-progress' || st === 'answered') {
+        await saveDialerSession(admin, sessionId, { status: '通話待機', last_note: null })
+        if (session.auto_next && session.status !== '発信中' && session.status !== '通話中') {
+          const fresh = await loadDialerSession(admin, sessionId)
+          if (fresh) await dialerDialNext(admin, req, fresh).catch(() => {})
+        }
+        return res.status(200).json({ ok: true })
+      }
+      if (['completed', 'busy', 'no-answer', 'failed', 'canceled'].includes(st)) {
+        // 担当者が切った/出なかった → ダイヤラー終了。裏で鳴らしている相手も止める
+        if (session.current_call_sid) await hangupTwilioCall(session.current_call_sid).catch(() => {})
+        const note = st === 'completed' ? '終了しました' : `あなたの電話に繋がりませんでした（${st}）`
+        await saveDialerSession(admin, sessionId, { status: '停止', current_call_sid: null, last_note: note })
+      }
+      return res.status(200).json({ ok: true })
+    }
+
+    // 発信先（リスト）側。見捨てた発信の遅い通知は無視する
+    if (!sid || sid !== session.current_call_sid) return res.status(200).json({ ok: true })
+    if (st === 'no-answer') { await dialerAutoAdvance(admin, req, session, 'noanswer', '呼び出しに出ませんでした（不在）', 'noanswer').catch(() => {}); return res.status(200).json({ ok: true }) }
+    if (st === 'busy') { await dialerAutoAdvance(admin, req, session, 'busy', '話中でした', 'busy').catch(() => {}); return res.status(200).json({ ok: true }) }
+    if (st === 'failed' || st === 'canceled') { await dialerAutoAdvance(admin, req, session, 'error', `発信できませんでした（${st}）${b.ErrorMessage ? ' / ' + b.ErrorMessage : ''}`, 'failed').catch(() => {}); return res.status(200).json({ ok: true }) }
+    if (st === 'completed') {
+      // 人と話した通話が終わった → 結果の入力を待つ（勝手に次へ進めない）
+      if (session.status === '通話中') {
+        const dur = b.CallDuration ? Number(b.CallDuration) : null
+        await saveDialerSession(admin, sessionId, { status: '結果待ち', current_call_sid: null, stats: bumpStats(session.stats, 'talked'), last_note: dur ? `${dur}秒 通話しました。結果を登録してください` : '結果を登録してください' })
+      }
+      return res.status(200).json({ ok: true })
+    }
+    return res.status(200).json({ ok: true })
+  }
+
+  // ---- 留守電判定の非同期結果（amd_mode=async のとき。即つないだ後に判定が届く）----
+  if (action === 'dialer-amd') {
+    const b = formBody(req)
+    const sessionId = String(req.query?.session || '')
+    const sid = String(b.CallSid || '')
+    const session = await loadDialerSession(admin, sessionId)
+    if (!session || session.status === '停止') return res.status(200).json({ ok: true })
+    if (!sid || sid !== session.current_call_sid) return res.status(200).json({ ok: true })
+    if (isHumanAnswer(String(b.AnsweredBy || ''))) return res.status(200).json({ ok: true })
+    await hangupTwilioCall(sid).catch(() => {})
+    await dialerAutoAdvance(admin, req, session, 'machine', '留守番電話でした（自動判定）', 'machine').catch(() => {})
+    return res.status(200).json({ ok: true })
+  }
+
+  // ---- 開始（要管理者）: 自分のケータイを呼び、カンファレンスで待機させる ----
+  if (action === 'dialer-start') {
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    const auth = await verifyAdmin(admin, token)
+    if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
+    if (getProviderMode() !== 'twilio') return res.status(400).json({ ok: false, error: 'AI_CALL_PROVIDER=mock のため実発信しません。Vercelで AI_CALL_PROVIDER=twilio に設定してください。' })
+    if (!isTwilioConfigured()) return res.status(400).json({ ok: false, error: `Twilio環境変数が未設定です: ${missingTwilioEnv().join(', ')}（Vercelに設定して再デプロイ）` })
+
+    const b = req.body || {}
+    const repPhone = String(b.repPhone || '').trim()
+    const caseIds: string[] = Array.isArray(b.caseIds) ? b.caseIds.map((x: any) => String(x)).filter(Boolean) : []
+    const testMode = b.testMode !== false
+    const testNumber = String(b.testNumber || '').trim()
+    const amdMode = ['sync', 'async', 'off'].includes(String(b.amdMode)) ? String(b.amdMode) : 'sync'
+    if (!repPhone) return res.status(400).json({ ok: false, error: 'あなたのケータイ番号を入力してください。' })
+    if (!caseIds.length) return res.status(400).json({ ok: false, error: '発信するリストが空です。' })
+    if (testMode && !testNumber) return res.status(400).json({ ok: false, error: 'テストモードONです。確認用の番号（自分の番号）を入力してください。' })
+    // 待機に使う電話と確認用の発信先が同じ番号だと、2本目が話中になりテストにならない
+    const sameNum = (a: string, b: string) => a.replace(/[^\d]/g, '').slice(-10) === b.replace(/[^\d]/g, '').slice(-10)
+    if (testMode && sameNum(repPhone, testNumber)) return res.status(400).json({ ok: false, error: '確認用の番号は、待機に使う電話とは別の番号にしてください（同じ番号だと2本目が話中になります）。' })
+    const pf = preflight(repPhone)
+    if (!pf.ok) return res.status(400).json({ ok: false, error: 'あなたの番号の発信前チェックに失敗しました', errors: pf.errors, debug: pf.debug })
+
+    // 同じ人の進行中セッションは止める（自分のケータイが二重に鳴るのを防ぐ）
+    const { data: olds } = await admin.from('dialer_sessions').select('id,rep_call_sid,current_call_sid').eq('user_id', auth.user.id).neq('status', '停止')
+    for (const o of olds || []) {
+      if (o.current_call_sid) await hangupTwilioCall(o.current_call_sid).catch(() => {})
+      if (o.rep_call_sid) await hangupTwilioCall(o.rep_call_sid).catch(() => {})
+      await saveDialerSession(admin, o.id, { status: '停止', last_note: '新しいダイヤラーを開始したため終了しました' })
+    }
+
+    const conference = 'rst-dialer-' + Math.random().toString(36).slice(2, 10)
+    const { data: session, error: se } = await admin.from('dialer_sessions').insert({
+      user_id: auth.user.id, rep_name: String(b.repName || '').trim() || null, rep_phone: repPhone,
+      conference_name: conference, status: '接続中', amd_mode: amdMode, test_mode: testMode, test_number: testNumber || null,
+      auto_next: b.autoNext !== false, queue: caseIds, cursor: 0, stats: {},
+    }).select('*').single()
+    if (se || !session) return res.status(500).json({ ok: false, error: se?.message || 'セッション作成に失敗' })
+
+    const r = await initiateTwilioCall({
+      toRaw: repPhone,
+      twiml: buildConferenceTwiml(conference, { endOnExit: true, say: 'ダイヤラーに接続しました。このまま、お待ちください。' }),
+      statusCallbackUrl: dialerUrl(req, 'dialer-callback', session.id),
+      record: false, timeout: 40,
+    })
+    if (!r.ok) {
+      await saveDialerSession(admin, session.id, { status: '停止', last_note: String(r.error || '').slice(0, 200) })
+      return res.status(502).json({ ok: false, error: r.error, code: r.code, guidance: r.guidance, debug: r.debug })
+    }
+    await saveDialerSession(admin, session.id, { rep_call_sid: r.sid })
+    return res.status(200).json({ ok: true, sessionId: session.id, sid: r.sid, total: caseIds.length, testMode, amdMode })
+  }
+
+  // ---- 状態取得・次へ・スキップ・結果の消化・停止（要管理者）----
+  if (action.startsWith('dialer-')) {
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    const auth = await verifyAdmin(admin, token)
+    if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
+    const b = req.body || {}
+
+    if (action === 'dialer-state') {
+      // sessionId 未指定なら、その人の最後のセッションを返す（画面を開き直しても続けられる）
+      let session = b.sessionId ? await loadDialerSession(admin, String(b.sessionId)) : null
+      if (!session) {
+        const { data } = await admin.from('dialer_sessions').select('*').eq('user_id', auth.user.id).order('created_date', { ascending: false }).limit(1)
+        session = data?.[0] || null
+      }
+      if (!session) return res.status(200).json({ ok: true, session: null })
+      if (session.user_id && session.user_id !== auth.user.id) return res.status(403).json({ ok: false, error: '他の人のダイヤラーです' })
+      return res.status(200).json({ ok: true, session })
+    }
+
+    const session = await loadDialerSession(admin, String(b.sessionId || ''))
+    if (!session) return res.status(404).json({ ok: false, error: 'ダイヤラーが見つかりません' })
+    if (session.user_id && session.user_id !== auth.user.id) return res.status(403).json({ ok: false, error: '他の人のダイヤラーです' })
+
+    // 画面がコール履歴に書き終えた自動結果を待ち行列から外す
+    if (action === 'dialer-ack') {
+      const ids: string[] = Array.isArray(b.ids) ? b.ids.map((x: any) => String(x)) : []
+      const rest = (Array.isArray(session.pending_outcomes) ? session.pending_outcomes : []).filter((o: any) => !ids.includes(String(o.id)))
+      await saveDialerSession(admin, session.id, { pending_outcomes: rest })
+      return res.status(200).json({ ok: true, remaining: rest.length })
+    }
+
+    if (action === 'dialer-next' || action === 'dialer-skip') {
+      if (session.status === '停止') return res.status(400).json({ ok: false, error: 'ダイヤラーは終了しています。もう一度開始してください。' })
+      if (!session.rep_call_sid) return res.status(400).json({ ok: false, error: 'あなたの電話が繋がっていません。' })
+      if (session.status === '通話中') return res.status(409).json({ ok: false, error: '通話中です。通話を終えてから次へ進んでください。' })
+      // 呼び出し中の相手がいれば止めてから次へ（スキップ）
+      if (session.current_call_sid) {
+        await hangupTwilioCall(session.current_call_sid).catch(() => {})
+        await saveDialerSession(admin, session.id, { current_call_sid: null })
+      }
+      const fresh = (await loadDialerSession(admin, session.id)) || session
+      const r = await dialerDialNext(admin, req, fresh)
+      return res.status(r.ok ? 200 : 400).json(r)
+    }
+
+    if (action === 'dialer-stop') {
+      if (session.current_call_sid) await hangupTwilioCall(session.current_call_sid).catch(() => {})
+      if (session.rep_call_sid) await hangupTwilioCall(session.rep_call_sid).catch(() => {})
+      await saveDialerSession(admin, session.id, { status: '停止', current_call_sid: null, last_note: '停止しました' })
+      return res.status(200).json({ ok: true })
+    }
+
+    if (action === 'dialer-config') {
+      // 進行中に「自動で次へ」「留守電判定」を切り替える／リストを足す
+      const patch: any = {}
+      if (typeof b.autoNext === 'boolean') patch.auto_next = b.autoNext
+      if (['sync', 'async', 'off'].includes(String(b.amdMode))) patch.amd_mode = String(b.amdMode)
+      if (Array.isArray(b.caseIds)) patch.queue = [...(Array.isArray(session.queue) ? session.queue : []), ...b.caseIds.map((x: any) => String(x))]
+      await saveDialerSession(admin, session.id, patch)
+      return res.status(200).json({ ok: true })
+    }
   }
 
   return res.status(400).json({ ok: false, error: '不明なaction' })

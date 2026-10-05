@@ -1,13 +1,14 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { Smartphone, Copy, Upload, Plus, Sparkles, FolderOpen } from 'lucide-react'
+import { Smartphone, Copy, Upload, Plus, Sparkles, FolderOpen, PhoneCall } from 'lucide-react'
 import TopBar from '@/components/layout/TopBar'
 import CaseList from '@/components/dashboard/CaseList'
 import CaseDetail from '@/components/dashboard/CaseDetail'
 import CallLogPanel from '@/components/dashboard/CallLogPanel'
 import RecallList from '@/components/dashboard/RecallList'
 import MobileCallPanel from '@/components/dashboard/MobileCallPanel'
+import PowerDialerPanel from '@/components/dashboard/PowerDialerPanel'
 import KpiPaceChips from '@/components/dashboard/KpiPaceChips'
 import AutoSearchRunner from '@/components/dashboard/AutoSearchRunner'
 import CaseFormModal from '@/components/modals/CaseFormModal'
@@ -105,7 +106,7 @@ const SAMPLE_CASES: Partial<Case>[] = [
 export default function Dashboard() {
   const toast = useToast()
   const confirm = useConfirm()
-  const { user, displayName, canWrite } = useAuth()
+  const { user, displayName, canWrite, isAdmin } = useAuth()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
@@ -455,6 +456,11 @@ export default function Dashboard() {
 
   const filterActive = !!criteria || quickFilter !== 'all' || !!searchText.trim()
 
+  // 自動ダイヤラー（繋がるまで自動・話すのは人）。
+  // logSavedCount はコール履歴の保存回数。結果待ちの間に増えたら、ダイヤラーが次の1件へ進む合図にする。
+  const [dialerOpen, setDialerOpen] = useState(false)
+  const [logSavedCount, setLogSavedCount] = useState(0)
+
   // ---- 案件選択 → CallSession upsert（スマホ連動） ----
   function selectCase(id: string) {
     setSelectedCaseId(id)
@@ -474,7 +480,13 @@ export default function Dashboard() {
     }
   }
 
-  // 「不在」をコール履歴として記録（ステータスは変更しない＝コール結果として扱う）
+  /** ダイヤラーが「この案件の結果を登録」と言ってきたとき、その案件を選んでコール登録を開く */
+  function openCallLogFor(caseId: string) {
+    selectCase(caseId)
+    setEditingCallLog(null)
+    setModal('newCallLog')
+  }
+
   /** 新規コール登録を開く（コール禁止の案件は止める） */
   function openNewCallLog() {
     if (isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
@@ -482,6 +494,7 @@ export default function Dashboard() {
     setModal('newCallLog')
   }
 
+  // 「不在」をコール履歴として記録（ステータスは変更しない＝コール結果として扱う）
   async function handleAbsent() {
     if (isCallBlocked(selectedCase?.status)) { toast.error(CALL_BLOCKED_MESSAGE); return }
     if (!selectedCase || !canWrite) return
@@ -792,6 +805,11 @@ export default function Dashboard() {
         >
           <Copy className="h-3.5 w-3.5" />
         </button>
+        {isAdmin && (
+          <Button size="sm" variant={dialerOpen ? 'default' : 'outline'} className="ml-2 h-6 px-2 text-2xs" onClick={() => setDialerOpen((o) => !o)} disabled={!canWrite}>
+            <PhoneCall className="h-3.5 w-3.5" />自動ダイヤラー
+          </Button>
+        )}
         {qrUrl && (
           <div className="ml-2 flex items-center gap-1">
             <img src={qrUrl} alt="QRコード" className="h-9 w-9 rounded border bg-white" />
@@ -915,6 +933,17 @@ export default function Dashboard() {
         onAdded={(n) => { setAutoBadge((b) => b + n); refreshAll() }}
       />
 
+      {/* 自動ダイヤラー（絞り込み後の一覧をそのまま掛ける） */}
+      <PowerDialerPanel
+        open={dialerOpen}
+        onClose={() => setDialerOpen(false)}
+        queue={filteredCases}
+        onSelectCase={selectCase}
+        onRequestLog={openCallLogFor}
+        logSavedSignal={logSavedCount}
+        canWrite={canWrite}
+      />
+
       {/* モーダル群 */}
       <CaseFormModal
         open={modal === 'newCase' || modal === 'editCase'}
@@ -936,7 +965,7 @@ export default function Dashboard() {
         onClose={() => setModal(null)}
         selectedCase={selectedCase}
         editingLog={modal === 'editCallLog' ? editingCallLog : null}
-        onSaved={refreshAll}
+        onSaved={() => { setLogSavedCount((n) => n + 1); refreshAll() }}
         onRepNameChange={handleRepNameChange}
       />
       <RecallFormModal

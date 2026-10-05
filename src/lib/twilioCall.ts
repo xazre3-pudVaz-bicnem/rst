@@ -87,6 +87,44 @@ export function buildTwiml(message: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Say language="ja-JP" voice="Polly.Mizuki">${safe}</Say><Pause length="1"/><Say language="ja-JP" voice="Polly.Mizuki">以上でテストを終了します。</Say></Response>`
 }
 
+/**
+ * カンファレンス参加のTwiML。パワーダイヤラーの中核。
+ *   担当者側: startConferenceOnEnter=true / endConferenceOnExit=true
+ *             → 担当者が入った時点で開始し、担当者が切ればダイヤラーごと終了する。
+ *   相手側  : endConferenceOnExit=false
+ *             → 相手が切っても担当者はカンファレンスに残り、すぐ次の発信を受けられる。
+ *   waitUrl="" で待機中は無音（保留音を流さない。裏で発信していることを相手に聞かせない）。
+ */
+export function buildConferenceTwiml(conferenceName: string, opts: { endOnExit: boolean; say?: string } = { endOnExit: false }): string {
+  const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const say = opts.say ? `<Say language="ja-JP" voice="Polly.Mizuki">${esc(opts.say)}</Say>` : ''
+  return `<?xml version="1.0" encoding="UTF-8"?><Response>${say}<Dial><Conference beep="false" startConferenceOnEnter="true" endConferenceOnExit="${opts.endOnExit ? 'true' : 'false'}" waitUrl="">${esc(conferenceName)}</Conference></Dial></Response>`
+}
+
+/** 何もせず切るTwiML（留守電と判定した相手を切る）。 */
+export function buildHangupTwiml(): string {
+  return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+}
+
+/** 進行中の通話を切る（停止ボタン・留守電の非同期判定後に使う）。失敗は握りつぶす。 */
+export async function hangupTwilioCall(sid: string): Promise<boolean> {
+  if (!sid) return false
+  try {
+    const mod: any = await import('twilio')
+    const twilioFn: any = mod?.default || mod
+    const client: any = twilioFn(trim(process.env.TWILIO_ACCOUNT_SID), trim(process.env.TWILIO_AUTH_TOKEN))
+    await client.calls(sid).update({ status: 'completed' })
+    return true
+  } catch { return false }
+}
+
+/** Twilioの留守電判定(AnsweredBy)が「人」かどうか。unknown(判定不能)は人として扱い、取りこぼしを防ぐ。 */
+export function isHumanAnswer(answeredBy: string): boolean {
+  const a = String(answeredBy || '').toLowerCase()
+  if (!a) return true
+  return a === 'human' || a === 'unknown'
+}
+
 export interface TwilioDebug {
   accountSidMasked: string; from: string; to: string; provider: string; endpoint: string; fromEnvUsed: string
   sidPrefixOk: boolean; sidLenOk: boolean; sidLen: number; tokenPresent: boolean; tokenLen: number; fromE164: boolean; toE164: boolean
@@ -146,8 +184,22 @@ export function twilioErrorGuidance(code?: number | string, status?: number): st
   return ''
 }
 
-/** Twilio公式SDKで発信。twiml(読み上げ)・statusCallback(状態通知)・recordingCallback(録音完了通知)。録音は既定ON。 */
-export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; statusCallbackUrl: string; recordingCallbackUrl?: string; record?: boolean }): Promise<InitiateResult> {
+/**
+ * Twilio公式SDKで発信。twiml(読み上げ)・statusCallback(状態通知)・recordingCallback(録音完了通知)。録音は既定ON。
+ * パワーダイヤラー用に次も指定できる:
+ *   twimlUrl           … 相手が出た時にTwilioが取りに来るTwiMLのURL（inline twimlの代わり）。
+ *                        留守電判定(sync)と併用すると、判定結果 AnsweredBy が付いて来るので
+ *                        「人なら担当者へ繋ぐ / 留守電なら切る」をこのURLの応答で分岐できる。
+ *   machineDetection   … 'Enable'=判定の確定後にTwiMLを取得（誤接続なし・2〜4秒の無音）
+ *                        'DetectMessageEnd'=留守電の応答メッセージが終わるまで待つ（メッセージ録音向け）
+ *   asyncAmd           … true で判定を待たずに即TwiMLを取得し、判定結果は asyncAmdUrl に後から届く
+ *   timeout            … 呼び出し秒数（無応答で no-answer にする。既定60秒は長すぎるため短くする）
+ */
+export async function initiateTwilioCall(opts: {
+  toRaw: string; twiml?: string; twimlUrl?: string; statusCallbackUrl: string; recordingCallbackUrl?: string; record?: boolean
+  machineDetection?: 'Enable' | 'DetectMessageEnd'; machineDetectionTimeout?: number; asyncAmd?: boolean; asyncAmdUrl?: string
+  timeout?: number; statusCallbackEvent?: string[]
+}): Promise<InitiateResult> {
   const pf = preflight(opts.toRaw)
   if (!pf.ok) return { ok: false, error: '発信前チェックに失敗: ' + pf.errors.join(' / '), debug: pf.debug }
   try {
@@ -157,10 +209,22 @@ export async function initiateTwilioCall(opts: { toRaw: string; twiml: string; s
     if (typeof twilioFn !== 'function') return { ok: false, error: 'Twilio SDKの読み込みに失敗しました（twilioパッケージ未インストール/バンドル不可の可能性）', debug: pf.debug }
     const client: any = twilioFn(pf.sid, pf.token)
     const params: any = {
-      to: pf.to, from: pf.from, twiml: opts.twiml,
+      to: pf.to, from: pf.from,
       statusCallback: opts.statusCallbackUrl, statusCallbackMethod: 'POST',
-      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      statusCallbackEvent: opts.statusCallbackEvent || ['initiated', 'ringing', 'answered', 'completed'],
       record: opts.record !== false, // 既定ON（fixed用の録音）。realtime(<Connect><Stream>)では干渉回避のためOFFにできる
+    }
+    // TwiMLはURL取得（応答内容を出た相手で分岐したい場合）か、インライン文字列のどちらか。
+    if (opts.twimlUrl) params.url = opts.twimlUrl
+    else params.twiml = opts.twiml || ''
+    if (opts.timeout) params.timeout = opts.timeout
+    if (opts.machineDetection) {
+      params.machineDetection = opts.machineDetection
+      params.machineDetectionTimeout = opts.machineDetectionTimeout ?? 15
+      if (opts.asyncAmd) {
+        params.asyncAmd = 'true'
+        if (opts.asyncAmdUrl) { params.asyncAmdStatusCallback = opts.asyncAmdUrl; params.asyncAmdStatusCallbackMethod = 'POST' }
+      }
     }
     if (opts.recordingCallbackUrl) {
       params.recordingStatusCallback = opts.recordingCallbackUrl
