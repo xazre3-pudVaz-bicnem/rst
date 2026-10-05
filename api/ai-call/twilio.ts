@@ -9,7 +9,7 @@
 // まずは管理者が指定したテスト番号への1件発信のみ（営業リスト一括発信は未実装）。
 // ============================================================
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
-import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml, buildConferenceTwiml, buildHangupTwiml, hangupTwilioCall, isHumanAnswer } from '../../src/lib/twilioCall.js'
+import { getProviderMode, isTwilioConfigured, missingTwilioEnv, initiateTwilioCall, buildTwiml, mapTwilioStatus, preflight, transcribeRecording, summarizeTranscript, isTranscriptionConfigured, isSummaryConfigured, missingVoiceAiEnv, transcriptionProvider, summaryProvider, getCallMode, isRealtimeConfigured, isRealtimeAvailable, realtimeServerUrlMasked, buildStreamTwiml, buildConferenceTwiml, buildHangupTwiml, hangupTwilioCall, isHumanAnswer, createVoiceToken, browserIdentity, isBrowserVoiceConfigured, missingBrowserVoiceEnv } from '../../src/lib/twilioCall.js'
 import { createCalendarEvent, getAvailableSlots, isCalendarConfigured } from '../../src/lib/googleCalendar.js'
 import { isCallBlocked, CALL_BLOCKED_MESSAGE } from '../../src/lib/constants.js'
 
@@ -205,6 +205,8 @@ export default async function handler(req: any, res: any) {
       // リアルタイム音声AI会話モード
       callMode: getCallMode(), realtimeEnabled: isRealtimeConfigured(),
       realtimeAvailable: isRealtimeAvailable(), realtimeServerUrlMasked: realtimeServerUrlMasked(),
+      // ブラウザ通話（ヘッドセット待機）。ダイヤラーの待機を携帯からPCに移すと通話料が約1/25になる
+      browserVoice: { configured: isBrowserVoiceConfigured(), missingEnv: missingBrowserVoiceEnv() },
       japanesePromptEnabled: true, initialGreeting: 'Japanese',
       realtimeMissingEnv: [
         getCallMode() === 'realtime' ? null : 'AI_CALL_MODE=realtime',
@@ -578,19 +580,24 @@ export default async function handler(req: any, res: any) {
     if (!isTwilioConfigured()) return res.status(400).json({ ok: false, error: `Twilio環境変数が未設定です: ${missingTwilioEnv().join(', ')}（Vercelに設定して再デプロイ）` })
 
     const b = req.body || {}
+    // 待機先: browser=パソコンのヘッドセット（安い） / phone=担当者のケータイ
+    const repMode = String(b.repMode) === 'browser' ? 'browser' : 'phone'
     const repPhone = String(b.repPhone || '').trim()
     const caseIds: string[] = Array.isArray(b.caseIds) ? b.caseIds.map((x: any) => String(x)).filter(Boolean) : []
     const testMode = b.testMode !== false
     const testNumber = String(b.testNumber || '').trim()
     const amdMode = ['sync', 'async', 'off'].includes(String(b.amdMode)) ? String(b.amdMode) : 'sync'
-    if (!repPhone) return res.status(400).json({ ok: false, error: 'あなたのケータイ番号を入力してください。' })
+    if (repMode === 'phone' && !repPhone) return res.status(400).json({ ok: false, error: 'あなたのケータイ番号を入力してください。' })
+    if (repMode === 'browser' && !isBrowserVoiceConfigured()) return res.status(400).json({ ok: false, error: `ブラウザ通話の環境変数が未設定です: ${missingBrowserVoiceEnv().join(', ')}（Vercelに設定して再デプロイ）` })
     if (!caseIds.length) return res.status(400).json({ ok: false, error: '発信するリストが空です。' })
     if (testMode && !testNumber) return res.status(400).json({ ok: false, error: 'テストモードONです。確認用の番号（自分の番号）を入力してください。' })
-    // 待機に使う電話と確認用の発信先が同じ番号だと、2本目が話中になりテストにならない
+    // 待機に使う電話と確認用の発信先が同じ番号だと、2本目が話中になりテストにならない（ブラウザ待機なら起きない）
     const sameNum = (a: string, b: string) => a.replace(/[^\d]/g, '').slice(-10) === b.replace(/[^\d]/g, '').slice(-10)
-    if (testMode && sameNum(repPhone, testNumber)) return res.status(400).json({ ok: false, error: '確認用の番号は、待機に使う電話とは別の番号にしてください（同じ番号だと2本目が話中になります）。' })
-    const pf = preflight(repPhone)
-    if (!pf.ok) return res.status(400).json({ ok: false, error: 'あなたの番号の発信前チェックに失敗しました', errors: pf.errors, debug: pf.debug })
+    if (repMode === 'phone' && testMode && sameNum(repPhone, testNumber)) return res.status(400).json({ ok: false, error: '確認用の番号は、待機に使う電話とは別の番号にしてください（同じ番号だと2本目が話中になります）。' })
+    // ブラウザ待機のときは client:〜 宛。電話番号ではないので番号形式の検査は通さない
+    const repTarget = repMode === 'browser' ? 'client:' + browserIdentity(auth.user.id) : repPhone
+    const pf = preflight(repTarget)
+    if (!pf.ok) return res.status(400).json({ ok: false, error: repMode === 'browser' ? 'ブラウザ通話の発信前チェックに失敗しました' : 'あなたの番号の発信前チェックに失敗しました', errors: pf.errors, debug: pf.debug })
 
     // 同じ人の進行中セッションは止める（自分のケータイが二重に鳴るのを防ぐ）
     const { data: olds } = await admin.from('dialer_sessions').select('id,rep_call_sid,current_call_sid').eq('user_id', auth.user.id).neq('status', '停止')
@@ -602,15 +609,16 @@ export default async function handler(req: any, res: any) {
 
     const conference = 'rst-dialer-' + Math.random().toString(36).slice(2, 10)
     const { data: session, error: se } = await admin.from('dialer_sessions').insert({
-      user_id: auth.user.id, rep_name: String(b.repName || '').trim() || null, rep_phone: repPhone,
+      user_id: auth.user.id, rep_name: String(b.repName || '').trim() || null, rep_phone: repPhone || null, rep_mode: repMode,
       conference_name: conference, status: '接続中', amd_mode: amdMode, test_mode: testMode, test_number: testNumber || null,
       auto_next: b.autoNext !== false, queue: caseIds, cursor: 0, stats: {},
     }).select('*').single()
     if (se || !session) return res.status(500).json({ ok: false, error: se?.message || 'セッション作成に失敗' })
 
     const r = await initiateTwilioCall({
-      toRaw: repPhone,
-      twiml: buildConferenceTwiml(conference, { endOnExit: true, say: 'ダイヤラーに接続しました。このまま、お待ちください。' }),
+      toRaw: repTarget,
+      // ブラウザ待機は画面が自動で出るので読み上げ不要（無言で合流させる）
+      twiml: buildConferenceTwiml(conference, { endOnExit: true, say: repMode === 'browser' ? '' : 'ダイヤラーに接続しました。このまま、お待ちください。' }),
       statusCallbackUrl: dialerUrl(req, 'dialer-callback', session.id),
       record: false, timeout: 40,
     })
@@ -619,7 +627,7 @@ export default async function handler(req: any, res: any) {
       return res.status(502).json({ ok: false, error: r.error, code: r.code, guidance: r.guidance, debug: r.debug })
     }
     await saveDialerSession(admin, session.id, { rep_call_sid: r.sid })
-    return res.status(200).json({ ok: true, sessionId: session.id, sid: r.sid, total: caseIds.length, testMode, amdMode })
+    return res.status(200).json({ ok: true, sessionId: session.id, sid: r.sid, total: caseIds.length, testMode, amdMode, repMode })
   }
 
   // ---- 状態取得・次へ・スキップ・結果の消化・停止（要管理者）----
@@ -628,6 +636,13 @@ export default async function handler(req: any, res: any) {
     const auth = await verifyAdmin(admin, token)
     if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
     const b = req.body || {}
+
+    // ブラウザ（ヘッドセット）で待機するためのアクセストークン。着信のみ許可。
+    if (action === 'dialer-token') {
+      const t = await createVoiceToken(auth.user.id, 3600)
+      if (!t.ok) return res.status(400).json({ ok: false, error: t.error })
+      return res.status(200).json({ ok: true, token: t.token, identity: t.identity })
+    }
 
     if (action === 'dialer-state') {
       // sessionId 未指定なら、その人の最後のセッションを返す（画面を開き直しても続けられる）

@@ -7,12 +7,12 @@
 // ============================================================
 import { useCallback, useEffect, useRef, useState } from 'react'
 import moment from 'moment'
-import { Phone, PhoneOff, SkipForward, X, Loader2, Voicemail, ChevronDown, ChevronUp } from 'lucide-react'
+import { Phone, PhoneOff, SkipForward, X, Loader2, Voicemail, ChevronDown, ChevronUp, Headphones, Mic, MicOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DialerApi, type DialerOutcome, type DialerSession } from '@/lib/aiCall'
+import { DialerApi, TwilioApi, type DialerOutcome, type DialerSession } from '@/lib/aiCall'
 import { CallLogApi } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { useAuth } from '@/context/AuthContext'
@@ -23,6 +23,7 @@ const LS_REP_PHONE = 'rst_dialer_rep_phone'
 const LS_TEST_NUMBER = 'rst_dialer_test_number'
 const LS_TEST_MODE = 'rst_dialer_test_mode'
 const LS_AMD = 'rst_dialer_amd'
+const LS_REP_MODE = 'rst_dialer_rep_mode'
 /** 1回で仕込むリストの上限。これ以上は絞り込みを変えて掛け直す（キューは1行に持つため） */
 const QUEUE_MAX = 1000
 
@@ -69,6 +70,14 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   const [startError, setStartError] = useState<{ msg: string; guide?: string } | null>(null)
   const [history, setHistory] = useState<DialerOutcome[]>([])
 
+  // 待機先。browser=パソコンのヘッドセット（通話料が携帯の約1/25） / phone=自分のケータイを呼ぶ
+  const [repMode, setRepMode] = useState<'browser' | 'phone'>(() => (localStorage.getItem(LS_REP_MODE) as any) || 'browser')
+  const [browserReady, setBrowserReady] = useState(false)   // Voice SDKが着信待ちになっているか
+  const [muted, setMuted] = useState(false)
+  const [browserVoice, setBrowserVoice] = useState<{ configured: boolean; missingEnv: string[] } | null>(null)
+  const deviceRef = useRef<any>(null)
+  const callRef = useRef<any>(null)
+
   const [repPhone, setRepPhone] = useState(() => localStorage.getItem(LS_REP_PHONE) || '')
   const [testMode, setTestMode] = useState(() => localStorage.getItem(LS_TEST_MODE) !== '0')
   const [testNumber, setTestNumber] = useState(() => localStorage.getItem(LS_TEST_NUMBER) || '')
@@ -78,6 +87,64 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   const drainingRef = useRef(false)
   const lastCaseRef = useRef<string | null>(null)
   const logSignalRef = useRef(logSavedSignal)
+
+  // サーバー側でブラウザ通話の環境変数が揃っているか（揃っていなければケータイ待機だけ出す）
+  useEffect(() => {
+    if (!open || browserVoice) return
+    TwilioApi.status().then((st: any) => {
+      const bv = st?.browserVoice
+      if (bv) {
+        setBrowserVoice(bv)
+        if (!bv.configured) setRepMode('phone')
+      }
+    }).catch(() => {})
+  }, [open])
+
+  /** ブラウザ（ヘッドセット）を着信待ちにする。サーバーが client:〜 宛に掛けてくるので先に用意する。 */
+  const prepareBrowser = useCallback(async (): Promise<string | null> => {
+    const t = await DialerApi.token()
+    if (!t.ok || !t.token) return t.error || 'ブラウザ通話のトークンを取得できませんでした'
+    try {
+      // マイクの許可は先に取っておく（着信時に初めて聞かれると、その間に相手を待たせてしまう）
+      await navigator.mediaDevices.getUserMedia({ audio: true }).then((st) => st.getTracks().forEach((x) => x.stop()))
+    } catch {
+      return 'マイクの使用が許可されていません。ブラウザのアドレスバーのマイク設定を許可にしてください。'
+    }
+    try {
+      const { Device } = await import('@twilio/voice-sdk')
+      deviceRef.current?.destroy?.()
+      const dev = new Device(t.token, { codecPreferences: ['opus', 'pcmu'] as any, logLevel: 'error' })
+      dev.on('incoming', (call: any) => {
+        callRef.current = call
+        call.on('disconnect', () => { callRef.current = null; setMuted(false) })
+        call.accept()   // ダイヤラーからの着信だけなので自動で出る
+      })
+      dev.on('tokenWillExpire', async () => {
+        const nt = await DialerApi.token()
+        if (nt.ok && nt.token) dev.updateToken(nt.token)
+      })
+      dev.on('error', (e: any) => console.warn('[Dialer] Voice SDK', e?.message || e))
+      dev.on('unregistered', () => setBrowserReady(false))
+      await dev.register()
+      deviceRef.current = dev
+      setBrowserReady(true)
+      return null
+    } catch (e: any) {
+      return e?.message ? String(e.message) : 'ブラウザ通話を準備できませんでした'
+    }
+  }, [])
+
+  const teardownBrowser = useCallback(() => {
+    try { callRef.current?.disconnect?.() } catch { /* 既に切れている */ }
+    try { deviceRef.current?.destroy?.() } catch { /* 既に破棄済み */ }
+    callRef.current = null
+    deviceRef.current = null
+    setBrowserReady(false)
+    setMuted(false)
+  }, [])
+
+  // 画面を離れるときは必ず回線を片付ける（通話が残ると課金され続ける）
+  useEffect(() => () => teardownBrowser(), [teardownBrowser])
 
   // ---- 自動で付いた結果をコール履歴に書き、書けたものだけサーバー側の待ち行列から外す ----
   const drain = useCallback(async (s: DialerSession) => {
@@ -113,8 +180,9 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
     const r = await DialerApi.state(sessionId)
     if (!r.ok || !r.session) { if (!sessionId) setSession(null); return }
     setSession(r.session)
+    if (r.session.status === '停止' && deviceRef.current) teardownBrowser()
     if (r.session.pending_outcomes?.length) drain(r.session).catch(() => {})
-  }, [drain])
+  }, [drain, teardownBrowser])
 
   useEffect(() => { if (open) poll(session?.id ?? null).catch(() => {}) }, [open])
 
@@ -141,11 +209,11 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   async function handleStart() {
     const ids = queue.slice(0, QUEUE_MAX).map((c) => c.id)
     if (!ids.length) { toast.error('発信するリストが空です。絞り込みを確認してください。'); return }
-    if (!repPhone.trim()) { toast.error('あなたのケータイ番号を入力してください。'); return }
+    if (repMode === 'phone' && !repPhone.trim()) { toast.error('あなたのケータイ番号を入力してください。'); return }
     if (testMode && !testNumber.trim()) { toast.error('テストモードONです。確認用の番号を入力してください。'); return }
     // 待機に使う電話と確認用の発信先が同じだと、2本目が話中になってテストにならない
     const last10 = (v: string) => v.replace(/[^\d]/g, '').slice(-10)
-    if (testMode && last10(repPhone) === last10(testNumber)) {
+    if (repMode === 'phone' && testMode && last10(repPhone) === last10(testNumber)) {
       toast.error('確認用の番号は、待機に使う電話とは別の番号にしてください（同じ番号だと2本目が話中になります）。')
       return
     }
@@ -153,22 +221,32 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
     localStorage.setItem(LS_TEST_NUMBER, testNumber.trim())
     localStorage.setItem(LS_TEST_MODE, testMode ? '1' : '0')
     localStorage.setItem(LS_AMD, amdMode)
+    localStorage.setItem(LS_REP_MODE, repMode)
     setBusy(true)
     setStartError(null)
     try {
+      // ブラウザ待機は、着信待ちになってから発信させる（未登録だと「繋がらない」で終わる）
+      if (repMode === 'browser') {
+        const err = await prepareBrowser()
+        if (err) { setStartError({ msg: err }); toast.error(err); return }
+      }
       const r = await DialerApi.start({
-        repPhone: repPhone.trim(), caseIds: ids, testMode, testNumber: testNumber.trim(),
+        repMode, repPhone: repPhone.trim(), caseIds: ids, testMode, testNumber: testNumber.trim(),
         amdMode, autoNext: true, repName: displayName || '',
       })
       if (!r.ok) {
+        teardownBrowser()
         setStartError({ msg: r.error || '開始できませんでした', guide: r.guidance || (Array.isArray(r.errors) ? r.errors.join(' / ') : '') })
         toast.error(r.error || '開始できませんでした')
         return
       }
       setHistory([])
-      toast.success(`あなたのケータイに発信しました。出たらそのままお待ちください（${ids.length}件）`)
+      toast.success(repMode === 'browser'
+        ? `ヘッドセットを繋ぎました。このままお待ちください（${ids.length}件）`
+        : `あなたのケータイに発信しました。出たらそのままお待ちください（${ids.length}件）`)
       await poll(r.sessionId)
     } catch (e) {
+      teardownBrowser()
       setStartError({ msg: jpError(e) })
       toast.error(jpError(e))
     } finally { setBusy(false) }
@@ -200,6 +278,7 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
     setBusy(true)
     try {
       await DialerApi.stop(session.id)
+      teardownBrowser()
       await poll(session.id)
       toast.info('ダイヤラーを終了しました')
     } finally { setBusy(false) }
@@ -234,15 +313,39 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
             // ---- 開始前の設定 ----
             <>
               <div className="rounded-lg bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
-                まず<b className="text-foreground">あなたのケータイ</b>が鳴ります。出たらそのまま待機してください。
-                その裏でリストへ自動発信し、<b className="text-foreground">人が出た瞬間だけ</b>あなたに繋がります。
-                留守電・不在・話中は自動で「不在」を記録して次へ進みます。
+                {repMode === 'browser'
+                  ? <>このパソコンの<b className="text-foreground">ヘッドセット</b>が受話器になります。その裏でリストへ自動発信し、<b className="text-foreground">人が出た瞬間だけ</b>あなたに繋がります。</>
+                  : <>まず<b className="text-foreground">あなたのケータイ</b>が鳴ります。出たらそのまま待機してください。その裏でリストへ自動発信し、<b className="text-foreground">人が出た瞬間だけ</b>あなたに繋がります。</>}
+                {' '}留守電・不在・話中は自動で「不在」を記録して次へ進みます。
               </div>
 
               <div className="space-y-1">
-                <Label>あなたのケータイ番号</Label>
-                <Input value={repPhone} onChange={(e) => setRepPhone(e.target.value)} placeholder="090-1234-5678" inputMode="tel" />
+                <Label>あなたの待機先</Label>
+                <Select value={repMode} onValueChange={(v) => setRepMode(v as any)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="browser" disabled={browserVoice ? !browserVoice.configured : false}>
+                      パソコン＋ヘッドセット（通話料が安い・推奨）
+                    </SelectItem>
+                    <SelectItem value="phone">自分のケータイを呼ぶ（待機中もずっと通話料）</SelectItem>
+                  </SelectContent>
+                </Select>
+                {repMode === 'browser' && browserVoice && !browserVoice.configured && (
+                  <div className="rounded border border-amber-300 bg-amber-50 p-1.5 text-2xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+                    ブラウザ通話が未設定です。Vercelに {browserVoice.missingEnv.join('、')} を設定して再デプロイしてください。
+                  </div>
+                )}
+                {repMode === 'browser' && (
+                  <div className="text-2xs text-muted-foreground">ヘッドセット（またはPCのマイクとスピーカー）を繋いでから開始してください。マイクの許可を聞かれたら「許可」を押します。</div>
+                )}
               </div>
+
+              {repMode === 'phone' && (
+                <div className="space-y-1">
+                  <Label>あなたのケータイ番号</Label>
+                  <Input value={repPhone} onChange={(e) => setRepPhone(e.target.value)} placeholder="090-1234-5678" inputMode="tel" />
+                </div>
+              )}
 
               <div className="space-y-1">
                 <Label>留守電の判定</Label>
@@ -261,7 +364,7 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
                 <span>
                   <b>テストモード</b>（お店には鳴らさず、下の確認用番号だけに発信します）
                   <Input className="mt-1" value={testNumber} onChange={(e) => setTestNumber(e.target.value)} placeholder="確認用の番号（待機用とは別の電話）" inputMode="tel" disabled={!testMode} />
-                  <span className="text-muted-foreground">※上の待機用とは別の電話にしてください（同じ番号だと話中になります）</span>
+                  {repMode === 'phone' && <span className="text-muted-foreground">※上の待機用とは別の電話にしてください（同じ番号だと話中になります）</span>}
                 </span>
               </label>
 
@@ -272,8 +375,8 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
               </div>
 
               <Button className="w-full" size="lg" onClick={handleStart} disabled={busy || !canWrite || !queue.length}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
-                自分のケータイを呼んで開始
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : repMode === 'browser' ? <Headphones className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
+                {repMode === 'browser' ? 'ヘッドセットで開始' : '自分のケータイを呼んで開始'}
               </Button>
               {startError && (
                 <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-2xs">
@@ -303,7 +406,10 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
               {/* いまの相手 */}
               <div className={`rounded-lg border p-2 ${session!.status === '通話中' ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-500/10' : session!.status === '結果待ち' ? 'border-orange-400 bg-orange-50 dark:bg-orange-500/10' : 'bg-muted/40'}`}>
                 {session!.status === '接続中' ? (
-                  <div className="flex items-center gap-2 text-sm"><Loader2 className="h-4 w-4 animate-spin text-primary" />あなたのケータイを呼び出しています…</div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    {session!.rep_mode === 'browser' ? 'ヘッドセットに接続しています…' : 'あなたのケータイを呼び出しています…'}
+                  </div>
                 ) : session!.current_case_name || session!.current_case_id ? (
                   <>
                     <div className="truncate text-sm font-bold">{session!.current_case_name || '（案件名なし）'}</div>
@@ -325,6 +431,22 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
                 </Button>
               )}
 
+              {session!.rep_mode === 'browser' && (
+                <div className="flex items-center gap-2 rounded bg-muted/50 px-2 py-1 text-2xs">
+                  <Headphones className={`h-3.5 w-3.5 ${browserReady ? 'text-emerald-600' : 'text-muted-foreground'}`} />
+                  <span className={browserReady ? '' : 'text-destructive'}>{browserReady ? 'ヘッドセット接続中' : 'ヘッドセット未接続'}</span>
+                  <Button
+                    className="ml-auto h-6 px-2 text-2xs"
+                    variant={muted ? 'destructive' : 'outline'}
+                    size="sm"
+                    onClick={() => { const m = !muted; callRef.current?.mute?.(m); setMuted(m) }}
+                    disabled={!callRef.current}
+                  >
+                    {muted ? <MicOff className="h-3 w-3" /> : <Mic className="h-3 w-3" />}{muted ? 'ミュート中' : 'ミュート'}
+                  </Button>
+                </div>
+              )}
+
               <div className="flex gap-1.5">
                 <Button className="flex-1" variant="outline" size="sm" onClick={handleNext} disabled={busy || session!.status === '通話中'}>
                   <Phone className="h-3.5 w-3.5" />次へ
@@ -340,8 +462,10 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
               {session!.last_note && <div className="text-2xs text-muted-foreground">{session!.last_note}</div>}
 
               <div className="rounded bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
-                話し終わっても<b className="text-foreground">自分の電話は切らないでください</b>。切るとダイヤラーごと終了します。
-                終わるときは「停止」を押してください。
+                {session!.rep_mode === 'browser'
+                  ? <>話し終わってもこの<b className="text-foreground">画面（タブ）は閉じないでください</b>。閉じるとダイヤラーごと終了します。</>
+                  : <>話し終わっても<b className="text-foreground">自分の電話は切らないでください</b>。切るとダイヤラーごと終了します。</>}
+                {' '}終わるときは「停止」を押してください。
               </div>
 
               {/* 自動で処理した分の記録 */}

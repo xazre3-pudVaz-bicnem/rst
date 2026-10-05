@@ -106,6 +106,42 @@ export function buildHangupTwiml(): string {
   return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 }
 
+// ===== ブラウザ通話（ヘッドセット待機）=====
+// 担当者のケータイを呼ぶ代わりに、パソコンのブラウザをカンファレンスに入れる。
+// 日本の携帯宛（約¥12〜16/分）に対してブラウザ側は約¥0.6/分で、待機しっぱなしの料金が1/25になる。
+// サーバーからブラウザへ掛ける（to: client:〜）ので、着信許可だけのトークンで足りる（TwiMLアプリ不要）。
+const API_KEY_SID = () => trim(process.env.TWILIO_API_KEY_SID)
+const API_KEY_SECRET = () => trim(process.env.TWILIO_API_KEY_SECRET)
+export function isBrowserVoiceConfigured(): boolean {
+  return !!(trim(process.env.TWILIO_ACCOUNT_SID) && API_KEY_SID() && API_KEY_SECRET())
+}
+export function missingBrowserVoiceEnv(): string[] {
+  const out: string[] = []
+  if (!trim(process.env.TWILIO_ACCOUNT_SID)) out.push('TWILIO_ACCOUNT_SID')
+  if (!API_KEY_SID()) out.push('TWILIO_API_KEY_SID')
+  if (!API_KEY_SECRET()) out.push('TWILIO_API_KEY_SECRET')
+  return out
+}
+/** ブラウザ側の宛先名。人ごとに固定（同じ人が開き直しても同じ場所に着信する）。 */
+export function browserIdentity(userId: string): string {
+  return 'rst_' + String(userId || '').replace(/[^a-zA-Z0-9_-]/g, '')
+}
+/** Voice SDK 用アクセストークン。着信のみ許可（ブラウザからの発信はさせない）。 */
+export async function createVoiceToken(userId: string, ttlSec = 3600): Promise<{ ok: boolean; token?: string; identity?: string; error?: string }> {
+  if (!isBrowserVoiceConfigured()) return { ok: false, error: `ブラウザ通話の環境変数が未設定です: ${missingBrowserVoiceEnv().join(', ')}` }
+  try {
+    const mod: any = await import('twilio')
+    const twilioNs: any = mod?.default ? { ...mod, ...mod.default } : mod
+    const AccessToken: any = twilioNs.jwt.AccessToken
+    const identity = browserIdentity(userId)
+    const token = new AccessToken(trim(process.env.TWILIO_ACCOUNT_SID), API_KEY_SID(), API_KEY_SECRET(), { identity, ttl: ttlSec })
+    token.addGrant(new AccessToken.VoiceGrant({ incomingAllow: true }))
+    return { ok: true, token: token.toJwt(), identity }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ? String(e.message) : String(e) }
+  }
+}
+
 /** 進行中の通話を切る（停止ボタン・留守電の非同期判定後に使う）。失敗は握りつぶす。 */
 export async function hangupTwilioCall(sid: string): Promise<boolean> {
   if (!sid) return false
@@ -132,12 +168,17 @@ export interface TwilioDebug {
 export interface Preflight { ok: boolean; errors: string[]; debug: TwilioDebug; sid: string; token: string; from: string; to: string }
 
 /** 送信直前チェック。SID(AC先頭/34桁)・token・from/toのE.164を検証し、マスク済みデバッグを返す。 */
+/** ブラウザ宛（client:〜）かどうか。電話番号ではないのでE.164チェックをしない。 */
+function isClientTarget(to: string): boolean { return /^client:/i.test(String(to || '')) }
+
 export function preflight(toRaw: string): Preflight {
   const sid = trim(process.env.TWILIO_ACCOUNT_SID)
   const token = trim(process.env.TWILIO_AUTH_TOKEN)
   const fromEnv = fromNumberEnv()
   const from = toE164(fromEnv.value)
-  const to = toE164(toRaw)
+  // ブラウザ宛(client:〜)は電話番号ではないため、番号形式の検査にかけない
+  const client = isClientTarget(toRaw)
+  const to = client ? String(toRaw).trim() : toE164(toRaw)
   const errors: string[] = []
   const sidPrefixOk = sid.startsWith('AC')
   const sidLenOk = sid.length === 34
@@ -153,14 +194,14 @@ export function preflight(toRaw: string): Preflight {
   if (!fromEnv.value) errors.push('発信元番号（TWILIO_PHONE_NUMBER / TWILIO_NUMBER）が空です')
   else if (!isE164(from)) errors.push(`発信元番号がE.164形式ではありません: ${from}（例 +815012345678）`)
   if (!to) errors.push('発信先番号が空です')
-  else if (!isE164(to)) errors.push(`発信先番号がE.164形式ではありません: ${to}（例 +819012345678）`)
+  else if (!client && !isE164(to)) errors.push(`発信先番号がE.164形式ではありません: ${to}（例 +819012345678）`)
 
   const debug: TwilioDebug = {
     accountSidMasked: sid ? `${sid.slice(0, 6)}…${sid.slice(-4)}` : '(空)',
     from, to, provider: getProviderMode(),
     endpoint: `https://api.twilio.com/2010-04-01/Accounts/${sid ? sid.slice(0, 6) + '…' : '(空)'}/Calls.json`,
     fromEnvUsed: fromEnv.envUsed,
-    sidPrefixOk, sidLenOk, sidLen: sid.length, tokenPresent, tokenLen: token.length, fromE164: isE164(from), toE164: isE164(to),
+    sidPrefixOk, sidLenOk, sidLen: sid.length, tokenPresent, tokenLen: token.length, fromE164: isE164(from), toE164: client || isE164(to),
   }
   return { ok: errors.length === 0, errors, debug, sid, token, from, to }
 }

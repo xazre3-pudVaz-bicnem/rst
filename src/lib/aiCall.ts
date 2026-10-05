@@ -119,7 +119,9 @@ export interface DialerOutcome {
 }
 export interface DialerSession {
   id: string
-  rep_phone: string
+  /** 待機先。browser=パソコンのヘッドセット（通話料が携帯の約1/25） / phone=担当者のケータイ */
+  rep_mode: 'browser' | 'phone'
+  rep_phone: string | null
   status: DialerStatus
   amd_mode: 'sync' | 'async' | 'off'
   test_mode: boolean
@@ -149,9 +151,16 @@ async function dialerPost(action: string, body: any): Promise<any> {
 }
 
 export const DialerApi = {
-  /** 開始。まず自分のケータイが鳴り、出るとカンファレンスで待機 → 裏でリストへ発信が始まる。 */
-  start(opts: { repPhone: string; caseIds: string[]; testMode: boolean; testNumber?: string; amdMode?: 'sync' | 'async' | 'off'; autoNext?: boolean; repName?: string }) {
+  /**
+   * 開始。待機先が鳴り（ブラウザ or ケータイ）、出るとカンファレンスで待機 → 裏でリストへ発信が始まる。
+   * repMode='browser' のときは、先に Voice SDK を着信待ち状態にしてから呼ぶこと（未登録だと繋がらない）。
+   */
+  start(opts: { repMode: 'browser' | 'phone'; repPhone?: string; caseIds: string[]; testMode: boolean; testNumber?: string; amdMode?: 'sync' | 'async' | 'off'; autoNext?: boolean; repName?: string }) {
     return dialerPost('dialer-start', opts)
+  },
+  /** ブラウザ（ヘッドセット）で待機するためのアクセストークン。 */
+  token(): Promise<{ ok: boolean; token?: string; identity?: string; error?: string }> {
+    return dialerPost('dialer-token', {})
   },
   /** 進行状況。sessionId 未指定なら自分の最後のセッション（画面を開き直しても続けられる）。 */
   state(sessionId?: string | null): Promise<{ ok: boolean; session?: DialerSession | null; error?: string }> {
