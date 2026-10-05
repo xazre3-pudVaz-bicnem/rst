@@ -65,6 +65,8 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   const [session, setSession] = useState<DialerSession | null>(null)
   const [busy, setBusy] = useState(false)
   const [minimized, setMinimized] = useState(false)
+  // 開始に失敗した理由と対処法。Twilioのトライアル制限などはトーストだけだと読み切れないため画面に残す
+  const [startError, setStartError] = useState<{ msg: string; guide?: string } | null>(null)
   const [history, setHistory] = useState<DialerOutcome[]>([])
 
   const [repPhone, setRepPhone] = useState(() => localStorage.getItem(LS_REP_PHONE) || '')
@@ -152,16 +154,22 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
     localStorage.setItem(LS_TEST_MODE, testMode ? '1' : '0')
     localStorage.setItem(LS_AMD, amdMode)
     setBusy(true)
+    setStartError(null)
     try {
       const r = await DialerApi.start({
         repPhone: repPhone.trim(), caseIds: ids, testMode, testNumber: testNumber.trim(),
         amdMode, autoNext: true, repName: displayName || '',
       })
-      if (!r.ok) { toast.error(r.error || '開始できませんでした'); return }
+      if (!r.ok) {
+        setStartError({ msg: r.error || '開始できませんでした', guide: r.guidance || (Array.isArray(r.errors) ? r.errors.join(' / ') : '') })
+        toast.error(r.error || '開始できませんでした')
+        return
+      }
       setHistory([])
       toast.success(`あなたのケータイに発信しました。出たらそのままお待ちください（${ids.length}件）`)
       await poll(r.sessionId)
     } catch (e) {
+      setStartError({ msg: jpError(e) })
       toast.error(jpError(e))
     } finally { setBusy(false) }
   }
@@ -267,7 +275,13 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
                 自分のケータイを呼んで開始
               </Button>
-              {session?.last_note && <div className="text-2xs text-destructive">{session.last_note}</div>}
+              {startError && (
+                <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-2xs">
+                  <div className="font-bold text-destructive">{startError.msg}</div>
+                  {startError.guide && <div className="leading-relaxed text-foreground">{startError.guide}</div>}
+                </div>
+              )}
+              {!startError && session?.last_note && <div className="text-2xs text-destructive">{session.last_note}</div>}
             </>
           ) : (
             // ---- 進行中 ----
