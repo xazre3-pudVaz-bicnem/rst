@@ -15,7 +15,7 @@ import VisitReportModal from '@/components/modals/VisitReportModal'
 import type { Case, VisitReport } from '@/lib/types'
 import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import {
-  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal,
+  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal, COMMISSION_RULE_CHANGE_MONTH,
   COMMISSION_RATE, COMMISSION_SPLIT, COMMISSION_PAY_DAY, type PayStatus,
 } from '@/lib/commission'
 
@@ -209,6 +209,13 @@ export default function Deals() {
             {commission.agencyDeals > 0 && <span className="text-violet-700 dark:text-violet-300">販売代理店の成約 {commission.agencyDeals}件は対象外</span>}
             {commission.excluded > 0 && <span>社長の担当分（計算なし） {yen(commission.excluded)}</span>}
           </div>
+          {/* 計上ルールを直す前の月は、旧ルールで支払済み。遡って精算しないため金額が食い違う */}
+          {(commAll || commMonth < COMMISSION_RULE_CHANGE_MONTH) && (
+            <div className="mt-1 rounded bg-muted/60 px-2 py-1 text-2xs text-muted-foreground">
+              {moment(COMMISSION_RULE_CHANGE_MONTH + '-01').format('YYYY年M月')}より前の月は、カード分割を毎月に按分していた旧ルールで支払い済みです。
+              遡っての精算はしないため、ここの表示額と実際の支払額は一致しないことがあります。
+            </div>
+          )}
           {commission.people.length === 0 ? (
             <p className="py-3 text-center text-xs text-muted-foreground">この期間に歩合が発生した案件はありません</p>
           ) : (
@@ -249,7 +256,10 @@ export default function Deals() {
           <div className="mt-4 border-t pt-3">
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <h3 className="text-xs font-bold">月別の歩合</h3>
-              <span className="text-2xs text-muted-foreground">月末締め・翌月{COMMISSION_PAY_DAY}日の給与と一緒に支払い（行を押すと上に内訳を表示）</span>
+              <span className="text-2xs text-muted-foreground">
+                月末締め・翌月{COMMISSION_PAY_DAY}日の給与と一緒に支払い（行を押すと上に内訳を表示）／
+                {moment(COMMISSION_RULE_CHANGE_MONTH + '-01').format('YYYY年M月')}より前は旧ルールで支払済み（遡及精算なし）
+              </span>
               <Button
                 size="sm" variant="ghost" className={`ml-auto h-6 text-2xs print:hidden ${pdfBusy ? 'hidden' : ''}`}
                 onClick={() => setShowAllMonths((v) => !v)}

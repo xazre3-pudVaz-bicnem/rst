@@ -61,6 +61,15 @@ export function isAgencyDeal(r: Pick<VisitReport, 'sales_rep'>): boolean {
   return (r.sales_rep?.trim() || '') === AGENCY_REP
 }
 
+/**
+ * 入金の計上ルールを直した月（この月ぶんから新ルールで支払う）。
+ * 2026-10-21に「カード分割はカード会社から契約月に一括入金（ショット）」へ直したため、
+ * それ以前の月は旧ルール（分割回数ぶん毎月に按分）で計算した額を支払い済み。
+ * 社長の判断で**遡っての精算はしない**ので、画面の過去月の金額は実際の支払額と一致しないことがある。
+ * 画面ではこの月より前に注記を出して、支払済みの額と混同しないようにする。
+ */
+export const COMMISSION_RULE_CHANGE_MONTH = '2026-10'
+
 /** 月キー（YYYY-MM） */
 const mk = (d: moment.Moment) => d.format('YYYY-MM')
 
