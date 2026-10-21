@@ -113,6 +113,13 @@ export interface VisitReport {
   hp_price?: number | null
   hp_payment_type?: '一括' | '分割' | null
   hp_installments?: number | null
+  // ---- 分割の途中で支払方法が変わる契約（カードの分割上限が24回など） ----
+  /** 1回目から切替までの支払方法（例: クレジットカード） */
+  hp_first_method?: string | null
+  /** その方法で払う回数（例: 24 → 1〜24回目）。未設定なら全回を同じ方法で払う */
+  hp_first_installments?: number | null
+  /** 残りの回の支払方法（例: 口座振替 → 25回目〜最終回） */
+  hp_later_method?: string | null
   maintenance_price?: number | null
   seo_price?: number | null
   meo_price?: number | null

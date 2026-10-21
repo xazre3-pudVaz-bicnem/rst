@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import TopBar from '@/components/layout/TopBar'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -370,7 +370,23 @@ export default function Deals() {
                   <td className="px-2 py-1.5 text-right font-bold tabular-nums">{yen(contractTotals(r).initial || null)}</td>
                   <td className="px-2 py-1.5 text-right font-bold tabular-nums text-emerald-700 dark:text-emerald-400">{(() => { const m = contractTotals(r).monthly; return m ? `${yen(m)}/月` : '—' })()}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.min_contract_months != null ? `${r.min_contract_months}ヶ月` : '—'}</td>
-                  <td className="px-2 py-1.5">{r.payment_method || '—'}</td>
+                  <td className="px-2 py-1.5">
+                    {(() => {
+                      // 途中で支払方法が変わる契約は、どの回を何で払うかまで出す
+                      const segs = hpPaymentSegments(r)
+                      if (segs.length < 2) return r.payment_method || '—'
+                      return (
+                        <div className="space-y-0.5">
+                          {segs.map((seg) => (
+                            <div key={seg.from} className="whitespace-nowrap text-[10px]">
+                              <span className="font-bold">{seg.method}</span>
+                              <span className="ml-1 text-muted-foreground">{seg.from}〜{seg.to}回 ¥{seg.total.toLocaleString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                  </td>
                   <td className="px-2 py-1.5 max-w-[220px] truncate text-muted-foreground" title={r.memo || ''}>{r.memo || '—'}</td>
                   <td className={`px-2 py-1.5 text-right print:hidden ${pdfBusy ? 'hidden' : ''}`}>
                     <div className="flex justify-end gap-1">

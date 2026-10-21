@@ -161,7 +161,11 @@ export const CONTRACT_PRODUCTS = [
 ] as const
 
 type ContractLike = Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], number | null | undefined>>
-  & { hp_payment_type?: '一括' | '分割' | null; hp_installments?: number | null }
+  & {
+    hp_payment_type?: '一括' | '分割' | null; hp_installments?: number | null
+    payment_method?: string | null; hp_first_method?: string | null
+    hp_first_installments?: number | null; hp_later_method?: string | null
+  }
 
 /** HP制作を分割払いにした場合の内訳（月額と回数）。一括/未設定なら null。 */
 export function hpSplitInfo(r: ContractLike): { monthly: number; months: number; total: number } | null {
@@ -169,6 +173,37 @@ export function hpSplitInfo(r: ContractLike): { monthly: number; months: number;
   const n = Number(r.hp_installments ?? 0) || 0
   if (hp > 0 && r.hp_payment_type === '分割' && n > 0) return { monthly: Math.round(hp / n), months: n, total: hp }
   return null
+}
+
+/** HP制作の分割払いの1区間（何回目から何回目までを、どの方法で、いくら払うか）。 */
+export interface HpPaymentSegment { method: string; from: number; to: number; count: number; perPayment: number; total: number }
+
+/**
+ * HP制作の分割払いを「支払方法ごとの区間」に分ける。
+ * カード会社の分割上限（24回など）の都合で「1〜24回目はカード／25回目以降は口座振替」という
+ * 契約があるため、どの回を何で払うのかを区間にして返す。分割でなければ空配列。
+ */
+export function hpPaymentSegments(r: ContractLike): HpPaymentSegment[] {
+  const split = hpSplitInfo(r)
+  if (!split) return []
+  const total = split.months
+  const per = split.monthly
+  const first = Number(r.hp_first_installments ?? 0) || 0
+  const m1 = (r.hp_first_method || r.payment_method || '').trim() || '支払方法未設定'
+  const m2 = (r.hp_later_method || '').trim()
+  // 切替回が「1回以上・総回数未満」で、残りの方法が決まっているときだけ2区間に分ける
+  if (first > 0 && first < total && m2) {
+    return [
+      { method: m1, from: 1, to: first, count: first, perPayment: per, total: per * first },
+      { method: m2, from: first + 1, to: total, count: total - first, perPayment: per, total: per * (total - first) },
+    ]
+  }
+  return [{ method: m1, from: 1, to: total, count: total, perPayment: per, total: per * total }]
+}
+
+/** 「クレジットカード 1〜24回 / 口座振替 25〜59回」のような1行表示。分割でなければ空文字。 */
+export function hpPaymentLabel(r: ContractLike): string {
+  return hpPaymentSegments(r).map((s) => `${s.method} ${s.from}〜${s.to}回`).join(' / ')
 }
 
 /** 契約金額を初期費用合計・月額合計に分けて集計する。

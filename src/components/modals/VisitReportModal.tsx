@@ -16,7 +16,7 @@ import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi, AppointmentApi 
 import { TRANSPORT_TYPES } from '@/lib/labor'
 import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { COMMISSION_RATE, COMMISSION_SPLIT, isExcludedRecipient } from '@/lib/commission'
-import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo } from '@/lib/constants'
+import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo, hpPaymentSegments } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { useToast } from '@/components/ui/toast'
@@ -68,6 +68,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const [payment, setPayment] = useState('')
   const [hpPayType, setHpPayType] = useState<'一括' | '分割'>('一括')
   const [hpInstallments, setHpInstallments] = useState('')
+  // 分割の途中で支払方法が変わる契約（カードの分割上限が24回など）
+  const [hpFirstMethod, setHpFirstMethod] = useState('')
+  const [hpFirstInstallments, setHpFirstInstallments] = useState('')
+  const [hpLaterMethod, setHpLaterMethod] = useState('')
   // 交通費（この訪問でかかった分。金額を入れたときだけ登録され、労務管理で担当者ごとに集計される）
   const [expense, setExpense] = useState<TravelExpense | null>(null)
   const [expAmount, setExpAmount] = useState('')
@@ -89,6 +93,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setPrices(Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, editing[p.key as keyof VisitReport] != null ? String(editing[p.key as keyof VisitReport]) : ''])))
       setHpPayType(editing.hp_payment_type === '分割' ? '分割' : '一括')
       setHpInstallments(editing.hp_installments != null ? String(editing.hp_installments) : '')
+      setHpFirstMethod(editing.hp_first_method ?? '')
+      setHpFirstInstallments(editing.hp_first_installments != null ? String(editing.hp_first_installments) : '')
+      setHpLaterMethod(editing.hp_later_method ?? '')
       setSalesRep(editing.sales_rep ?? '')
       setListRep(editing.list_rep ?? '')
       setAppoRep(editing.appo_rep ?? '')
@@ -106,6 +113,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
         setExpRoundTrip(x ? x.round_trip !== false : true)
       }, () => { /* 取得できなくても訪問結果の編集は続行 */ })
     } else {
+      setHpFirstMethod('')
+      setHpFirstInstallments('')
+      setHpLaterMethod('')
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
       setLostReason('')
@@ -158,6 +168,12 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const { initial: initialTotal, monthly: monthlyTotal } = contractTotals(priceNums)
   const total = initialTotal + monthlyTotal
   const hpSplit = hpSplitInfo(priceNums)
+  // 支払方法で分けたときの内訳（1〜24回目はカード、25回目以降は口座振替…の表示に使う）
+  const hpSegments = hpPaymentSegments({
+    ...priceNums, payment_method: payment,
+    hp_first_method: hpFirstMethod, hp_first_installments: num(hpFirstInstallments), hp_later_method: hpLaterMethod,
+  })
+  const methodSplitOn = !!hpLaterMethod
 
   // 案件(selectedCase)がある通常フローと、案件未登録で直接成約を登録するフロー両対応。
   const effName = selectedCase?.name ?? caseName.trim()
@@ -242,6 +258,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           hp_price: num(prices.hp_price ?? ''),
           hp_payment_type: num(prices.hp_price ?? '') ? hpPayType : null,
           hp_installments: hpPayType === '分割' ? num(hpInstallments) : null,
+          // 途中で支払方法が変わる契約。分割でなければ全部消す（一括に戻したときに残らないように）
+          hp_first_method: hpPayType === '分割' && hpLaterMethod ? (hpFirstMethod || payment || null) : null,
+          hp_first_installments: hpPayType === '分割' && hpLaterMethod ? num(hpFirstInstallments) : null,
+          hp_later_method: hpPayType === '分割' ? hpLaterMethod || null : null,
           maintenance_price: num(prices.maintenance_price ?? ''),
           seo_price: num(prices.seo_price ?? ''),
           meo_price: num(prices.meo_price ?? ''),
@@ -253,6 +273,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           lost_reason: lostReason,
           contract_date: null, min_contract_months: null, payment_method: null,
           hp_price: null, maintenance_price: null, seo_price: null, meo_price: null, total_price: null,
+          hp_first_method: null, hp_first_installments: null, hp_later_method: null,
         })
       }
       const saved = editing
@@ -362,6 +383,68 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                       <Input inputMode="numeric" placeholder="回数" className="h-7 w-16 text-2xs" value={hpInstallments} onChange={(e) => setHpInstallments(e.target.value)} />
                       <span className="text-2xs text-muted-foreground">回{hpSplit ? `（¥${hpSplit.monthly.toLocaleString()}/月）` : ''}</span>
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* 分割の途中で支払方法が変わる契約（カードの分割上限が24回など） */}
+              {hpPayType === '分割' && hpSplit && (
+                <div className="space-y-1.5 rounded bg-emerald-100/60 px-2 py-1.5 dark:bg-emerald-500/15">
+                  <label className="flex items-center gap-1.5 text-2xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={methodSplitOn}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          // カードの分割上限が24回の契約が多いので、初期値は「24回まで → 口座振替」
+                          setHpLaterMethod('口座振替')
+                          if (!hpFirstMethod) setHpFirstMethod(payment || 'クレジットカード')
+                          if (!hpFirstInstallments) setHpFirstInstallments(String(Math.min(24, hpSplit.months)))
+                        } else {
+                          setHpLaterMethod('')
+                        }
+                      }}
+                    />
+                    途中で支払方法が変わる（カードの分割上限など）
+                  </label>
+
+                  {methodSplitOn && (
+                    <>
+                      <div className="flex flex-wrap items-center gap-1 text-2xs">
+                        <Select value={hpFirstMethod || NONE} onValueChange={(v) => setHpFirstMethod(v === NONE ? '' : v)}>
+                          <SelectTrigger className="h-7 w-36 text-2xs"><SelectValue placeholder="支払方法" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NONE}>選択</SelectItem>
+                            {PAYMENT_METHODS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <span>で</span>
+                        <Input inputMode="numeric" placeholder="24" className="h-7 w-14 text-2xs" value={hpFirstInstallments} onChange={(e) => setHpFirstInstallments(e.target.value)} />
+                        <span>回目まで、残りは</span>
+                        <Select value={hpLaterMethod} onValueChange={(v) => setHpLaterMethod(v)}>
+                          <SelectTrigger className="h-7 w-36 text-2xs"><SelectValue placeholder="支払方法" /></SelectTrigger>
+                          <SelectContent>
+                            {PAYMENT_METHODS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {hpSegments.length === 2 ? (
+                        <div className="space-y-0.5 text-2xs">
+                          {hpSegments.map((seg) => (
+                            <div key={seg.from} className="flex flex-wrap items-center gap-1">
+                              <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{seg.method}</span>
+                              <span>{seg.from}〜{seg.to}回（{seg.count}回）</span>
+                              <span className="text-muted-foreground">¥{seg.perPayment.toLocaleString()} × {seg.count} = </span>
+                              <span className="font-bold">¥{seg.total.toLocaleString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-2xs text-amber-700 dark:text-amber-400">
+                          切り替える回数を、1以上・分割回数（{hpSplit.months}回）未満で入れてください。
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
