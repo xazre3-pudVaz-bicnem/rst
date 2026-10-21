@@ -167,21 +167,25 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
     return () => { cancelled = true }
   }, [open, appointmentId, editing?.appointment_id])
 
+  // 画面の計算は全部この1つの契約内容から行う（合計と内訳で食い違わないように）
   const priceNums = {
     ...Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, num(prices[p.key] ?? '') ?? 0])),
     hp_payment_type: hpPayType,
     hp_installments: num(hpInstallments),
+    payment_method: payment,
+    hp_first_method: hpFirstMethod, hp_first_installments: num(hpFirstInstallments), hp_later_method: hpLaterMethod,
+    hp_first_lump: hpFirstLump, hp_later_lump: hpLaterLump,
   }
   const { initial: initialTotal, monthly: monthlyTotal } = contractTotals(priceNums)
   const total = initialTotal + monthlyTotal
   const hpSplit = hpSplitInfo(priceNums)
   // 支払方法で分けたときの内訳（1〜24回目はカード、25回目以降は口座振替…の表示に使う）
-  const hpSegments = hpPaymentSegments({
-    ...priceNums, payment_method: payment,
-    hp_first_method: hpFirstMethod, hp_first_installments: num(hpFirstInstallments), hp_later_method: hpLaterMethod,
-    hp_first_lump: hpFirstLump, hp_later_lump: hpLaterLump,
-  })
+  const hpSegments = hpPaymentSegments(priceNums)
   const methodSplitOn = !!hpLaterMethod
+  // 月額のうち「契約月からは入ってこない」ぶん（例: HP分割の口座振替は25ヶ月目から）
+  const laterMonthly = hpSegments.find((seg) => !seg.lump && seg.from > 1) ?? null
+  // 契約月から毎月入ってくるぶん（保守管理などの月額サービス）
+  const monthlyFromStart = monthlyTotal - (laterMonthly?.perPayment ?? 0)
 
   // 案件(selectedCase)がある通常フローと、案件未登録で直接成約を登録するフロー両対応。
   const effName = selectedCase?.name ?? caseName.trim()
@@ -477,9 +481,15 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                   </div>
                 </div>
               )}
-              <div className="flex justify-end gap-3 text-2xs text-muted-foreground">
-                <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span></span>
+              <div className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 text-2xs text-muted-foreground">
+                <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span>{initialTotal > 0 && hpSegments.some((s) => s.lump) && <span className="ml-1">（ショット入金ぶんを含む）</span>}</span>
                 <span>月額合計: <span className="font-bold text-foreground">{monthlyTotal.toLocaleString()}円/月</span></span>
+                {laterMonthly && (
+                  <span className="w-full text-right">
+                    内訳: 契約月から毎月 <span className="font-bold text-foreground">{monthlyFromStart.toLocaleString()}円</span>
+                    ／{laterMonthly.from}ヶ月目から毎月 <span className="font-bold text-foreground">{laterMonthly.perPayment.toLocaleString()}円</span> が加わる
+                  </span>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
