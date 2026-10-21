@@ -9,6 +9,7 @@ import {
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient'
 import { ProfileApi } from '@/lib/api'
+import { APPO_AGENCY_ROLE } from '@/lib/constants'
 import type { Profile } from '@/lib/types'
 
 interface AuthContextValue {
@@ -25,6 +26,8 @@ interface AuthContextValue {
   canWrite: boolean
   /** 管理者か */
   isAdmin: boolean
+  /** アポ代行会社（社外）か。訪問予定と自分が登録した案件だけ触れる */
+  isAppoAgency: boolean
   /** 有効ユーザーか（is_active=false は利用不可。固定adminは常に有効） */
   isActive: boolean
   signIn: (email: string, password: string) => Promise<void>
@@ -86,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const role = forcedAdmin ? 'admin' : (profile?.role || 'member')
   const canWrite = role !== 'viewer'
   const isAdmin = role === 'admin'
+  const isAppoAgency = role === APPO_AGENCY_ROLE
   // is_active=false は利用不可（読み込み中=profile未取得 は有効扱いでブロックしない）
   const isActive = forcedAdmin || profile?.is_active !== false
 
@@ -99,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     role,
     canWrite,
     isAdmin,
+    isAppoAgency,
     isActive,
     async signIn(email, password) {
       // 巡回(AI投入)中はSupabaseが高負荷で認証通信が一時的に失敗することがある。
@@ -124,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.signOut()
       window.location.href = '/'
     },
-  }), [session, user, loading, displayName, profile, role, canWrite, isAdmin, isActive])
+  }), [session, user, loading, displayName, profile, role, canWrite, isAdmin, isAppoAgency, isActive])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

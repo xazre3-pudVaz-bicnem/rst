@@ -13,7 +13,7 @@ import NotificationBell from './NotificationBell'
 import ThemeToggle from './ThemeToggle'
 
 export default function TopBar() {
-  const { displayName, signOut, isAdmin, role } = useAuth()
+  const { displayName, signOut, isAdmin, isAppoAgency, role } = useAuth()
   const location = useLocation()
   const perms = laborPerms(role)
   const laborActive = location.pathname === '/home' || location.pathname.startsWith('/labor')
@@ -49,6 +49,11 @@ export default function TopBar() {
           RST
         </Link>
         <nav className="flex items-center gap-0.5 overflow-x-auto sm:gap-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {/* アポ代行会社（社外）は訪問予定だけ。他のメニューは出さない */}
+          {isAppoAgency ? (
+            navItem('/appointments', '訪問予定', <Calendar className="h-3.5 w-3.5" />, true)
+          ) : (
+          <>
           {navItem('/home', 'ホーム', <LayoutDashboard className="h-3.5 w-3.5" />)}
           {/* 案件は全リロードで検索リセット（スマホでも常時表示のコア機能） */}
           <a
@@ -101,6 +106,8 @@ export default function TopBar() {
 
           {isAdmin && navItem('/ai-scripts', 'AIトーク', <Bot className="h-3.5 w-3.5" />)}
           {isAdmin && navItem('/audit', '監査', <ScrollText className="h-3.5 w-3.5" />)}
+          </>
+          )}
         </nav>
       </div>
 

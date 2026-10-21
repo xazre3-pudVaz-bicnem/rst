@@ -35,6 +35,8 @@ import type { Appointment, AppoPriority, Case } from '@/lib/types'
 import { APPO_PRIORITIES, APPO_PRIORITY_COLORS } from '@/lib/constants'
 import { syncAppointment, deleteAppointmentEvent } from '@/lib/calendarSync'
 import VisitReportModal from '@/components/modals/VisitReportModal'
+import CaseFormModal from '@/components/modals/CaseFormModal'
+import { useAuth } from '@/context/AuthContext'
 
 // 時間の列は1時間ごと（8時〜23時。深夜〜早朝の0〜7時は営業時間外のため非表示）。
 // アポのバーは所要2時間として、開始時刻のセルから隣の列まで伸ばして表示する（VISIT_SPAN_HOURS）。
@@ -55,6 +57,9 @@ export default function Appointments() {
   const [currentDate, setCurrentDate] = useState(moment().format('YYYY-MM-DD'))
   const [filterRep, setFilterRep] = useState('')
 
+  const { user, canWrite } = useAuth()
+  // 案件の新規登録。アポ代行会社は案件一覧ページに入れないので、この画面から登録できるようにする
+  const [showCaseModal, setShowCaseModal] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Appointment | null>(null)
   // 訪問結果登録モーダル
@@ -173,6 +178,8 @@ export default function Appointments() {
         priority: form.priority || null,
         memo: form.memo || null,
       }
+      // 誰が入れた予定か。アポ代行会社は自分が入れた予定だけ編集/削除できる（RLSで判定）
+      if (!editing) payload.created_by_id = user?.id ?? null
       if (editing) {
         await AppointmentApi.update(editing.id, payload)
         syncAppointment({ ...editing, ...payload } as any, c)  // Googleカレンダー反映（設定ONかつ設定済みのときのみ）
@@ -226,6 +233,9 @@ export default function Appointments() {
         <span className="text-xs font-bold">
           {moment(currentDate).format('YYYY年M月D日 (ddd)')}
         </span>
+        <Button size="sm" variant="outline" onClick={() => setShowCaseModal(true)} disabled={!canWrite}>
+          <Plus className="mr-1 h-3.5 w-3.5" />案件を登録
+        </Button>
         <div className="ml-auto flex items-center gap-1">
           <span className="text-2xs text-muted-foreground">担当:</span>
           <Select value={filterRep || ALL} onValueChange={(v) => setFilterRep(v === ALL ? '' : v)}>
@@ -542,6 +552,14 @@ export default function Appointments() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CaseFormModal
+        open={showCaseModal}
+        onClose={() => setShowCaseModal(false)}
+        editingCase={null}
+        existingCases={cases}
+        onSaved={load}
+      />
 
       <VisitReportModal
         open={!!visitCase}

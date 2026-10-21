@@ -2,9 +2,10 @@ import { Navigate, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useAuth } from '@/context/AuthContext'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
+import { APPO_AGENCY_PATHS } from '@/lib/constants'
 
 export default function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { session, loading, isActive, signOut } = useAuth()
+  const { session, loading, isActive, isAppoAgency, signOut } = useAuth()
   const location = useLocation()
 
   // Supabase 未設定時はログインを通過させ、画面側で警告表示
@@ -31,6 +32,12 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
         <button onClick={signOut} className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent">ログアウト</button>
       </div>
     )
+  }
+
+  // アポ代行会社（社外）は訪問予定だけ。URL直打ちで他のページに入らせない
+  // （データ自体もRLSで止めているが、画面も見せない）
+  if (isAppoAgency && !APPO_AGENCY_PATHS.some((p) => location.pathname === p)) {
+    return <Navigate to="/appointments" replace />
   }
 
   return <>{children}</>

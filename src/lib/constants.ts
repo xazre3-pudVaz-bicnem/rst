@@ -345,16 +345,27 @@ export const TAG_PRESETS = [
   '資料送付済み',
 ] as const
 
-/** ユーザーロール（admin/manager/sales/viewer。member は旧データ互換=営業担当相当） */
+/** ユーザーロール（admin/manager/sales/viewer/appo。member は旧データ互換=営業担当相当） */
 export const ROLES = [
   { value: 'admin', label: '管理者' },
   { value: 'manager', label: 'マネージャー' },
   { value: 'sales', label: '営業担当' },
+  { value: 'appo', label: 'アポ代行（社外）' },
   { value: 'viewer', label: '閲覧のみ' },
 ] as const
 
+/**
+ * アポ代行会社に渡すロール。社外のアカウントなので、画面を隠すだけでなく
+ * データベース側（RLS）でも訪問予定と自分が登録した案件しか触れないようにしている。
+ * 画面の制限を変えるときは migrations/2026-10-21c_appo_agency_role.sql も合わせて見ること。
+ */
+export const APPO_AGENCY_ROLE = 'appo'
+/** アポ代行が開けるページ。これ以外は訪問予定へ戻す */
+export const APPO_AGENCY_PATHS = ['/appointments'] as const
+
 const ROLE_LABELS: Record<string, string> = {
   admin: '管理者', manager: 'マネージャー', sales: '営業担当', viewer: '閲覧のみ', member: '営業担当',
+  appo: 'アポ代行（社外）',
 }
 export function roleLabel(role?: string | null): string {
   return (role && ROLE_LABELS[role]) || '営業担当'
