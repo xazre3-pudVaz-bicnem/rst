@@ -165,6 +165,7 @@ type ContractLike = Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], nu
     hp_payment_type?: '一括' | '分割' | null; hp_installments?: number | null
     payment_method?: string | null; hp_first_method?: string | null
     hp_first_installments?: number | null; hp_later_method?: string | null
+    hp_first_lump?: boolean | null; hp_later_lump?: boolean | null
   }
 
 /** HP制作を分割払いにした場合の内訳（月額と回数）。一括/未設定なら null。 */
@@ -175,8 +176,17 @@ export function hpSplitInfo(r: ContractLike): { monthly: number; months: number;
   return null
 }
 
-/** HP制作の分割払いの1区間（何回目から何回目までを、どの方法で、いくら払うか）。 */
-export interface HpPaymentSegment { method: string; from: number; to: number; count: number; perPayment: number; total: number }
+/**
+ * HP制作の分割払いの1区間（何回目から何回目までを、どの方法で、いくら払うか）。
+ * lump=true は「当社への入金が区間の初月にまとまって入る」こと（カード会社からのショット入金）。
+ * お客様がカード会社へ毎月払っていても、当社の入金は一度なので歩合もその月に立つ。
+ */
+export interface HpPaymentSegment { method: string; from: number; to: number; count: number; perPayment: number; total: number; lump: boolean }
+
+/** 支払方法から入金のされ方を推定する。カード払いはカード会社から一括で入金される。 */
+export function isLumpPayoutMethod(method?: string | null): boolean {
+  return String(method || '').trim() === 'クレジットカード'
+}
 
 /**
  * HP制作の分割払いを「支払方法ごとの区間」に分ける。
@@ -192,13 +202,14 @@ export function hpPaymentSegments(r: ContractLike): HpPaymentSegment[] {
   const m1 = (r.hp_first_method || r.payment_method || '').trim() || '支払方法未設定'
   const m2 = (r.hp_later_method || '').trim()
   // 切替回が「1回以上・総回数未満」で、残りの方法が決まっているときだけ2区間に分ける
+  const lump1 = r.hp_first_lump ?? isLumpPayoutMethod(m1)
   if (first > 0 && first < total && m2) {
     return [
-      { method: m1, from: 1, to: first, count: first, perPayment: per, total: per * first },
-      { method: m2, from: first + 1, to: total, count: total - first, perPayment: per, total: per * (total - first) },
+      { method: m1, from: 1, to: first, count: first, perPayment: per, total: per * first, lump: lump1 },
+      { method: m2, from: first + 1, to: total, count: total - first, perPayment: per, total: per * (total - first), lump: r.hp_later_lump ?? isLumpPayoutMethod(m2) },
     ]
   }
-  return [{ method: m1, from: 1, to: total, count: total, perPayment: per, total: per * total }]
+  return [{ method: m1, from: 1, to: total, count: total, perPayment: per, total: per * total, lump: lump1 }]
 }
 
 /** 「クレジットカード 1〜24回 / 口座振替 25〜59回」のような1行表示。分割でなければ空文字。 */
@@ -210,13 +221,18 @@ export function hpPaymentLabel(r: ContractLike): string {
  *  HP制作は「一括」なら初期費用、「分割」なら1回あたり(HP額÷回数)を月額に計上する。 */
 export function contractTotals(r: ContractLike): { initial: number; monthly: number } {
   let initial = 0, monthly = 0
-  const split = hpSplitInfo(r)
+  const segs = hpPaymentSegments(r)
   for (const p of CONTRACT_PRODUCTS) {
     const v = Number(r[p.key] ?? 0) || 0
     if (!v) continue
     if (p.key === 'hp_price') {
-      if (split) monthly += split.monthly   // 分割：月々の分割額を月額へ
-      else initial += v                      // 一括：初期費用へ
+      if (!segs.length) { initial += v; continue }   // 一括：初期費用へ
+      // 分割：カード（ショット入金）のぶんは当社には一度で入るので初期費用、
+      //       口座振替などのぶんは毎月入るので月額へ。
+      for (const seg of segs) {
+        if (seg.lump) initial += seg.total
+        else monthly += seg.perPayment
+      }
     } else if ((p.kind as string) === 'initial') initial += v
     else monthly += v
   }

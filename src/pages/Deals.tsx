@@ -372,15 +372,18 @@ export default function Deals() {
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.min_contract_months != null ? `${r.min_contract_months}ヶ月` : '—'}</td>
                   <td className="px-2 py-1.5">
                     {(() => {
-                      // 途中で支払方法が変わる契約は、どの回を何で払うかまで出す
+                      // 分割はどの回を何で払うか＋当社への入金のされ方（ショット/毎月）まで出す
                       const segs = hpPaymentSegments(r)
-                      if (segs.length < 2) return r.payment_method || '—'
+                      if (!segs.length) return r.payment_method || '—'
                       return (
                         <div className="space-y-0.5">
                           {segs.map((seg) => (
                             <div key={seg.from} className="whitespace-nowrap text-[10px]">
                               <span className="font-bold">{seg.method}</span>
                               <span className="ml-1 text-muted-foreground">{seg.from}〜{seg.to}回 ¥{seg.total.toLocaleString()}</span>
+                              <span className={`ml-1 rounded px-1 py-px font-bold ${seg.lump ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'}`}>
+                                {seg.lump ? 'ショット' : '毎月'}
+                              </span>
                             </div>
                           ))}
                         </div>

@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi, VisitReportApi, ProfileApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments, hpPaymentLabel, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
@@ -182,9 +182,9 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                       {(() => { const { initial, monthly } = contractTotals(v); return (<>初期 <span className="font-bold text-foreground">¥{initial.toLocaleString()}</span> ・ 月額 <span className="font-bold text-foreground">¥{monthly.toLocaleString()}/月</span></>) })()}
                       {v.contract_date && ` / 契約${moment(v.contract_date).format('YYYY/MM/DD')}`}
                       {v.min_contract_months != null && ` / 最低${v.min_contract_months}ヶ月`}
-                      {/* 途中で支払方法が変わる契約は内訳で、そうでなければ支払方法をそのまま */}
-                      {hpPaymentSegments(v).length >= 2
-                        ? ' / ' + hpPaymentLabel(v)
+                      {/* 分割は「どの回を何で払うか」、そうでなければ支払方法をそのまま */}
+                      {hpPaymentSegments(v).length
+                        ? ' / ' + hpPaymentSegments(v).map((s) => `${s.method}${s.from}〜${s.to}回(${s.lump ? 'ショット' : '毎月'})`).join(' + ')
                         : v.payment_method ? ` / ${v.payment_method}` : ''}
                     </div>
                   </div>

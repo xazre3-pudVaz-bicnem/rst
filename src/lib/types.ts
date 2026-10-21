@@ -120,6 +120,10 @@ export interface VisitReport {
   hp_first_installments?: number | null
   /** 残りの回の支払方法（例: 口座振替 → 25回目〜最終回） */
   hp_later_method?: string | null
+  /** 前半の区間がショット入金か（true=区間の初月に合計額が入金 / null=支払方法から自動判定） */
+  hp_first_lump?: boolean | null
+  /** 後半の区間がショット入金か（同上） */
+  hp_later_lump?: boolean | null
   maintenance_price?: number | null
   seo_price?: number | null
   meo_price?: number | null

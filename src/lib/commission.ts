@@ -6,7 +6,12 @@
 //   - 分配     = リスト担当 10% / アポ担当 40% / 営業担当 50%
 //   - 売上は「入金ベース」で月ごとに発生させる
 //       ・HP制作(一括)        … 契約月に全額
-//       ・HP制作(分割)        … 契約月から分割回数ぶん、毎月その回の分割額
+//       ・HP制作(分割/カード) … カード会社から契約月に全額まとめて入金（ショット）。
+//                               お客様がカード会社へ毎月払っていても、当社の入金は一度なので
+//                               歩合もその月にまとめて立つ
+//       ・HP制作(分割/口座振替等) … その回の入金月ごとに分割額
+//       ・途中で支払方法が変わる契約（例: 1〜24回カード／25回目以降 口座振替）は
+//         区間ごとに上の判定をする（カード分は契約月にショット、残りは25ヶ月目から毎月）
 //       ・保守/SEO/MEO(月額)  … 契約月から解約月（未設定なら現在月）まで毎月
 //   - 未払い（入金待ち）に設定した案件は、未払い開始月以降の歩合を計上しない
 //     （支払済みの過去月は遡って消さない）
@@ -21,6 +26,7 @@
 import moment from 'moment'
 import type { VisitReport } from './types'
 import { AI_CREATOR_LABEL } from './caseCreator.js'
+import { hpPaymentSegments } from './constants.js'
 
 /**
  * 役割ごとの受取人。AI投入リストはリスト分をアポ担当が受け取る。
@@ -90,12 +96,18 @@ export function dealRevenueForMonth(r: VisitReport, month: string): number {
   const idx = moment(month + '-01').diff(moment(start + '-01'), 'months')   // 契約月=0
   let revenue = 0
 
-  // HP制作: 一括なら契約月に全額、分割なら各回の入金月に分割額
+  // HP制作: 一括は契約月に全額。分割は「当社にいつ入金されるか」で計上する。
+  //   カード区間  … 区間の初月に区間の合計額（カード会社からのショット入金）
+  //   それ以外    … その回の入金月に1回ぶん
   const hp = Number(r.hp_price) || 0
   if (hp > 0) {
-    const n = Number(r.hp_installments) || 0
-    if (r.hp_payment_type === '分割' && n > 0) {
-      if (idx < n) revenue += Math.round(hp / n)
+    const segs = hpPaymentSegments(r)
+    if (segs.length) {
+      for (const seg of segs) {
+        const fromIdx = seg.from - 1   // 1回目 = 契約月(idx 0)
+        if (seg.lump) { if (idx === fromIdx) revenue += seg.total }
+        else if (idx >= fromIdx && idx <= seg.to - 1) revenue += seg.perPayment
+      }
     } else if (idx === 0) {
       revenue += hp
     }

@@ -72,6 +72,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const [hpFirstMethod, setHpFirstMethod] = useState('')
   const [hpFirstInstallments, setHpFirstInstallments] = useState('')
   const [hpLaterMethod, setHpLaterMethod] = useState('')
+  // 入金のされ方。null=支払方法から自動判定（カード＝ショット入金 / それ以外＝毎月入金）
+  const [hpFirstLump, setHpFirstLump] = useState<boolean | null>(null)
+  const [hpLaterLump, setHpLaterLump] = useState<boolean | null>(null)
   // 交通費（この訪問でかかった分。金額を入れたときだけ登録され、労務管理で担当者ごとに集計される）
   const [expense, setExpense] = useState<TravelExpense | null>(null)
   const [expAmount, setExpAmount] = useState('')
@@ -96,6 +99,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpFirstMethod(editing.hp_first_method ?? '')
       setHpFirstInstallments(editing.hp_first_installments != null ? String(editing.hp_first_installments) : '')
       setHpLaterMethod(editing.hp_later_method ?? '')
+      setHpFirstLump(editing.hp_first_lump ?? null)
+      setHpLaterLump(editing.hp_later_lump ?? null)
       setSalesRep(editing.sales_rep ?? '')
       setListRep(editing.list_rep ?? '')
       setAppoRep(editing.appo_rep ?? '')
@@ -116,6 +121,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpFirstMethod('')
       setHpFirstInstallments('')
       setHpLaterMethod('')
+      setHpFirstLump(null)
+      setHpLaterLump(null)
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
       setLostReason('')
@@ -172,6 +179,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   const hpSegments = hpPaymentSegments({
     ...priceNums, payment_method: payment,
     hp_first_method: hpFirstMethod, hp_first_installments: num(hpFirstInstallments), hp_later_method: hpLaterMethod,
+    hp_first_lump: hpFirstLump, hp_later_lump: hpLaterLump,
   })
   const methodSplitOn = !!hpLaterMethod
 
@@ -262,6 +270,9 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           hp_first_method: hpPayType === '分割' && hpLaterMethod ? (hpFirstMethod || payment || null) : null,
           hp_first_installments: hpPayType === '分割' && hpLaterMethod ? num(hpFirstInstallments) : null,
           hp_later_method: hpPayType === '分割' ? hpLaterMethod || null : null,
+          // 入金のされ方（ショット/毎月）。未指定(null)は支払方法から自動判定される
+          hp_first_lump: hpPayType === '分割' ? hpFirstLump : null,
+          hp_later_lump: hpPayType === '分割' && hpLaterMethod ? hpLaterLump : null,
           maintenance_price: num(prices.maintenance_price ?? ''),
           seo_price: num(prices.seo_price ?? ''),
           meo_price: num(prices.meo_price ?? ''),
@@ -274,6 +285,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           contract_date: null, min_contract_months: null, payment_method: null,
           hp_price: null, maintenance_price: null, seo_price: null, meo_price: null, total_price: null,
           hp_first_method: null, hp_first_installments: null, hp_later_method: null,
+          hp_first_lump: null, hp_later_lump: null,
         })
       }
       const saved = editing
@@ -428,24 +440,41 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                           </SelectContent>
                         </Select>
                       </div>
-                      {hpSegments.length === 2 ? (
-                        <div className="space-y-0.5 text-2xs">
-                          {hpSegments.map((seg) => (
-                            <div key={seg.from} className="flex flex-wrap items-center gap-1">
-                              <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{seg.method}</span>
-                              <span>{seg.from}〜{seg.to}回（{seg.count}回）</span>
-                              <span className="text-muted-foreground">¥{seg.perPayment.toLocaleString()} × {seg.count} = </span>
-                              <span className="font-bold">¥{seg.total.toLocaleString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
+                      {hpSegments.length < 2 && (
                         <div className="text-2xs text-amber-700 dark:text-amber-400">
                           切り替える回数を、1以上・分割回数（{hpSplit.months}回）未満で入れてください。
                         </div>
                       )}
                     </>
                   )}
+
+                  {/* 入金の内訳。カード分はカード会社から契約月にまとめて振り込まれる＝歩合もその月に立つ */}
+                  <div className="space-y-0.5 border-t border-emerald-200 pt-1 text-2xs dark:border-emerald-500/30">
+                    {hpSegments.map((seg, i) => {
+                      const setLump = i === 0 ? setHpFirstLump : setHpLaterLump
+                      return (
+                        <div key={seg.from} className="flex flex-wrap items-center gap-1">
+                          <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{seg.method}</span>
+                          <span>{seg.from}〜{seg.to}回（{seg.count}回）</span>
+                          <span className="text-muted-foreground">¥{seg.perPayment.toLocaleString()} × {seg.count} = </span>
+                          <span className="font-bold">¥{seg.total.toLocaleString()}</span>
+                          <button
+                            type="button"
+                            onClick={() => setLump(!seg.lump)}
+                            title="当社への入金のされ方を切り替える（歩合の計上月が変わります）"
+                            className={`rounded-full border px-1.5 py-px font-bold ${seg.lump ? 'border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' : 'border-sky-300 bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-300'}`}
+                          >
+                            {seg.lump ? 'ショット入金' : '毎月入金'}
+                          </button>
+                          <span className="text-muted-foreground">
+                            {seg.lump
+                              ? `→ ${seg.from === 1 ? '契約月' : `${seg.from}ヶ月目`}に ¥${seg.total.toLocaleString()} 入金（歩合もこの月）`
+                              : `→ ${seg.from === 1 ? '契約月' : `${seg.from}ヶ月目`}から毎月 ¥${seg.perPayment.toLocaleString()}`}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
               <div className="flex justify-end gap-3 text-2xs text-muted-foreground">
