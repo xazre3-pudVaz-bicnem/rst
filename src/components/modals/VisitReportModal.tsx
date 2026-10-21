@@ -453,31 +453,45 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                   )}
 
                   {/* 入金の内訳。カード分はカード会社から契約月にまとめて振り込まれる＝歩合もその月に立つ */}
-                  <div className="space-y-0.5 border-t border-emerald-200 pt-1 text-2xs dark:border-emerald-500/30">
+                  <div className="space-y-1.5 border-t border-emerald-200 pt-1.5 text-2xs dark:border-emerald-500/30">
+                    <div className="font-medium">当社への入金のされ方（歩合の計上月が変わります）</div>
                     {hpSegments.map((seg, i) => {
                       const setLump = i === 0 ? setHpFirstLump : setHpLaterLump
+                      const when = seg.from === 1 ? '契約月' : `${seg.from}ヶ月目`
                       return (
-                        <div key={seg.from} className="flex flex-wrap items-center gap-1">
-                          <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{seg.method}</span>
-                          <span>{seg.from}〜{seg.to}回（{seg.count}回）</span>
-                          <span className="text-muted-foreground">¥{seg.perPayment.toLocaleString()} × {seg.count} = </span>
-                          <span className="font-bold">¥{seg.total.toLocaleString()}</span>
-                          <button
-                            type="button"
-                            onClick={() => setLump(!seg.lump)}
-                            title="当社への入金のされ方を切り替える（歩合の計上月が変わります）"
-                            className={`rounded-full border px-1.5 py-px font-bold ${seg.lump ? 'border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' : 'border-sky-300 bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-300'}`}
-                          >
-                            {seg.lump ? 'ショット入金' : '毎月入金'}
-                          </button>
-                          <span className="text-muted-foreground">
-                            {seg.lump
-                              ? `→ ${seg.from === 1 ? '契約月' : `${seg.from}ヶ月目`}に ¥${seg.total.toLocaleString()} 入金（歩合もこの月）`
-                              : `→ ${seg.from === 1 ? '契約月' : `${seg.from}ヶ月目`}から毎月 ¥${seg.perPayment.toLocaleString()}`}
-                          </span>
+                        <div key={seg.from} className="space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{seg.method}</span>
+                            <span>{seg.from}〜{seg.to}回（{seg.count}回）</span>
+                            <span className="text-muted-foreground">¥{seg.perPayment.toLocaleString()} × {seg.count} = </span>
+                            <span className="font-bold">¥{seg.total.toLocaleString()}</span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            {([true, false] as const).map((v) => (
+                              <button
+                                key={String(v)}
+                                type="button"
+                                onClick={() => setLump(v)}
+                                className={`rounded-full border px-2 py-0.5 font-bold ${seg.lump === v
+                                  ? (v ? 'border-amber-500 bg-amber-500 text-white' : 'border-sky-600 bg-sky-600 text-white')
+                                  : 'text-muted-foreground hover:bg-accent'}`}
+                              >
+                                {v ? 'ショット入金' : '毎月入金'}
+                              </button>
+                            ))}
+                            <span className="text-muted-foreground">
+                              {seg.lump
+                                ? `→ ${when}に ¥${seg.total.toLocaleString()} がまとめて入金（歩合もこの月）`
+                                : `→ ${when}から毎月 ¥${seg.perPayment.toLocaleString()}（歩合も毎月）`}
+                            </span>
+                          </div>
                         </div>
                       )
                     })}
+                    <div className="leading-relaxed text-muted-foreground">
+                      カードの分割はカード会社から契約月に一括で振り込まれるのが普通（ショット入金）ですが、
+                      <b className="text-foreground">分割契約が組めず毎月課金になる契約</b>もあります。その場合は「毎月入金」を選んでください。
+                    </div>
                   </div>
                 </div>
               )}
