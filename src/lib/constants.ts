@@ -18,7 +18,7 @@ export const STANDARD_STATUSES = [
   '担当者不在',
   '資料送付',
   '折返し待ち',
-  'アポ獲得',
+  'アポ',
   '見込み',
   '失注',
   '再コール',
@@ -32,7 +32,7 @@ export const LEGACY_STATUSES = [
   '特別保有',
   '仮アポ',
   '仮アポ流れ',
-  'アポ',
+  'アポ獲得',
   '契約',
   '成約',
   '仮失注',
@@ -89,7 +89,7 @@ export const STATUS_COLORS: Record<string, string> = {
   担当者不在: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-300',
   資料送付: 'bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-300',
   折返し待ち: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-300',
-  アポ獲得: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',
+  アポ: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',
   見込み: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
   失注: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
   再コール: 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300',
@@ -100,7 +100,7 @@ export const STATUS_COLORS: Record<string, string> = {
   特別保有: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300',
   仮アポ: 'bg-lime-100 text-lime-800 dark:bg-lime-500/20 dark:text-lime-300',
   仮アポ流れ: 'bg-stone-200 text-stone-700 dark:bg-stone-700/60 dark:text-stone-200',
-  アポ: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',
+  アポ獲得: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300',   // 旧称（データ移行済み・念のため残す）
   契約: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
   成約: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-200',
   仮失注: 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300',
@@ -242,10 +242,10 @@ export function contractTotals(r: ContractLike): { initial: number; monthly: num
 export const PAYMENT_METHODS = ['一括', '月額', '分割', '銀行振込', 'クレジットカード', '口座振替'] as const
 
 /** 案件一覧で強調（薄緑背景）にするステータス */
-export const HIGHLIGHT_STATUSES = ['アポ獲得', '契約済み', 'アポ', '仮アポ', '成約', '契約'] as const
+export const HIGHLIGHT_STATUSES = ['アポ', '仮アポ', '契約済み', '成約', '契約', 'アポ獲得'] as const
 
 /** アポ扱いステータス（KPI集計用） */
-export const APPO_STATUSES = ['アポ獲得', 'アポ', '仮アポ'] as const
+export const APPO_STATUSES = ['アポ', '仮アポ', 'アポ獲得'] as const
 
 /** 成約/契約扱いステータス（KPI集計用） */
 export const DEAL_STATUSES = ['契約済み', '成約', '契約'] as const
@@ -381,7 +381,7 @@ export const DEFAULT_TEMPLATES: { category: string; title: string; body: string;
   { category: 'memo', title: '折返し待ち', body: '折返しの連絡を待つ。', status: '折返し待ち' },
   { category: 'memo', title: '現在不要', body: '現時点では不要とのこと。', status: '失注' },
   { category: 'memo', title: '他社利用中', body: '他社サービス利用中。契約更新時期に再アプローチ。', status: '見込み' },
-  { category: 'memo', title: 'アポ獲得', body: '訪問アポイントを獲得。', status: 'アポ獲得' },
+  { category: 'memo', title: 'アポ', body: '訪問アポイントを獲得。', status: 'アポ' },
 ]
 
 // ============================================================

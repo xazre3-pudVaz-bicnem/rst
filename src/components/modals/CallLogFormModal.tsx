@@ -156,7 +156,7 @@ export default function CallLogFormModal({
       // 入力中のコール結果があれば、まずコール履歴として保存してから解放（履歴を残す）。
       const hasEntry = !!(result || (memo && memo.trim()))
       if (hasEntry) {
-        const effectiveStatus = showAppo && appoAt ? 'アポ獲得' : newStatus
+        const effectiveStatus = showAppo && appoAt ? 'アポ' : newStatus
         const statusChanged = effectiveStatus && effectiveStatus !== selectedCase.status
         const logPayload: Partial<CallLog> = {
           case_id: selectedCase.id, case_name: selectedCase.name,
@@ -198,8 +198,8 @@ export default function CallLogFormModal({
     if (!selectedCase) return
     setBusy(true)
     try {
-      // アポ時はステータスを「アポ獲得」に寄せる
-      const effectiveStatus = showAppo && appoAt ? 'アポ獲得' : newStatus
+      // アポ時はステータスを「アポ」に寄せる
+      const effectiveStatus = showAppo && appoAt ? 'アポ' : newStatus
       const statusChanged = effectiveStatus && effectiveStatus !== selectedCase.status
       const logPayload: Partial<CallLog> = {
         case_id: selectedCase.id,

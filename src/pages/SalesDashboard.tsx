@@ -265,7 +265,7 @@ export default function SalesDashboard() {
                   {data.overdueRecalls.length > 0 && <div>・期限切れの再コールが <b>{data.overdueRecalls.length}</b> 件あります</div>}
                   {data.todayRecalls.length > 0 && <div>・今日中の再コールが <b>{data.todayRecalls.length}</b> 件あります</div>}
                   {data.staleProspects.length > 0 && <div>・7日以上更新のない見込み案件が <b>{data.staleProspects.length}</b> 件あります</div>}
-                  {data.appoNoFollow.length > 0 && <div>・アポ獲得後フォローのない案件が <b>{data.appoNoFollow.length}</b> 件あります</div>}
+                  {data.appoNoFollow.length > 0 && <div>・アポ後フォローのない案件が <b>{data.appoNoFollow.length}</b> 件あります</div>}
                 </div>
               </div>
             )}
