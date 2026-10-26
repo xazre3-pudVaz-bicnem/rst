@@ -668,6 +668,20 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ ok: true, remaining: rest.length })
     }
 
+    // 通話中の相手を切る。担当者の待機は切らないので、結果を登録してすぐ次へ進める
+    if (action === 'dialer-hangup') {
+      if (!session.current_call_sid) return res.status(200).json({ ok: true, note: '通話していません' })
+      await hangupTwilioCall(session.current_call_sid).catch(() => {})
+      // Twilioからの終了通知を待たずに画面を切り替える（通知が来ても上書きされない）
+      await saveDialerSession(admin, session.id, {
+        status: session.status === '通話中' ? '結果待ち' : '通話待機',
+        current_call_sid: null,
+        stats: session.status === '通話中' ? bumpStats(session.stats, 'talked') : session.stats,
+        last_note: session.status === '通話中' ? '通話を終えました。結果を登録してください' : null,
+      })
+      return res.status(200).json({ ok: true })
+    }
+
     if (action === 'dialer-next' || action === 'dialer-skip') {
       if (session.status === '停止') return res.status(400).json({ ok: false, error: 'ダイヤラーは終了しています。もう一度開始してください。' })
       if (!session.rep_call_sid) return res.status(400).json({ ok: false, error: 'あなたの電話が繋がっていません。' })

@@ -318,6 +318,18 @@ export default function Dashboard() {
     return m
   }, [callLogs])
 
+  /**
+   * 一度でも架電された案件のID（担当者を問わず社内の誰かが架電したもの）。
+   * ステータス変更ログや通話メモは実際の架電ではないので isCall で除く。
+   * 「未架電」の判定はステータスではなくこれで行う
+   * （コールしても不在だとステータスが新規のまま残り、未架電として出続けてしまうため）。
+   */
+  const calledCaseIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const l of callLogs) if (isCall(l)) set.add(l.case_id)
+    return set
+  }, [callLogs])
+
   // 案件ごとの「最終コールの結果」。ステータス変更ログや通話メモは実際の架電ではないので除く（isCall）
   const lastCallResultByCase = useMemo(() => {
     const at = new Map<string, string>()
@@ -366,10 +378,10 @@ export default function Dashboard() {
       const rc = recallByCase.get(c.id)
       switch (quickFilter) {
         case 'todayCall':
-          if (!(rc?.today) && !UNCALLED_STATUSES.includes(c.status as never)) return false
+          if (!(rc?.today) && (!UNCALLED_STATUSES.includes(c.status as never) || calledCaseIds.has(c.id))) return false
           break
         case 'uncalled':
-          if (!UNCALLED_STATUSES.includes(c.status as never)) return false
+          if (!UNCALLED_STATUSES.includes(c.status as never) || calledCaseIds.has(c.id)) return false
           break
         case 'recall':
           if (!RECALL_STATUSES.includes(c.status as never) && !rc) return false
@@ -419,7 +431,7 @@ export default function Dashboard() {
           if (criteria.lastCallResult === LAST_CALL_NONE ? !!last : last !== criteria.lastCallResult) return false
         }
         if (criteria.status && c.status !== criteria.status) return false
-        if (criteria.uncalledOnly && !UNCALLED_STATUSES.includes(c.status as never)) return false
+        if (criteria.uncalledOnly && (!UNCALLED_STATUSES.includes(c.status as never) || calledCaseIds.has(c.id))) return false
         if (criteria.overdueRecallOnly && !rc?.overdue) return false
         if (criteria.hasRecall === 'yes' && !rc) return false
         if (criteria.hasRecall === 'no' && rc) return false
@@ -449,7 +461,7 @@ export default function Dashboard() {
       }
     })
     return arr
-  }, [cases, criteria, quickFilter, deferredSearch, recallByCase, lastCallByCase, lastCallResultByCase, displayName, sortKey])
+  }, [cases, criteria, quickFilter, deferredSearch, recallByCase, lastCallByCase, lastCallResultByCase, calledCaseIds, displayName, sortKey])
 
   // 詳細検索「リスト投入者」の候補（実データに存在する投入者だけを出す）
   const creatorOptions = useMemo(() => creatorOptionsOf(cases), [cases])
@@ -743,7 +755,7 @@ export default function Dashboard() {
   function gotoNextUncalled() {
     const start = curIdx >= 0 ? curIdx + 1 : 0
     const ordered = [...filteredCases.slice(start), ...filteredCases.slice(0, Math.max(0, start))]
-    const next = ordered.find((c) => UNCALLED_STATUSES.includes(c.status as never))
+    const next = ordered.find((c) => UNCALLED_STATUSES.includes(c.status as never) && !calledCaseIds.has(c.id))
     if (next) selectCase(next.id)
     else toast.info('未架電の案件は見つかりませんでした')
   }
@@ -938,6 +950,7 @@ export default function Dashboard() {
         open={dialerOpen}
         onClose={() => setDialerOpen(false)}
         queue={filteredCases}
+        selectedCaseId={selectedCaseId}
         onSelectCase={selectCase}
         onRequestLog={openCallLogFor}
         logSavedSignal={logSavedCount}

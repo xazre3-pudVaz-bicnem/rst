@@ -51,6 +51,8 @@ interface Props {
   onClose: () => void
   /** 発信するリスト（絞り込み後の案件一覧の順番でそのまま掛ける） */
   queue: Case[]
+  /** 一覧で選択中の案件。ここから下に向かって掛ける（未選択なら先頭から） */
+  selectedCaseId: string | null
   /** 発信した案件を画面で選択状態にする（詳細・コール履歴を出すため） */
   onSelectCase: (id: string) => void
   /** コール結果の登録画面を開く */
@@ -60,7 +62,7 @@ interface Props {
   canWrite: boolean
 }
 
-export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, onRequestLog, logSavedSignal, canWrite }: Props) {
+export default function PowerDialerPanel({ open, onClose, queue, selectedCaseId, onSelectCase, onRequestLog, logSavedSignal, canWrite }: Props) {
   const toast = useToast()
   const { displayName } = useAuth()
   const [session, setSession] = useState<DialerSession | null>(null)
@@ -77,6 +79,14 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   const [browserVoice, setBrowserVoice] = useState<{ configured: boolean; missingEnv: string[] } | null>(null)
   const deviceRef = useRef<any>(null)
   const callRef = useRef<any>(null)
+
+  // 途中から掛け直したいことが多いので、一覧で選んでいる案件を開始位置にする。
+  // 「先頭から」を押すと一覧の最初に戻す。
+  const [fromTop, setFromTop] = useState(false)
+  const selectedIndex = selectedCaseId ? queue.findIndex((c) => c.id === selectedCaseId) : -1
+  const startIndex = fromTop || selectedIndex < 0 ? 0 : selectedIndex
+  const startCase = queue[startIndex] ?? null
+  const pending = Math.min(Math.max(queue.length - startIndex, 0), QUEUE_MAX)
 
   const [repPhone, setRepPhone] = useState(() => localStorage.getItem(LS_REP_PHONE) || '')
   const [testMode, setTestMode] = useState(() => localStorage.getItem(LS_TEST_MODE) !== '0')
@@ -207,7 +217,8 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
   }, [logSavedSignal])
 
   async function handleStart() {
-    const ids = queue.slice(0, QUEUE_MAX).map((c) => c.id)
+    // 選択中の案件から下へ。未選択（または「先頭から」）なら一覧の先頭から
+    const ids = queue.slice(startIndex, startIndex + QUEUE_MAX).map((c) => c.id)
     if (!ids.length) { toast.error('発信するリストが空です。絞り込みを確認してください。'); return }
     if (repMode === 'phone' && !repPhone.trim()) { toast.error('あなたのケータイ番号を入力してください。'); return }
     if (testMode && !testNumber.trim()) { toast.error('テストモードONです。確認用の番号を入力してください。'); return }
@@ -259,6 +270,17 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
       const r = await DialerApi.next(session.id)
       if (!r.ok) toast.error(r.error || '次へ進めませんでした')
       else if (r.done) toast.info('リストの最後まで発信しました')
+      await poll(session.id)
+    } finally { setBusy(false) }
+  }
+
+  /** 通話中の相手を切る（自分の待機はそのまま。そのあと結果を登録して次へ） */
+  async function handleHangup() {
+    if (!session) return
+    setBusy(true)
+    try {
+      const r = await DialerApi.hangup(session.id)
+      if (!r.ok) toast.error(r.error || '切電できませんでした')
       await poll(session.id)
     } finally { setBusy(false) }
   }
@@ -368,13 +390,25 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
                 </span>
               </label>
 
-              <div className="text-2xs text-muted-foreground">
-                発信するリスト: <b className="text-foreground">{Math.min(queue.length, QUEUE_MAX)}件</b>（いま絞り込んでいる案件一覧の順番）
-                {queue.length > QUEUE_MAX && <span className="text-amber-700 dark:text-amber-400">／{queue.length}件のうち先頭{QUEUE_MAX}件</span>}
-                <br />電話番号なし・NG指定・対象外案件は自動で飛ばします。
+              <div className="space-y-0.5 text-2xs text-muted-foreground">
+                <div>
+                  発信するリスト: <b className="text-foreground">{pending}件</b>（いま絞り込んでいる案件一覧の順番）
+                  {queue.length - startIndex > QUEUE_MAX && <span className="text-amber-700 dark:text-amber-400">／残り{queue.length - startIndex}件のうち{QUEUE_MAX}件</span>}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span>開始位置:</span>
+                  <b className="max-w-[150px] truncate text-foreground">{startCase ? `${startIndex + 1}番目 ${startCase.name}` : '—'}</b>
+                  {startIndex > 0 && (
+                    <button type="button" className="rounded border px-1.5 py-px hover:bg-accent" onClick={() => setFromTop(true)}>先頭から</button>
+                  )}
+                  {fromTop && selectedIndex > 0 && (
+                    <button type="button" className="rounded border px-1.5 py-px hover:bg-accent" onClick={() => setFromTop(false)}>選択中の案件から</button>
+                  )}
+                </div>
+                <div>一覧で案件を選んでから開始すると、そこから下に向かって掛けます。電話番号なし・NG指定・対象外案件は自動で飛ばします。</div>
               </div>
 
-              <Button className="w-full" size="lg" onClick={handleStart} disabled={busy || !canWrite || !queue.length}>
+              <Button className="w-full" size="lg" onClick={handleStart} disabled={busy || !canWrite || !pending}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : repMode === 'browser' ? <Headphones className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
                 {repMode === 'browser' ? 'ヘッドセットで開始' : '自分のケータイを呼んで開始'}
               </Button>
@@ -425,8 +459,14 @@ export default function PowerDialerPanel({ open, onClose, queue, onSelectCase, o
                 )}
               </div>
 
+              {session!.status === '通話中' && (
+                <Button className="w-full" variant="destructive" onClick={handleHangup} disabled={busy}>
+                  <PhoneOff className="h-4 w-4" />通話を終える（切電）
+                </Button>
+              )}
+
               {(session!.status === '通話中' || session!.status === '結果待ち') && session!.current_case_id && (
-                <Button className="w-full" onClick={() => onRequestLog(session!.current_case_id!)} disabled={!canWrite}>
+                <Button className="w-full" variant={session!.status === '結果待ち' ? 'default' : 'outline'} onClick={() => onRequestLog(session!.current_case_id!)} disabled={!canWrite}>
                   コール結果を登録
                 </Button>
               )}

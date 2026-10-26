@@ -170,6 +170,8 @@ export const DialerApi = {
   next(sessionId: string) { return dialerPost('dialer-next', { sessionId }) },
   /** 呼び出し中の相手を止めて次へ。 */
   skip(sessionId: string) { return dialerPost('dialer-skip', { sessionId }) },
+  /** 通話中の相手を切る（自分の待機はそのまま。結果を登録して次へ進める）。 */
+  hangup(sessionId: string) { return dialerPost('dialer-hangup', { sessionId }) },
   /** 終了（自分の電話も切る）。 */
   stop(sessionId: string) { return dialerPost('dialer-stop', { sessionId }) },
   /** 自動結果をコール履歴に書き終えたので待ち行列から外す。 */
