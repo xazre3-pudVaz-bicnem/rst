@@ -60,6 +60,26 @@ async function verifyAdmin(admin: any, token: string): Promise<{ ok: boolean; us
   return { ok: false, error: '管理者権限が必要です' }
 }
 
+/**
+ * 自動ダイヤラーを使える人か。営業担当・マネージャー・管理者が対象。
+ *  - 閲覧のみ(viewer)は不可
+ *  - アポ代行(appo)は社外なので不可（自社の番号で発信させない）
+ *  - ロール未設定は営業担当扱い（画面側の既定と合わせる）
+ */
+const DIALER_ROLES = ['admin', 'manager', 'sales', 'member']
+async function verifyDialerUser(admin: any, token: string): Promise<{ ok: boolean; user?: any; error?: string }> {
+  if (!token) return { ok: false, error: 'ログインが必要です' }
+  const { data } = await admin.auth.getUser(token)
+  const u = data?.user
+  if (!u) return { ok: false, error: 'セッションが無効です' }
+  if ((u.email || '').toLowerCase() === FIXED_ADMIN_EMAIL) return { ok: true, user: u }
+  const { data: prof } = await admin.from('profiles').select('role,is_active').eq('id', u.id).maybeSingle()
+  if (prof && prof.is_active === false) return { ok: false, error: 'このアカウントは利用できません' }
+  const role = prof?.role || 'member'
+  if (!DIALER_ROLES.includes(role)) return { ok: false, error: '自動ダイヤラーを使う権限がありません' }
+  return { ok: true, user: u }
+}
+
 function baseUrl(req: any): string {
   const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0]
   const host = req.headers['x-forwarded-host'] || req.headers.host
@@ -571,11 +591,11 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true })
   }
 
-  // ---- 開始（要管理者）: 自分のケータイを呼び、カンファレンスで待機させる ----
+  // ---- 開始（営業担当以上）: 自分の待機先を呼び、カンファレンスで待機させる ----
   if (action === 'dialer-start') {
     const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
-    const auth = await verifyAdmin(admin, token)
-    if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
+    const auth = await verifyDialerUser(admin, token)
+    if (!auth.ok) return res.status(auth.error?.includes('権限') ? 403 : 401).json({ ok: false, error: auth.error })
     if (getProviderMode() !== 'twilio') return res.status(400).json({ ok: false, error: 'AI_CALL_PROVIDER=mock のため実発信しません。Vercelで AI_CALL_PROVIDER=twilio に設定してください。' })
     if (!isTwilioConfigured()) return res.status(400).json({ ok: false, error: `Twilio環境変数が未設定です: ${missingTwilioEnv().join(', ')}（Vercelに設定して再デプロイ）` })
 
@@ -630,11 +650,11 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true, sessionId: session.id, sid: r.sid, total: caseIds.length, testMode, amdMode, repMode })
   }
 
-  // ---- 状態取得・次へ・スキップ・結果の消化・停止（要管理者）----
+  // ---- 状態取得・次へ・スキップ・切電・結果の消化・停止（営業担当以上）----
   if (action.startsWith('dialer-')) {
     const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
-    const auth = await verifyAdmin(admin, token)
-    if (!auth.ok) return res.status(auth.error === '管理者権限が必要です' ? 403 : 401).json({ ok: false, error: auth.error })
+    const auth = await verifyDialerUser(admin, token)
+    if (!auth.ok) return res.status(auth.error?.includes('権限') ? 403 : 401).json({ ok: false, error: auth.error })
     const b = req.body || {}
 
     // ブラウザ（ヘッドセット）で待機するためのアクセストークン。着信のみ許可。

@@ -106,7 +106,7 @@ const SAMPLE_CASES: Partial<Case>[] = [
 export default function Dashboard() {
   const toast = useToast()
   const confirm = useConfirm()
-  const { user, displayName, canWrite, isAdmin } = useAuth()
+  const { user, displayName, canWrite, isAppoAgency } = useAuth()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
 
@@ -817,8 +817,9 @@ export default function Dashboard() {
         >
           <Copy className="h-3.5 w-3.5" />
         </button>
-        {isAdmin && (
-          <Button size="sm" variant={dialerOpen ? 'default' : 'outline'} className="ml-2 h-6 px-2 text-2xs" onClick={() => setDialerOpen((o) => !o)} disabled={!canWrite}>
+        {/* 営業担当も使える。閲覧のみ・アポ代行（社外）には出さない */}
+        {canWrite && !isAppoAgency && (
+          <Button size="sm" variant={dialerOpen ? 'default' : 'outline'} className="ml-2 h-6 px-2 text-2xs" onClick={() => setDialerOpen((o) => !o)}>
             <PhoneCall className="h-3.5 w-3.5" />自動ダイヤラー
           </Button>
         )}
