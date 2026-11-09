@@ -30,7 +30,10 @@ interface Props {
   onClose: () => void
   editingCase: Case | null
   existingCases: Case[]
-  onSaved: () => void
+  /** 新規作成時の初期値（訪問予定から案件を起こすときに、件名から拾った店名・住所を入れる） */
+  initial?: Partial<Case> | null
+  /** 保存後。新規作成なら作成した案件を渡す（呼び出し元で紐づけに使う） */
+  onSaved: (created?: Case) => void
 }
 
 const EMPTY = {
@@ -56,6 +59,7 @@ export default function CaseFormModal({
   onClose,
   editingCase,
   existingCases,
+  initial,
   onSaved,
 }: Props) {
   const { user, displayName } = useAuth()
@@ -89,12 +93,20 @@ export default function CaseFormModal({
       setPriority(editingCase.priority ?? '')
       setTags(editingCase.tags ?? [])
     } else {
-      // 新規作成時は営業担当の初期値をログイン中ユーザー（作成者）にする
-      setForm({ ...EMPTY, sales_rep: displayName || '' })
+      // 新規作成時は営業担当の初期値をログイン中ユーザー（作成者）にする。
+      // initial があれば（訪問予定から案件を起こすとき）その値を重ねる
+      setForm({
+        ...EMPTY,
+        sales_rep: initial?.sales_rep || displayName || '',
+        name: initial?.name ?? '',
+        address: initial?.address ?? '',
+        phone1: initial?.phone1 ?? '',
+        memo: initial?.memo ?? '',
+      })
       setPriority('')
       setTags([])
     }
-  }, [editingCase, open, displayName])
+  }, [editingCase, open, displayName, initial])
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -131,6 +143,8 @@ export default function CaseFormModal({
 
     setBusy(true)
     try {
+      // 新規作成した案件。保存後に呼び出し元へ渡して、訪問予定との紐づけに使う
+      let created: Case | null = null
       const payload: Partial<Case> = {
         name: form.name.trim(),
         address: form.address.trim(),
@@ -159,7 +173,8 @@ export default function CaseFormModal({
         // user_id 系（未適用環境で無い可能性）は作成後に best-effort で付与し、insert失敗を防ぐ。
         const repName = payload.sales_rep || displayName || null
         const matched = assignableUsers.find((u) => u.name === repName)
-        const created = await CaseApi.create({
+        // created は if の外で宣言済み（作成後に呼び出し元へ渡して紐づけに使う）
+        created = await CaseApi.create({
           ...payload,
           sales_rep: repName,
           created_by_id: user?.id ?? null,
@@ -176,7 +191,7 @@ export default function CaseFormModal({
         AuditApi.log({ action: 'create', entity: 'case', entity_id: created.id, entity_name: created.name, actor_id: user?.id ?? null })
       }
       toast.success(editingCase ? '案件を更新しました' : '案件を登録しました')
-      onSaved()
+      onSaved(created ?? undefined)
       onClose()
     } catch (e) {
       toast.error('保存に失敗しました: ' + jpError(e))

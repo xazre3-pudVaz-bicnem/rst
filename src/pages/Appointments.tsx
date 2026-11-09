@@ -44,6 +44,29 @@ const HOUR_START = 8
 const HOURS = Array.from({ length: 24 - HOUR_START }, (_, i) => i + HOUR_START)
 /** アポ形式ごとの所要時間（枠の幅）。Zoomは1時間、対面（既定）は2時間。 */
 const spanHoursOf = (a: Appointment) => (a.meeting_type === 'zoom' ? 1 : 2)
+/**
+ * 案件に紐づかない予定の件名から、店名と住所を推測する。
+ * アポ代行会社は「【YH】東京都板橋区上板橋3-7-5-1F■スナック ゼロ」のように
+ * 1行で入れてくるため、■（や / ｜）で区切って住所と店名に分ける。
+ * 推測が外れても、案件登録フォームで直せるので初期値として使うだけ。
+ */
+export function guessCaseFromTitle(title?: string | null): { name: string; address: string } {
+  const raw = String(title || '').trim()
+  if (!raw) return { name: '', address: '' }
+  const body = raw.replace(/^【[^】]*】\s*/, '')          // 先頭の【YH】等を外す
+  const parts = body.split(/[■□▪｜|]/).map((x) => x.trim()).filter(Boolean)
+  if (parts.length >= 2) {
+    // 都道府県から始まるほうを住所とみなす
+    const addrIdx = parts.findIndex((x) => /^(北海道|東京都|京都府|大阪府|.{2,3}県)/.test(x))
+    if (addrIdx >= 0) {
+      const name = parts.filter((_, i) => i !== addrIdx).join(' ')
+      return { name, address: parts[addrIdx] }
+    }
+    return { name: parts[parts.length - 1], address: parts[0] }
+  }
+  return { name: body, address: '' }
+}
+
 const ALL = '__all__'
 const NONE = '__none__'
 
@@ -65,6 +88,13 @@ export default function Appointments() {
   // 訪問結果登録モーダル
   const [visitCase, setVisitCase] = useState<Case | null>(null)
   const [visitApptId, setVisitApptId] = useState<string | null>(null)
+  // 案件に紐づかない予定（アポ代行会社のアポ等）でも訪問結果を登録できるようにする。
+  // selectedCase が null でも開けるよう、開閉は専用のフラグで持つ
+  const [visitOpen, setVisitOpen] = useState(false)
+  const [visitName, setVisitName] = useState('')
+  // 予定から案件を起こして紐づけるとき、どの予定に紐づけるかと、フォームの初期値
+  const [caseFromAppt, setCaseFromAppt] = useState<Appointment | null>(null)
+  const [caseInitial, setCaseInitial] = useState<Partial<Case> | null>(null)
   const [form, setForm] = useState({
     case_id: '',
     title: '',
@@ -195,6 +225,34 @@ export default function Appointments() {
     }
   }
 
+  /** 案件に紐づかない予定から、案件を作って紐づける */
+  function openCaseFromAppt(a: Appointment) {
+    const g = guessCaseFromTitle(a.case_name)
+    setCaseFromAppt(a)
+    setCaseInitial({
+      name: g.name || a.case_name || '',
+      address: a.address || g.address || '',
+      sales_rep: a.sales_rep || '',
+      memo: `訪問予定「${a.case_name ?? ''}」から作成`,
+    })
+    setShowCaseModal(true)
+  }
+
+  /** 案件登録のあと、起点になった予定に紐づける（以後は通常の予定と同じ操作ができる） */
+  async function linkCaseToAppt(created?: Case) {
+    const a = caseFromAppt
+    setCaseFromAppt(null)
+    setCaseInitial(null)
+    if (!a || !created) { await load(); return }
+    try {
+      await AppointmentApi.update(a.id, { case_id: created.id, case_name: created.name, address: created.address ?? null })
+      toast.success('案件を作成して予定に紐づけました')
+    } catch (e) {
+      toast.error('案件は作成しましたが、予定への紐づけに失敗しました: ' + jpError(e))
+    }
+    await load()
+  }
+
   async function handleDelete() {
     if (!editing) return
     if (!(await confirm({ title: 'このアポを削除しますか？', confirmLabel: '削除する', danger: true }))) return
@@ -312,12 +370,23 @@ export default function Appointments() {
                         <MapPin className="h-4 w-4" /> 地図
                       </button>
                     )}
-                    {a.case_id && (
+                    <button
+                      onClick={() => {
+                        setVisitCase(a.case_id ? (c ?? { id: a.case_id, name: a.case_name ?? '' } as Case) : null)
+                        setVisitName(a.case_name ?? '')
+                        setVisitApptId(a.id)
+                        setVisitOpen(true)
+                      }}
+                      className="flex h-9 items-center justify-center gap-1 rounded-md border border-input text-sm font-medium active:bg-accent"
+                    >
+                      <ClipboardCheck className="h-4 w-4" /> 訪問結果
+                    </button>
+                    {!a.case_id && (
                       <button
-                        onClick={() => { setVisitCase(c ?? { id: a.case_id!, name: a.case_name ?? '' } as Case); setVisitApptId(a.id) }}
+                        onClick={() => openCaseFromAppt(a)}
                         className="flex h-9 items-center justify-center gap-1 rounded-md border border-input text-sm font-medium active:bg-accent"
                       >
-                        <ClipboardCheck className="h-4 w-4" /> 訪問結果
+                        <Plus className="h-4 w-4" /> 案件を作成
                       </button>
                     )}
                     <button
@@ -397,19 +466,25 @@ export default function Appointments() {
                                 </button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="start">
-                                {a.case_id && (
-                                  <>
-                                    <DropdownMenuItem onClick={() => navigate(`/?case=${a.case_id}`)}>案件詳細を開く</DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onClick={() => { setVisitCase(c ?? { id: a.case_id!, name: a.case_name ?? '' } as Case); setVisitApptId(a.id) }}
-                                    >
-                                      訪問結果を登録
-                                    </DropdownMenuItem>
-                                  </>
+                                {a.case_id ? (
+                                  <DropdownMenuItem onClick={() => navigate(`/?case=${a.case_id}`)}>案件詳細を開く</DropdownMenuItem>
+                                ) : (
+                                  // 案件に紐づかない予定（アポ代行会社のアポ等）。案件を起こせば以後は通常と同じ
+                                  <DropdownMenuItem onClick={() => openCaseFromAppt(a)}>案件を作成して紐づける</DropdownMenuItem>
                                 )}
-                                {c?.address && (
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    setVisitCase(a.case_id ? (c ?? { id: a.case_id, name: a.case_name ?? '' } as Case) : null)
+                                    setVisitName(a.case_name ?? '')
+                                    setVisitApptId(a.id)
+                                    setVisitOpen(true)
+                                  }}
+                                >
+                                  訪問結果を登録
+                                </DropdownMenuItem>
+                                {(c?.address || a.address) && (
                                   <DropdownMenuItem
-                                    onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.address)}`, '_blank', 'noopener,noreferrer')}
+                                    onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c?.address || a.address || '')}`, '_blank', 'noopener,noreferrer')}
                                   >
                                     地図を開く
                                   </DropdownMenuItem>
@@ -555,17 +630,19 @@ export default function Appointments() {
 
       <CaseFormModal
         open={showCaseModal}
-        onClose={() => setShowCaseModal(false)}
+        onClose={() => { setShowCaseModal(false); setCaseFromAppt(null); setCaseInitial(null) }}
         editingCase={null}
         existingCases={cases}
-        onSaved={load}
+        initial={caseInitial}
+        onSaved={linkCaseToAppt}
       />
 
       <VisitReportModal
-        open={!!visitCase}
-        onClose={() => { setVisitCase(null); setVisitApptId(null) }}
+        open={visitOpen}
+        onClose={() => { setVisitOpen(false); setVisitCase(null); setVisitApptId(null); setVisitName('') }}
         selectedCase={visitCase}
         appointmentId={visitApptId}
+        defaultCaseName={visitName}
         onSaved={load}
       />
     </div>

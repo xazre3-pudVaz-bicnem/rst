@@ -28,6 +28,8 @@ interface Props {
   onClose: () => void
   selectedCase: Case | null
   appointmentId?: string | null
+  /** 案件に紐づかない予定から開いたときの会社名の初期値（予定の件名） */
+  defaultCaseName?: string | null
   editing?: VisitReport | null
   onSaved: () => void
 }
@@ -39,7 +41,7 @@ const num = (v: string): number | null => {
   return Number.isFinite(n) && v.trim() !== '' ? Math.round(n) : null
 }
 
-export default function VisitReportModal({ open, onClose, selectedCase, appointmentId, editing, onSaved }: Props) {
+export default function VisitReportModal({ open, onClose, selectedCase, appointmentId, defaultCaseName, editing, onSaved }: Props) {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { names: repNames } = useAssignableUsers()
@@ -134,7 +136,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpPayType('一括')
       setHpInstallments('')
       setSalesRep('')
-      setCaseName('')
+      // 案件なしの予定（アポ代行会社のアポ等）は、予定の件名を会社名の初期値にする
+      setCaseName(selectedCase ? '' : (defaultCaseName ?? ''))
       // リスト担当は「案件をリストに入れた人」を初期値に。
       // AI投入の案件は「AI自動投入」＝アポ担当がリスト担当を兼ねる（リスト分もアポ担当へ）。
       setListRep(selectedCase ? creatorNameOf(selectedCase) : '')
