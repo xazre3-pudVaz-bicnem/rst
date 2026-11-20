@@ -31,3 +31,8 @@ supabase/.env
 *.njsproj
 *.sln
 *.sw?
+
+.vercel
+
+# Vercel CLI のローカル連携情報（コミットしない）
+.vercel

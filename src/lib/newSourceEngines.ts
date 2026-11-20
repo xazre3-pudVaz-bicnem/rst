@@ -1011,8 +1011,9 @@ export interface PermitSource {
   delimiter?: ',' | '\t'
   /** 対象業種。'salon'は食品業種フィルタを外し美容所/理容所を受理する。既定は'food'。 */
   industry?: 'food' | 'salon'
-  /** CKAN(BODIK等)から「最新の新規リソースCSV」を動的解決する。resource UUIDが毎月変わるため。 */
-  ckan?: { pkgId: string; match: string }
+  /** CKAN(BODIK等)から「最新の新規リソースCSV」を動的解決する。resource UUIDが毎月変わるため。
+   *  host 省略時は data.bodik.jp。 */
+  ckan?: { pkgId: string; match: string; host?: string }
 }
 export const PERMIT_SOURCES: PermitSource[] = [
   {
@@ -1035,8 +1036,20 @@ export const PERMIT_SOURCES: PermitSource[] = [
   // 公開ラグが大きい（実査2026-07時点で最新は2026-03分）ため鮮度窓150日。他区もBODIKの pkgId を足すだけで追加可能。
   { key: 'meguro_salon', label: '目黒区 美容所（新規開設）', kind: 'monthly_new', industry: 'salon', delimiter: '\t', areaPrefix: '東京都目黒区', telAreaCode: '03', recencyDays: 150,
     ckan: { pkgId: 'f5569102-a9da-435f-aa43-d95c21dcd3c3', match: 'hairdressingshop_new_' }, urls: () => [] },
+  // --- 2026-11実査で追加。実CSVをパーサに通して「直近90日の新規許可」が取れることを確認済み ---
+  // 和歌山市: 標準様式・電話列あり（実測 直近90日で102件）。ファイル名に年月日が入り毎月変わるためCKANで解決。
+  { key: 'wakayama', label: '和歌山市 食品等営業許可', kind: 'std_registry', recencyDays: 90,
+    ckan: { pkgId: '29856ff4-da41-45ab-b44f-c6ff0e7993de', match: 'food_business' }, urls: () => [] },
+  // 岡崎市: 標準様式・電話列あり（実測 直近90日で93件）。ファイル名が _all 固定なので直リンクで取れる。
+  { key: 'okazaki', label: '岡崎市 食品等営業許可', kind: 'std_registry', recencyDays: 90,
+    urls: () => ['https://data.bodik.jp/ja/dataset/aabced9d-d86e-422d-8ad0-2781d0f30671/resource/a893c7d6-5c10-4fb4-b9fa-cb48edd81565/download/232025_food_business_all.csv'] },
+  // 大津市 美容所: 件数は少ない（実測 直近90日で5件）が業種が狙い目。ファイル名が日付のためCKANで最新を解決。
+  { key: 'otsu_salon', label: '大津市 美容所', kind: 'std_registry', industry: 'salon', recencyDays: 90,
+    ckan: { pkgId: 'cc0d476f-a5cc-429b-9797-8bb84c3df02f', match: '/download/20' }, urls: () => [] },
   // ※実測で外したソース（2026-07実査）: 江東/中央/新宿=標準台帳だが年次スナップショット更新で直近45日の新規0件、
   //   中野=日付列なしの独自様式。更新頻度の高い自治体が見つかれば std_registry で1行追加するだけで対応可能。
+  // ※2026-11再実査でも 中央/江東/新宿/中野/東村山 は鮮度窓180日でも新規0件（台帳が更新されていない）。
+  //   東京都保健医療局/品川区/八王子市はCSV提供なし、練馬区はZIP提供のため現状の取込対象外。
 ]
 
 /** 政府系CSVのエンコード自動判定デコード（UTF-8 BOM / UTF-16LE BOM / Shift-JIS / UTF-8）。 */
@@ -1105,11 +1118,12 @@ export function extractFreshPermitRows(src: PermitSource, buf: Buffer, sinceMs: 
   const decoded = decodeGovCsv(buf)
   const rows = src.delimiter === '\t' ? parseTsvRows(decoded) : parseCsvRows(decoded)
   if (rows.length < 2) return { rows: 0, fresh: [], error: 'CSVが空/解析不能' }
-  const header = rows[0].map((h) => zenToHan(h).replace(/\s|"/g, ''))
-  const col = (...names: string[]) => { for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i } return -1 }
+  const normHdr = (x: string) => zenToHan(x).replace(/[\s"'_･・]/g, '')
+  const header = rows[0].map(normHdr)
+  const col = (...names: string[]) => { for (const n of names) { const nn = normHdr(n); const i = header.findIndex((h) => h.includes(nn)); if (i >= 0) return i } return -1 }
   // 列マップ（台東型/標準データセット様式/BODIK美容所様式に対応・列名で特定＝位置固定にしない）
-  const cName = col('施設名称', '屋号', '名称')
-  const cAddr = col('所在地_連結表記', '営業所所在地', '施設所在地')
+  const cName = col('施設名称', '営業所名称', '営業所の名称', '営業施設名称', '屋号', '名称')
+  const cAddr = col('所在地_連結表記', '営業所所在地', '施設所在地', '営業所の所在地', '施設の所在地', '所在地')
   const cAddr2 = col('施設方書', '営業所方書')
   const cTel = col('施設電話番号', '営業所TEL', 'TEL1', '電話番号', 'TEL')
   const cKind = col('営業の種類', '業種')
@@ -1192,7 +1206,7 @@ export async function runHealthPermitScan(admin: any, mapsKey: string | null, op
       if (src.ckan) {
         try {
           const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 15000)
-          const pr = await fetch(`https://data.bodik.jp/api/3/action/package_show?id=${src.ckan.pkgId}`, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
+          const pr = await fetch(`https://${src.ckan.host || 'data.bodik.jp'}/api/3/action/package_show?id=${src.ckan.pkgId}`, { headers: { 'User-Agent': UA }, signal: ctrl.signal })
           clearTimeout(to)
           if (pr.ok) {
             const j: any = await pr.json()

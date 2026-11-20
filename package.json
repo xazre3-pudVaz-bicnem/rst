@@ -17,7 +17,8 @@
     "check:sequential-probe-api": "tsx scripts/check-sequential-probe-api.ts",
     "check:google-places-api": "tsx scripts/check-google-places-api.ts",
     "check:japan-filter": "tsx scripts/check-japan-filter.ts",
-    "db:apply": "tsx scripts/apply-migration.ts"
+    "db:apply": "tsx scripts/apply-migration.ts",
+    "probe:permits": "tsx scripts/probe-permit-sources.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
