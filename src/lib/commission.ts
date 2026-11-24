@@ -128,6 +128,128 @@ export function dealRevenueForMonth(r: VisitReport, month: string): number {
   return revenue
 }
 
+// ============================================================
+// 昇級判定（四半期ごと）
+//   昇級表のルール:
+//     - 四半期（3ヶ月）の有効成約で判定し、条件を満たせば次の四半期から昇級
+//     - 四半期は10月始まり（10〜12 / 1〜3 / 4〜6 / 7〜9）
+//     - 「本数」と「P」の両方を満たしたときだけ昇級する
+//     - 無効: 四半期終了時までに支払いが滞っている / 解約 / 途中キャンセル。本数・Pとも判定から除外
+//   Pの数え方（2026-11に社長の指示で変更）:
+//     1契約=120P固定ではなく、その契約の支払い総額（HP制作の総額 ＋ 月額×最低契約期間）を
+//     1万円=1P で換算する。歩合と同じく リスト10% / アポ40% / 営業50% で分け合う。
+// ============================================================
+/** 支払い総額をPに換算する単位（1P = 1万円） */
+export const PROMOTION_POINT_YEN = 10000
+
+export interface PromotionRank {
+  rank: string
+  /** 必要な有効成約数（3ヶ月合計） */
+  deals: number
+  /** 必要な有効P（3ヶ月合計） */
+  points: number
+  /** 固定給アップ額（円/月） */
+  raiseYen: number
+}
+/** 昇級表（下位から順に）。一般社員が初期役職 */
+export const PROMOTION_RANKS: readonly PromotionRank[] = [
+  { rank: '上級社員', deals: 6, points: 720, raiseYen: 50000 },
+  { rank: '主任', deals: 9, points: 1080, raiseYen: 100000 },
+  { rank: '課長', deals: 12, points: 1440, raiseYen: 150000 },
+]
+export const PROMOTION_BASE_RANK = '一般社員'
+
+/**
+ * 契約の支払い総額（円）。HP制作の総額（一括/分割を問わず契約金額）＋ 月額サービス×最低契約期間。
+ * 最低契約期間が未入力の契約は月額ぶんを数えられない（0ヶ月扱い）ので、入力を促すために
+ * そのまま0として扱う＝初期費用だけがPになる。
+ */
+export function contractTotalYen(r: VisitReport): number {
+  const hp = Number(r.hp_price) || 0
+  const monthly = (Number(r.maintenance_price) || 0) + (Number(r.seo_price) || 0) + (Number(r.meo_price) || 0)
+  const months = Number(r.min_contract_months) || 0
+  return hp + monthly * months
+}
+
+/** 10月始まりの四半期。月(YYYY-MM)が属する四半期の範囲とラベルを返す */
+export function promotionQuarter(month: string): { from: string; to: string; label: string } {
+  const m = moment(month + '-01')
+  // 10,1,4,7月が四半期の開始。(月-10+12)%3 で開始月までの戻り月数が出る
+  const back = ((m.month() + 1 - 10) % 3 + 3) % 3
+  const start = m.clone().subtract(back, 'months')
+  const end = start.clone().add(2, 'months')
+  return {
+    from: start.format('YYYY-MM'),
+    to: end.format('YYYY-MM'),
+    label: `${start.format('YYYY年M月')}〜${end.format('M月')}期`,
+  }
+}
+
+/** 昇級判定の対象になる契約か（無効＝未払い/解約/途中キャンセル、販売代理店は対象外） */
+export function isPromotionCountable(r: VisitReport): boolean {
+  if (r.result !== '成約') return false
+  if (isAgencyDeal(r)) return false
+  if (r.commission_unpaid) return false      // 支払いが滞っている
+  if (r.contract_end_month) return false     // 解約/途中キャンセル
+  return true
+}
+
+export interface PersonPromotion {
+  name: string
+  /** 有効成約数（関わった案件数。リスト/アポ/営業のいずれかで担当） */
+  deals: number
+  /** 有効P（支払い総額を役割比率で分けて1万円=1Pに換算） */
+  points: number
+  /** いまの実績で満たしている役職（満たしていなければ一般社員） */
+  rank: string
+  /** 次に目指す役職（課長まで到達していれば null） */
+  next: PromotionRank | null
+  /** 次の役職まであと何本・何P（満たしていれば0） */
+  dealsLeft: number
+  pointsLeft: number
+}
+
+/**
+ * 四半期の昇級進捗を担当者ごとに集計する。
+ * 本数は「リスト/アポ/営業のいずれかで関わった有効案件の数」（1案件につき1本）。
+ * Pは歩合と同じ比率で分け合う（同じ案件で2役兼任ならその合計）。
+ */
+export function summarizePromotion(reports: VisitReport[], month: string): {
+  from: string; to: string; label: string; people: PersonPromotion[]
+} {
+  const q = promotionQuarter(month)
+  const acc = new Map<string, { yen: number; deals: Set<string> }>()
+  for (const r of reports) {
+    if (!isPromotionCountable(r)) continue
+    const start = contractStartMonth(r)
+    if (!start || start < q.from || start > q.to) continue
+    const total = contractTotalYen(r)
+    const key = r.id || `${r.case_name}-${start}`
+    for (const role of Object.keys(COMMISSION_SPLIT) as CommissionRole[]) {
+      const name = commissionRecipient(r, role)
+      if (!name || isExcludedRecipient(name)) continue
+      const cur = acc.get(name) ?? { yen: 0, deals: new Set<string>() }
+      cur.yen += total * COMMISSION_SPLIT[role]
+      cur.deals.add(key)
+      acc.set(name, cur)
+    }
+  }
+  const people: PersonPromotion[] = [...acc.entries()].map(([name, v]) => {
+    const points = Math.round(v.yen / PROMOTION_POINT_YEN)
+    const deals = v.deals.size
+    // 本数とPの両方を満たした役職のうち、いちばん上を現在の到達役職とする
+    let rank = PROMOTION_BASE_RANK
+    for (const t of PROMOTION_RANKS) if (deals >= t.deals && points >= t.points) rank = t.rank
+    const next = PROMOTION_RANKS.find((t) => !(deals >= t.deals && points >= t.points)) ?? null
+    return {
+      name, deals, points, rank, next,
+      dealsLeft: next ? Math.max(0, next.deals - deals) : 0,
+      pointsLeft: next ? Math.max(0, next.points - points) : 0,
+    }
+  }).sort((a, b) => b.points - a.points)
+  return { ...q, people }
+}
+
 export interface PersonCommission {
   name: string
   list: number

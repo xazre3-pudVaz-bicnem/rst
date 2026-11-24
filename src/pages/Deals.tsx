@@ -16,6 +16,7 @@ import type { Case, VisitReport } from '@/lib/types'
 import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import {
   summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal, COMMISSION_RULE_CHANGE_MONTH,
+  summarizePromotion, PROMOTION_RANKS, PROMOTION_POINT_YEN, PROMOTION_BASE_RANK,
   COMMISSION_RATE, COMMISSION_SPLIT, COMMISSION_PAY_DAY, type PayStatus,
 } from '@/lib/commission'
 
@@ -128,6 +129,8 @@ export default function Deals() {
   }, [reports, commMonth, commAll])
   const isFutureMonth = !commAll && commMonth > moment().format('YYYY-MM')
   const selectedPay = payrollInfo(commMonth)
+  // 昇級進捗（四半期・10月始まり）。歩合の表示月が属する四半期を見る
+  const promotion = useMemo(() => summarizePromotion(reports, commMonth), [reports, commMonth])
   // 月別の歩合（月末締め→翌月25日払い）。新しい月から並べる
   const monthlyRows = useMemo(() => {
     const now = moment().format('YYYY-MM')
@@ -246,6 +249,77 @@ export default function Deals() {
               </table>
             </div>
           )}
+          {/* ---- 役職アップへの進捗（四半期ごと・本数とPの両方を満たすと昇級） ---- */}
+          <div className="mt-4 border-t pt-3">
+            <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
+              <h3 className="text-xs font-bold">役職アップへの進捗</h3>
+              <span className="text-2xs font-medium text-primary">{promotion.label}</span>
+              <span className="text-2xs text-muted-foreground">
+                四半期（3ヶ月）の有効成約で判定・条件を満たせば次の四半期から昇級／
+                1P = 支払い総額{(PROMOTION_POINT_YEN / 10000).toLocaleString()}万円（月額×最低契約期間＋初期費用）を
+                リスト{pct(COMMISSION_SPLIT.list)}・アポ{pct(COMMISSION_SPLIT.appo)}・営業{pct(COMMISSION_SPLIT.sales)}で分配
+              </span>
+            </div>
+            {promotion.people.length === 0 ? (
+              <p className="py-3 text-center text-xs text-muted-foreground">この四半期に有効な成約がありません</p>
+            ) : (
+              <div className="space-y-2">
+                {promotion.people.map((pp) => {
+                  const bar = (now: number, need: number) => Math.max(0, Math.min(100, need > 0 ? (now / need) * 100 : 100))
+                  return (
+                    <div key={pp.name} className="rounded-lg border p-2">
+                      <div className="mb-1 flex flex-wrap items-center gap-2">
+                        <RepCell name={pp.name} />
+                        <span className={`rounded px-1.5 py-0.5 text-2xs font-bold ${pp.rank === PROMOTION_BASE_RANK ? 'bg-muted text-muted-foreground' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'}`}>
+                          到達: {pp.rank}
+                        </span>
+                        {pp.next ? (
+                          <span className="text-2xs text-muted-foreground">
+                            次は <b className="text-foreground">{pp.next.rank}</b>（固定給 +{(pp.next.raiseYen / 10000).toLocaleString()}万円）まで
+                            {pp.dealsLeft > 0 && <> あと <b className="text-foreground">{pp.dealsLeft}本</b></>}
+                            {pp.dealsLeft > 0 && pp.pointsLeft > 0 && ' ・'}
+                            {pp.pointsLeft > 0 && <> あと <b className="text-foreground">{pp.pointsLeft.toLocaleString()}P</b></>}
+                            {pp.dealsLeft === 0 && pp.pointsLeft === 0 && ' 条件達成'}
+                          </span>
+                        ) : (
+                          <span className="text-2xs font-bold text-emerald-700 dark:text-emerald-400">最上位に到達しています</span>
+                        )}
+                      </div>
+                      {pp.next && (
+                        <div className="grid gap-1.5 sm:grid-cols-2">
+                          <div>
+                            <div className="flex justify-between text-2xs">
+                              <span className="text-muted-foreground">有効成約数</span>
+                              <span className={`tabular-nums ${pp.deals >= pp.next.deals ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}`}>{pp.deals} / {pp.next.deals}本</span>
+                            </div>
+                            <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                              <div className={`h-full rounded-full ${pp.deals >= pp.next.deals ? 'bg-emerald-500' : 'bg-sky-500'}`} style={{ width: `${bar(pp.deals, pp.next.deals)}%` }} />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-2xs">
+                              <span className="text-muted-foreground">有効P</span>
+                              <span className={`tabular-nums ${pp.points >= pp.next.points ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}`}>{pp.points.toLocaleString()} / {pp.next.points.toLocaleString()}P</span>
+                            </div>
+                            <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                              <div className={`h-full rounded-full ${pp.points >= pp.next.points ? 'bg-emerald-500' : 'bg-sky-500'}`} style={{ width: `${bar(pp.points, pp.next.points)}%` }} />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+              昇級条件は<b>本数とPの両方</b>を満たすこと（
+              {PROMOTION_RANKS.map((t) => `${t.rank} ${t.deals}本・${t.points.toLocaleString()}P`).join(' / ')}）。
+              支払いが滞っている案件・解約・途中キャンセルは、本数もPも判定から除きます。
+              本数はリスト／アポ／営業のいずれかで関わった案件を1本と数えます。
+            </p>
+          </div>
+
           {commission.unassigned > 0 && (
             <p className={`mt-2 text-[10px] text-muted-foreground print:hidden ${pdfBusy ? 'hidden' : ''}`}>
               リスト担当・アポ担当が未設定の案件は、その分が誰にも配分されません。各案件の操作欄のえんぴつから設定してください。
