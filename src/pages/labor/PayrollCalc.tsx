@@ -16,12 +16,12 @@ import { useToast } from '@/components/ui/toast'
 import { useAuth } from '@/context/AuthContext'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import {
-  EmployeeApi, AttendanceApi, LeaveRequestApi, PayrollRunApi, PayslipApi, LaborAuditApi,
+  EmployeeApi, AttendanceApi, LeaveRequestApi, PayrollRunApi, PayslipApi, LaborAuditApi, CallLogApi,
 } from '@/lib/api'
 import { laborPerms, fmtYen, fmtMinutes, monthStr, procedureStatusColor, toCsv, downloadCsv } from '@/lib/labor'
 import { calcPayslip, recalcDeductions, ratesForMonth, hourlyRateOf } from '@/lib/payrollCalc'
 import { cn } from '@/lib/utils'
-import type { Employee, AttendanceRecord, LeaveRequest, PayrollRun, Payslip } from '@/lib/types'
+import type { Employee, AttendanceRecord, LeaveRequest, PayrollRun, Payslip, CallLog } from '@/lib/types'
 
 /** 数値入力の安全パース */
 function num(v: string): number {
@@ -35,11 +35,24 @@ function pct(n: number): string {
 }
 
 /** 従業員ごとの当月勤怠を集計し PayrollInput を作る */
+/**
+ * その人がその月に「取ったアポ」の件数。
+ * コール履歴にアポ日時(appo_at)が入った行を、記録者ごとに数える
+ * ＝ 自分の架電で取れたアポ。訪問予定の担当者（誰が訪問するか）とは別物。
+ */
+function appoCountOf(empName: string, month: string, callLogs: CallLog[]): number {
+  const name = (empName || '').trim()
+  if (!name) return 0
+  return callLogs.filter((l) => !!l.appo_at && (l.sales_rep || '').trim() === name
+    && String(l.call_at || '').slice(0, 7) === month).length
+}
+
 function aggregate(
   emp: Employee,
   month: string,
   records: AttendanceRecord[],
   leaves: LeaveRequest[],
+  callLogs: CallLog[] = [],
 ): Parameters<typeof calcPayslip>[2] {
   let workMinutes = 0, overtimeMinutes = 0, lateNightMinutes = 0, holidayWorkMinutes = 0
   let workDays = 0, absentDays = 0
@@ -65,6 +78,8 @@ function aggregate(
     workDays, absentDays, paidLeaveDays,
     commuteAllowance: 0, positionAllowance: 0, otherAllowance: 0,
     longTermCareApplicable: false,
+    // アポ歩合の単価が設定されている人だけ件数を数える（正社員は通常0円＝数えない）
+    appoCount: emp.appo_bonus_yen ? appoCountOf(emp.name, month, callLogs) : 0,
   }
 }
 
@@ -91,6 +106,8 @@ export default function PayrollCalc() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
   const [leaves, setLeaves] = useState<LeaveRequest[]>([])
+  // アポ歩合の算定に使うコール履歴（その月ぶん）
+  const [callLogs, setCallLogs] = useState<CallLog[]>([])
   const [run, setRun] = useState<PayrollRun | null>(null)
   const [payslips, setPayslips] = useState<Payslip[]>([])
   const [loading, setLoading] = useState(true)
@@ -113,19 +130,23 @@ export default function PayrollCalc() {
         setRun(null)
         setRecords([])
         setLeaves([])
+        setCallLogs([])
       } else {
-        const [emps, recs, lvs, r, slips] = await Promise.all([
+        const [emps, recs, lvs, r, slips, logs] = await Promise.all([
           EmployeeApi.list(),
           AttendanceApi.listByMonth(month),
           LeaveRequestApi.list(),
           PayrollRunApi.getByMonth(month),
           PayslipApi.listByMonth(month),
+          // アポ歩合の算定に使う（その月のコール履歴）
+          CallLogApi.listSince(`${month}-01T00:00:00+09:00`).catch(() => [] as CallLog[]),
         ])
         setEmployees(emps)
         setRecords(recs)
         setLeaves(lvs)
         setRun(r)
         setPayslips(slips)
+        setCallLogs(logs)
       }
     } catch (e) {
       console.error('[PayrollCalc]', e)
@@ -184,7 +205,7 @@ export default function PayrollCalc() {
     try {
       for (const emp of active) {
         const prev = slipByEmp.get(emp.id)
-        const input = aggregate(emp, month, records, leaves)
+        const input = aggregate(emp, month, records, leaves, callLogs)
         // 既存明細の手入力（手当・住民税・その他控除・介護該当）を再計算後も引き継ぐ
         input.commuteAllowance = prev?.commute_allowance ?? 0
         input.positionAllowance = prev?.position_allowance ?? 0
@@ -416,7 +437,7 @@ export default function PayrollCalc() {
     if (!emp) { toast.error('従業員が見つかりません'); return }
     setSaving(true)
     try {
-      const input = aggregate(emp, month, records, leaves)
+      const input = aggregate(emp, month, records, leaves, callLogs)
       // 手入力（手当・住民税・その他控除・介護該当）を再計算後も引き継ぐ
       input.commuteAllowance = selected.commute_allowance ?? 0
       input.positionAllowance = selected.position_allowance ?? 0
@@ -474,6 +495,9 @@ export default function PayrollCalc() {
     { label: '通勤手当', value: selected.commute_allowance },
     { label: '役職手当', value: selected.position_allowance },
     { label: 'その他手当', value: selected.other_allowance },
+    ...(selected.appo_bonus
+      ? [{ label: `アポ歩合（${selected.appo_count ?? 0}件）`, value: selected.appo_bonus }]
+      : []),
   ] : []
   const dedRows: { label: string; value: number | null | undefined }[] = selected ? [
     { label: '健康保険', value: selected.health_insurance },

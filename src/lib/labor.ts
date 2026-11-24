@@ -1,7 +1,7 @@
 // ============================================================
 // 労務管理の定数・権限・ユーティリティ
 // ============================================================
-import type { AttendanceRecord, Employee, LaborSettings } from './types'
+import type { AttendanceRecord, Employee, LaborSettings } from './types.js'
 
 // --- 従業員マスタの選択肢 ---
 export const EMPLOYMENT_TYPES = ['正社員', '契約社員', 'アルバイト', 'パート', '業務委託', '役員'] as const
@@ -203,6 +203,9 @@ const LATE_NIGHT_END = 5 // 05:00
 export function computeAttendance(
   rec: Pick<AttendanceRecord, 'clock_in_at' | 'clock_out_at' | 'break_start_at' | 'break_end_at' | 'total_break_minutes'>,
   scheduledMinutes = 480,
+  /** 深夜帯を判定するタイムゾーン（UTCからの分）。既定は実行環境のローカル時刻＝ブラウザならJST。
+   *  Vercelの関数はUTCで動くので、サーバーから呼ぶときは 540（JST）を渡すこと。 */
+  tzOffsetMinutes?: number,
 ): { workMinutes: number; overtimeMinutes: number; lateNightMinutes: number; breakMinutes: number } {
   const gross = minutesBetween(rec.clock_in_at, rec.clock_out_at)
   const breakMin = rec.total_break_minutes ?? minutesBetween(rec.break_start_at, rec.break_end_at)
@@ -218,8 +221,11 @@ export function computeAttendance(
     const bs = rec.break_start_at ? new Date(rec.break_start_at).getTime() : null
     const be = rec.break_end_at ? new Date(rec.break_end_at).getTime() : null
     const hasBreakSpan = bs != null && be != null && be > bs
+    const hourAt = (ms: number) => (tzOffsetMinutes == null
+      ? new Date(ms).getHours()
+      : new Date(ms + tzOffsetMinutes * 60000).getUTCHours())
     for (let t = s.getTime(); t < e.getTime(); t += 60000) {
-      const hr = new Date(t).getHours()
+      const hr = hourAt(t)
       const isNight = hr >= LATE_NIGHT_START || hr < LATE_NIGHT_END
       if (!isNight) continue
       if (hasBreakSpan && t >= (bs as number) && t < (be as number)) continue // 深夜帯の休憩は労働でない

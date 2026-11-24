@@ -28,7 +28,7 @@ import type { Employee } from '@/lib/types'
 type FormState = Record<string, string>
 
 const NUMBER_FIELDS = [
-  'base_salary', 'hourly_wage', 'fixed_overtime_hours', 'fixed_overtime_pay',
+  'base_salary', 'hourly_wage', 'appo_bonus_yen', 'fixed_overtime_hours', 'fixed_overtime_pay',
   'standard_break_minutes', 'weekly_work_days', 'monthly_work_days', 'closing_day', 'payment_day',
 ] as const
 
@@ -388,6 +388,7 @@ export default function Employees() {
             <FormSection title="給与・振込">
               <NumberField label="基本給" value={form.base_salary} onChange={(v) => setField('base_salary', v)} />
               <NumberField label="時給" value={form.hourly_wage} onChange={(v) => setField('hourly_wage', v)} />
+              <NumberField label="アポ歩合（1件あたり円）" value={form.appo_bonus_yen} onChange={(v) => setField('appo_bonus_yen', v)} />
               <NumberField label="固定残業時間" value={form.fixed_overtime_hours} onChange={(v) => setField('fixed_overtime_hours', v)} />
               <NumberField label="固定残業代" value={form.fixed_overtime_pay} onChange={(v) => setField('fixed_overtime_pay', v)} />
               <TextField label="銀行名" value={form.bank_name} onChange={(v) => setField('bank_name', v)} />

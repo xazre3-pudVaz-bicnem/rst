@@ -691,6 +691,8 @@ export interface Employee {
   work_style?: string | null
   base_salary?: number | null
   hourly_wage?: number | null
+  /** アポ1件あたりの歩合（円）。アルバイトのインセンティブ用。未設定なら歩合なし */
+  appo_bonus_yen?: number | null
   fixed_overtime_hours?: number | null
   fixed_overtime_pay?: number | null
   standard_work_start?: string | null
@@ -925,6 +927,9 @@ export interface Payslip {
   commute_allowance?: number | null
   position_allowance?: number | null
   other_allowance?: number | null
+  /** アポ歩合（円）と、その算定に使ったアポ件数 */
+  appo_bonus?: number | null
+  appo_count?: number | null
   gross_pay?: number | null
   health_insurance?: number | null
   long_term_care_insurance?: number | null

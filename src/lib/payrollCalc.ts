@@ -118,6 +118,8 @@ export interface PayrollInput {
   otherDeduction?: number
   /** 40歳以上（介護保険を徴収するか） */
   longTermCareApplicable?: boolean
+  /** その月に本人が取ったアポの件数（アポ歩合の算定に使う） */
+  appoCount?: number
 }
 
 export type PayslipDraft = Omit<Payslip, 'id' | 'created_at' | 'updated_at'>
@@ -143,6 +145,8 @@ export interface PayComponents {
   commute: number
   position: number
   other: number
+  /** アポ歩合（アポ件数 × 1件あたりの金額）。課税対象の手当として総支給に入る */
+  appoBonus?: number
 }
 
 /** 社会保険料（標準報酬ベース・手当に連動しない据え置き分） */
@@ -175,7 +179,7 @@ export function recalcDeductions(
 ): DeductionResult {
   const rates = ratesForMonth(month)
   const gross = pay.base + pay.overtimePay + pay.lateNightPay + pay.holidayPay
-    + pay.fixedOtPay + pay.commute + pay.position + pay.other
+    + pay.fixedOtPay + pay.commute + pay.position + pay.other + (pay.appoBonus || 0)
   // 雇用保険は賃金総額（通勤手当を含む）が算定基礎。手当変更に連動する。
   const employmentInsurance = roundPremium(gross * rates.employmentInsurance)
   const socialTotal = social.health + social.care + social.pension + employmentInsurance
@@ -243,6 +247,11 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
   const commute = yen(input.commuteAllowance || 0)
   const position = yen(input.positionAllowance || 0)
   const other = yen(input.otherAllowance || 0)
+  // アポ歩合: 本人が取ったアポ件数 × 1件あたりの単価（アルバイトのインセンティブ）。
+  // 労働の対価なので課税対象＝総支給に入れる。社会保険の標準報酬は従来どおり
+  // 基本給ベースのままにする（算定基礎届で決まる固定値であり、月ごとに動かさない）。
+  const appoCount = Math.max(0, Math.floor(input.appoCount || 0))
+  const appoBonus = yen((emp.appo_bonus_yen || 0) * appoCount)
 
   // --- 社会保険（標準報酬月額 ≒ 基本給+固定残業。通勤・時間外は簡略化のため除外） ---
   // 子ども・子育て支援金(2026.4新設)は健康保険料に合算して徴収する。端数は法定処理。
@@ -256,7 +265,7 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
   }
 
   const pay: PayComponents = {
-    base, overtimePay, lateNightPay, holidayPay, fixedOtPay, commute, position, other,
+    base, overtimePay, lateNightPay, holidayPay, fixedOtPay, commute, position, other, appoBonus,
   }
   const residentTax = yen(input.residentTax || 0)
   const otherDeduction = yen(input.otherDeduction || 0)
@@ -283,6 +292,8 @@ export function calcPayslip(emp: Employee, month: string, input: PayrollInput): 
     commute_allowance: commute,
     position_allowance: position,
     other_allowance: other,
+    appo_bonus: appoBonus,
+    appo_count: appoCount,
     gross_pay: d.gross,
     health_insurance: social.health,
     long_term_care_insurance: social.care,
