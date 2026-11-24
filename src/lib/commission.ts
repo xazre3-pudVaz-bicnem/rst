@@ -196,7 +196,7 @@ export function isPromotionCountable(r: VisitReport): boolean {
 
 export interface PersonPromotion {
   name: string
-  /** 有効成約数（関わった案件数。リスト/アポ/営業のいずれかで担当） */
+  /** 有効成約数（自分が営業担当＝クロージングした案件の数） */
   deals: number
   /** 有効P（支払い総額を役割比率で分けて1万円=1Pに換算） */
   points: number
@@ -211,8 +211,10 @@ export interface PersonPromotion {
 
 /**
  * 四半期の昇級進捗を担当者ごとに集計する。
- * 本数は「リスト/アポ/営業のいずれかで関わった有効案件の数」（1案件につき1本）。
- * Pは歩合と同じ比率で分け合う（同じ案件で2役兼任ならその合計）。
+ * 本数は「自分が営業担当としてクロージングした有効案件の数」。リスト/アポだけ担当した案件は
+ * 本数に数えない（昇級表の「成約数」はクロージング実績を指すため）。
+ * Pは本数と違い、歩合と同じ比率で3役に分け合う（同じ案件で2役兼任ならその合計）。
+ * ＝リスト/アポだけの関与でもPは貯まるが、本数の条件は自分で取った契約でしか埋まらない。
  */
 export function summarizePromotion(reports: VisitReport[], month: string): {
   from: string; to: string; label: string; people: PersonPromotion[]
@@ -230,7 +232,7 @@ export function summarizePromotion(reports: VisitReport[], month: string): {
       if (!name || isExcludedRecipient(name)) continue
       const cur = acc.get(name) ?? { yen: 0, deals: new Set<string>() }
       cur.yen += total * COMMISSION_SPLIT[role]
-      cur.deals.add(key)
+      if (role === 'sales') cur.deals.add(key)   // 本数は営業担当のぶんだけ
       acc.set(name, cur)
     }
   }

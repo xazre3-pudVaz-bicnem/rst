@@ -289,7 +289,7 @@ export default function Deals() {
                         <div className="grid gap-1.5 sm:grid-cols-2">
                           <div>
                             <div className="flex justify-between text-2xs">
-                              <span className="text-muted-foreground">有効成約数</span>
+                              <span className="text-muted-foreground">有効成約数（営業担当）</span>
                               <span className={`tabular-nums ${pp.deals >= pp.next.deals ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}`}>{pp.deals} / {pp.next.deals}本</span>
                             </div>
                             <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-muted">
@@ -316,7 +316,7 @@ export default function Deals() {
               昇級条件は<b>本数とPの両方</b>を満たすこと（
               {PROMOTION_RANKS.map((t) => `${t.rank} ${t.deals}本・${t.points.toLocaleString()}P`).join(' / ')}）。
               支払いが滞っている案件・解約・途中キャンセルは、本数もPも判定から除きます。
-              本数はリスト／アポ／営業のいずれかで関わった案件を1本と数えます。
+              本数は自分が営業担当としてクロージングした案件だけを数えます（リスト／アポだけの関与はPには入りますが本数には入りません）。
             </p>
           </div>
 
