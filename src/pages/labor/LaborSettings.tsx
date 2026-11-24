@@ -23,6 +23,9 @@ interface SettingsForm {
   company_name: string
   standard_work_start: string
   standard_work_end: string
+  /** 自動退勤: 退勤打刻が無い勤怠をこの時刻で締める */
+  auto_clock_out_enabled: boolean
+  auto_clock_out_time: string
   standard_break_minutes: string
   scheduled_daily_minutes: string
   holiday_weekdays: number[]
@@ -47,6 +50,8 @@ function toForm(row: LaborSettingsRow): SettingsForm {
     company_name: row.company_name ?? '',
     standard_work_start: row.standard_work_start ?? '',
     standard_work_end: row.standard_work_end ?? '',
+    auto_clock_out_enabled: row.auto_clock_out_enabled !== false,
+    auto_clock_out_time: row.auto_clock_out_time ?? '18:30',
     standard_break_minutes: str(row.standard_break_minutes),
     scheduled_daily_minutes: str(row.scheduled_daily_minutes),
     holiday_weekdays: Array.isArray(row.holiday_weekdays) ? [...row.holiday_weekdays] : [],
@@ -76,6 +81,8 @@ function toPayload(f: SettingsForm): Partial<LaborSettingsRow> {
     company_name: f.company_name.trim() === '' ? null : f.company_name.trim(),
     standard_work_start: f.standard_work_start === '' ? null : f.standard_work_start,
     standard_work_end: f.standard_work_end === '' ? null : f.standard_work_end,
+    auto_clock_out_enabled: f.auto_clock_out_enabled,
+    auto_clock_out_time: f.auto_clock_out_time === '' ? '18:30' : f.auto_clock_out_time,
     standard_break_minutes: numOrNull(f.standard_break_minutes),
     scheduled_daily_minutes: numOrNull(f.scheduled_daily_minutes),
     holiday_weekdays: [...f.holiday_weekdays].sort((a, b) => a - b),
@@ -279,6 +286,29 @@ export default function LaborSettings() {
                       onChange={(e) => setField('standard_work_end', e.target.value)}
                       disabled={disabled}
                     />
+                  </div>
+                  <div className="space-y-1 sm:col-span-2">
+                    <Label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={form.auto_clock_out_enabled}
+                        onChange={(e) => setField('auto_clock_out_enabled', e.target.checked as never)}
+                        disabled={disabled}
+                      />
+                      退勤の打刻を忘れたら自動で退勤にする
+                    </Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="time"
+                        className="w-32"
+                        value={form.auto_clock_out_time}
+                        onChange={(e) => setField('auto_clock_out_time', e.target.value)}
+                        disabled={disabled || !form.auto_clock_out_enabled}
+                      />
+                      <span className="text-2xs text-muted-foreground">
+                        この時刻を過ぎても退勤打刻が無い勤怠を、この時刻で締めます（過去7日ぶんまで）
+                      </span>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <Label>標準休憩時間（分）</Label>

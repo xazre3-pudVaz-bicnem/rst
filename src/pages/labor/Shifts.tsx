@@ -21,6 +21,33 @@ import { laborPerms, SHIFT_TYPES, SHIFT_STATUSES, fmtTime, monthStr } from '@/li
 import type { Employee, WorkShift } from '@/lib/types'
 
 const ALL = '__all__'
+const WEEK = ['日', '月', '火', '水', '木', '金', '土']
+
+/** その月の日付（YYYY-MM-DD）を1日から末日まで並べる */
+function daysOfMonth(month: string): string[] {
+  const [y, m] = month.split('-').map(Number)
+  if (!y || !m) return []
+  const last = new Date(y, m, 0).getDate()
+  return Array.from({ length: last }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`)
+}
+/** 予定の実働分（開始〜終了 − 休憩）。時間が入っていなければ0 */
+function plannedMinutes(s: WorkShift): number {
+  if (!s.planned_start_at || !s.planned_end_at) return 0
+  const diff = (Date.parse(s.planned_end_at) - Date.parse(s.planned_start_at)) / 60000
+  if (!Number.isFinite(diff) || diff <= 0) return 0
+  return Math.max(0, Math.round(diff) - (s.planned_break_minutes ?? 0))
+}
+/** セルに出す短い表記。9:00〜18:00 → 「9-18」、分があれば「9:30-18」 */
+function cellLabel(s: WorkShift): string {
+  if (s.shift_type === '休み') return '休'
+  const short = (ts?: string | null) => {
+    if (!ts) return ''
+    const d = new Date(ts)
+    return d.getMinutes() === 0 ? String(d.getHours()) : `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  const a = short(s.planned_start_at), b = short(s.planned_end_at)
+  return a || b ? `${a}-${b}` : (s.shift_type || '—')
+}
 
 /** TIMESTAMPTZ → "HH:mm"（time input 用）。null/不正は空文字。 */
 function hhmm(ts?: string | null): string {
@@ -124,11 +151,45 @@ export default function Shifts() {
     [scoped, empFilter],
   )
 
+  // 月間シフト表: 「従業員 × 日付」で引けるようにしておく
+  const days = useMemo(() => daysOfMonth(month), [month])
+  const gridEmployees = useMemo(
+    () => (empFilter === ALL ? activeEmployees : activeEmployees.filter((e) => e.id === empFilter)),
+    [activeEmployees, empFilter],
+  )
+  const shiftAt = useMemo(() => {
+    const m = new Map<string, WorkShift>()
+    for (const s of scoped) m.set(`${s.employee_id}|${s.shift_date}`, s)
+    return m
+  }, [scoped])
+  /** 人ごとの合計（予定時間と、時給者はおおよその人件費） */
+  const totals = useMemo(() => {
+    const m = new Map<string, { minutes: number; days: number; cost: number }>()
+    for (const e of gridEmployees) {
+      let minutes = 0, dcount = 0
+      for (const d of days) {
+        const s = shiftAt.get(`${e.id}|${d}`)
+        if (!s || s.shift_type === '休み') continue
+        const mm = plannedMinutes(s)
+        if (mm > 0) { minutes += mm; dcount++ }
+      }
+      m.set(e.id, { minutes, days: dcount, cost: Math.round((e.hourly_wage || 0) * (minutes / 60)) })
+    }
+    return m
+  }, [gridEmployees, days, shiftAt])
+
   const setField = (k: keyof ShiftForm, v: string) => setForm((prev) => ({ ...prev, [k]: v }))
 
   function openCreate() {
     setEditing(null)
     setForm({ ...emptyForm(), shift_date: `${month}-01` })
+    setDialogOpen(true)
+  }
+
+  /** シフト表のセルから。その人・その日で新規作成する */
+  function openCreateAt(employeeId: string, date: string) {
+    setEditing(null)
+    setForm({ ...emptyForm(), employee_id: employeeId, shift_date: date })
     setDialogOpen(true)
   }
 
@@ -251,6 +312,88 @@ export default function Shifts() {
               </SelectContent>
             </Select>
           </div>
+        </div>
+
+        {/* 月間シフト表（縦=従業員 / 横=日）。セルを押すとその人のその日を編集できる */}
+        <div className="rounded-xl border bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
+            <span className="text-sm font-bold">月間シフト表</span>
+            <span className="text-2xs text-muted-foreground">
+              空いているマスを押すとシフトを登録できます（「休」は休み・数字は開始〜終了時刻）
+            </span>
+          </div>
+          {loading ? (
+            <div className="p-3"><SkeletonRows count={5} /></div>
+          ) : gridEmployees.length === 0 ? (
+            <div className="p-6 text-center text-xs text-muted-foreground">在籍中の従業員がいません</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="text-2xs">
+                <thead>
+                  <tr className="bg-muted/60">
+                    <th className="sticky left-0 z-10 min-w-[108px] bg-muted/60 px-2 py-1.5 text-left font-medium">従業員</th>
+                    {days.map((d) => {
+                      const w = new Date(`${d}T00:00:00`).getDay()
+                      return (
+                        <th key={d} className={`min-w-[42px] px-1 py-1 text-center font-medium ${w === 0 ? 'text-red-600 dark:text-red-400' : w === 6 ? 'text-sky-600 dark:text-sky-400' : 'text-muted-foreground'}`}>
+                          <div>{Number(d.slice(-2))}</div>
+                          <div className="text-[9px]">{WEEK[w]}</div>
+                        </th>
+                      )
+                    })}
+                    <th className="min-w-[96px] px-2 py-1 text-right font-medium text-muted-foreground">合計</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gridEmployees.map((e) => {
+                    const t = totals.get(e.id)
+                    return (
+                      <tr key={e.id} className="border-t">
+                        <td className="sticky left-0 z-10 bg-card px-2 py-1 font-medium">
+                          <div className="truncate">{e.name}</div>
+                          <div className="text-[9px] font-normal text-muted-foreground">
+                            {e.employment_type || '—'}{e.hourly_wage ? ` / 時給¥${e.hourly_wage.toLocaleString()}` : ''}
+                          </div>
+                        </td>
+                        {days.map((d) => {
+                          const sh = shiftAt.get(`${e.id}|${d}`)
+                          const w = new Date(`${d}T00:00:00`).getDay()
+                          const rest = sh?.shift_type === '休み'
+                          return (
+                            <td key={d} className={`border-l p-0 text-center ${w === 0 || w === 6 ? 'bg-muted/40' : ''}`}>
+                              <button
+                                type="button"
+                                disabled={!perms.canManage}
+                                onClick={() => (sh ? openEdit(sh) : openCreateAt(e.id, d))}
+                                title={sh ? `${e.name} ${d}` : `${e.name} ${d} にシフトを登録`}
+                                className={`h-9 w-full px-0.5 leading-tight transition-colors ${
+                                  rest ? 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                                    : sh ? 'bg-emerald-100 font-medium text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-100'
+                                      : 'text-muted-foreground/40 hover:bg-accent'
+                                } ${perms.canManage ? 'cursor-pointer' : 'cursor-default'}`}
+                              >
+                                {sh ? cellLabel(sh) : '+'}
+                              </button>
+                            </td>
+                          )
+                        })}
+                        <td className="border-l px-2 py-1 text-right tabular-nums">
+                          <div className="font-bold">{Math.floor((t?.minutes ?? 0) / 60)}時間{(t?.minutes ?? 0) % 60 ? `${(t?.minutes ?? 0) % 60}分` : ''}</div>
+                          <div className="text-[9px] text-muted-foreground">
+                            {t?.days ?? 0}日{t?.cost ? ` / 約¥${t.cost.toLocaleString()}` : ''}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="border-t px-3 py-1.5 text-[10px] text-muted-foreground">
+            合計は予定時間（開始〜終了−休憩）です。時給を設定している人は、おおよその人件費も出します。
+            アポ歩合は実績ぶんなので、給与計算の画面で加算されます。
+          </p>
         </div>
 
         {/* テーブル */}

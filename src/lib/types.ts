@@ -856,6 +856,9 @@ export interface LaborSettings {
   company_name?: string | null
   standard_work_start?: string | null
   standard_work_end?: string | null
+  /** 自動退勤: 退勤打刻が無い勤怠をこの時刻で締める（既定 18:30） */
+  auto_clock_out_enabled?: boolean | null
+  auto_clock_out_time?: string | null
   standard_break_minutes?: number | null
   scheduled_daily_minutes?: number | null
   holiday_weekdays?: number[] | null

@@ -47,6 +47,9 @@ const DATE_FIELDS = [
 
 const SELECT_FIELDS = ['employment_type', 'status', 'work_style', 'role', 'account_type'] as const
 
+/** アルバイト・パートの既定条件（入力の手間を省くための初期値。個別に変更できる） */
+const PART_TIME_DEFAULTS = { hourly_wage: '2000', appo_bonus_yen: '100' }
+
 function emptyForm(): FormState {
   const f: FormState = {}
   for (const k of [...NUMBER_FIELDS, ...TEXT_FIELDS, ...DATE_FIELDS, ...SELECT_FIELDS]) f[k] = ''
@@ -353,7 +356,22 @@ export default function Employees() {
 
             {/* 雇用条件 */}
             <FormSection title="雇用条件">
-              <SelectField label="雇用形態" value={form.employment_type} onChange={(v) => setField('employment_type', v)} options={EMPLOYMENT_TYPES} />
+              <SelectField
+                label="雇用形態"
+                value={form.employment_type}
+                onChange={(v) => {
+                  setField('employment_type', v)
+                  // アルバイト/パートは既定の条件（時給2,000円・アポ1件100円）を空欄のときだけ入れる
+                  if (v === 'アルバイト' || v === 'パート') {
+                    setForm((prev) => ({
+                      ...prev,
+                      hourly_wage: prev.hourly_wage || PART_TIME_DEFAULTS.hourly_wage,
+                      appo_bonus_yen: prev.appo_bonus_yen || PART_TIME_DEFAULTS.appo_bonus_yen,
+                    }))
+                  }
+                }}
+                options={EMPLOYMENT_TYPES}
+              />
               <SelectField label="ステータス" value={form.status} onChange={(v) => setField('status', v)} options={EMPLOYEE_STATUSES} />
               <TextField label="部署" value={form.department} onChange={(v) => setField('department', v)} />
               <TextField label="役職" value={form.position} onChange={(v) => setField('position', v)} />
