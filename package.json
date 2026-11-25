@@ -20,7 +20,8 @@
     "db:apply": "tsx scripts/apply-migration.ts",
     "probe:permits": "tsx scripts/probe-permit-sources.ts",
     "clean:leads": "tsx scripts/clean-nonshop-leads.ts",
-    "refresh:priority": "tsx scripts/refresh-source-priority.ts"
+    "refresh:priority": "tsx scripts/refresh-source-priority.ts",
+    "rebalance:probe": "tsx scripts/rebalance-probe-budget.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",

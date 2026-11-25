@@ -873,11 +873,16 @@ export async function runAllSequentialProbes(admin: any, mapsKey: string | null,
     // 1サイトぶん: 通常の前方探索 → 残り時間があれば再確認（公開前404・電話未開通の見直し）
     const runSite = async (site: any): Promise<any> => {
       const siteStart = Date.now()
+      // サイトごとの探索件数。実績（架電→アポ率）が高い取得元に多く配分するため、
+      // source_sites.forward_scan_count を優先する。未設定なら全体既定(bulkForward)。
+      // 【注意】perSourceDay は bulkForward を下回らない floor 付きなので、ここで max を取らないと
+      //   サイト個別の設定が dayRemaining 側で 15 に切り戻される（配分が効かなくなる）。
+      const siteForward = Math.max(1, Math.min(100, Number(site.forward_scan_count) || bulkForward))
       const main = await runSequentialProbe(admin, mapsKey, site, {
         userId, runId, nowIso, mode,
-        forwardCount: bulkForward, backfillCount: 0, startIdOverride: undefined, force: !!s.force,
+        forwardCount: siteForward, backfillCount: 0, startIdOverride: undefined, force: !!s.force,
         probeMode: s.probeMode === 'advance' ? 'advance' : (site.probe_mode === 'advance' ? 'advance' : 'safe'),
-        dayRemaining: perSourceDay, autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: bulkDelay, noRender: true,
+        dayRemaining: Math.max(perSourceDay, siteForward), autoImportPerRun, autoImportPerDay, importedToday: importedTodayCount || 0, delayMs: bulkDelay, noRender: true,
       })
       // 再確認は食べログのみ（公開前404・電話未開通の実績があるソース）。時間が残っている時だけ
       if (site.parser_type === 'tabelog_detail' && Date.now() - siteStart < perSiteCapMs * 0.55) {
