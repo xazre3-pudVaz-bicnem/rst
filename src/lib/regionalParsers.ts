@@ -6,7 +6,7 @@
 // 記事本文・HTML全文は保存しない（候補ブロックは300文字以内の抜粋のみ）。
 // ============================================================
 import { extractOpenDateFromTitle, type OpenDate } from './directoryParser.js'
-import { looksNotShopName, recoverShopNameSegment } from './targetFilter.js'
+import { looksNotShopName, recoverShopNameSegment, shopNameScore } from './targetFilter.js'
 import { extractAddressLoose, prefectureFromCity } from './enrichProfile.js'
 import { isJapanPhone } from './japanFilter.js'
 import { classifyIndustry } from './industry.js'
@@ -54,13 +54,14 @@ export function sanitizeShopName(raw: string, opts: { placesMatched?: boolean } 
   if (/\d+\s*円|\d{1,2}月\d{1,2}日/.test(sNum)) return { name: '', valid: false, reason: '価格/日付を含む見出し断片のため店名未確定' }
   if (s.length >= 30 && !opts.placesMatched) return { name: '', valid: false, reason: '説明文の可能性（30字以上・Places未照合）' }
   // ページタイトル/UI文字列（「Google」「ご予約内容の選択」「お知らせ」等）は店名ではない。
-  // 「ご予約内容の選択｜◯◯整体院」のような複合タイトルは区切りの後ろから実店名を拾い直す。
+  // 「開院のお知らせ - LA DOLL CLINIC」「夏季休暇のお知らせ｜小坂歯科医院」のような複合タイトルは
+  // 区切りごとに店名らしさを採点して、いちばん店名らしい部分を採用する。
   const nb = looksNotShopName(s)
-  if (nb.bad) {
-    const seg = recoverShopNameSegment(original)
-    if (!seg || BAD_SHOP_NAME_RE.test(seg)) return { name: '', valid: false, reason: nb.reason }
+  const seg = recoverShopNameSegment(original)
+  if (seg && !BAD_SHOP_NAME_RE.test(seg) && shopNameScore(seg) > shopNameScore(s)) {
     return { name: seg.slice(0, 40), valid: true, reason: '' }
   }
+  if (nb.bad) return { name: '', valid: false, reason: nb.reason }
   return { name: s.slice(0, 40), valid: true, reason: '' }
 }
 
