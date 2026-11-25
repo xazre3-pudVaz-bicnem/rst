@@ -9,7 +9,8 @@
 import { isJapanPhone, isForeignAddress } from './japanFilter.js'
 import { isValidJpPhone, isTollFreeJp } from './regionalParsers.js'
 import { isRealStoreAddress, phoneAddressMatch, onlyDigits, isVirtualOfficeAddress } from './leadQuality.js'
-import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, looksLikeBuildingName, detectExcludedCategory, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { detectBigOrPublic, detectBigOrPublicStrong, detectMultiStore, looksLikeBranchStore, detectSameIndustry, detectClosureNews, looksLikeBuildingName, detectExcludedCategory, looksNotShopName, IG_FOLLOWERS_IMPORT_EXCLUDE } from './targetFilter.js'
+import { loadChainBrands, matchChainBrand } from './chainLearn.js'
 import { detectChain } from './chainFilter.js'
 import { placesEstablishmentSignal, placesLookupByPhone, BIG_GOOGLE_REVIEWS } from './importHot.js'
 
@@ -21,7 +22,11 @@ export interface GateInput {
   budgetEndMs?: number          // これを過ぎる外部確認はスキップ（時間予算の死守）
   igFollowers?: number | null   // Instagramフォロワー数（判明時のみ）。0/未確認はnullで渡す規約（0=ログイン壁の可能性）
 }
-export interface GateResult { ok: boolean; action: 'import' | 'hold' | 'exclude' | 'link'; reason: string; linkCaseId?: string | null }
+export interface GateResult {
+  ok: boolean; action: 'import' | 'hold' | 'exclude' | 'link'; reason: string; linkCaseId?: string | null
+  /** 電話逆引きで実店名が判明した場合の店名。呼び出し元は案件作成時に `gate.resolvedName || name` を使う */
+  resolvedName?: string | null
+}
 
 const pass: GateResult = { ok: true, action: 'import', reason: '' }
 const hold = (reason: string): GateResult => ({ ok: false, action: 'hold', reason })
@@ -65,8 +70,13 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     const closedText = detectClosureNews(g.text, 'text')
     if (closedText.exclude) return exclude(`${closedText.reason}（投入ゲート）`)
   }
+  // 3.95) 店名がページタイトル/UI文字列（「Google」「ご予約内容の選択」「お知らせ」等）なら、
+  //   以降の店名系チェック(4)が全て素通りしてしまう（＝チェーン支店/ホテル/法人がそのまま投入される）。
+  //   店名未確定と同じ扱いにして (8) の電話逆引きで実店名を取り直す。
+  const notShop = looksNotShopName(name)
+  const nameConfirmed = !!name && name !== '店名未確定' && !notShop.bad
   // 4) 店名: 閉店/休業ニュース見出し・チェーン/支店(○○店)/大手・公共/多店舗
-  if (name && name !== '店名未確定') {
+  if (nameConfirmed) {
     // 「◯◯が休業していました」等の閉店/休業記事が新店として投入されるのを防ぐ
     const closed = detectClosureNews(name)
     if (closed.exclude) return exclude(`${closed.reason}（投入ゲート）`)
@@ -80,6 +90,13 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
     if (big.exclude) return exclude(`${big.hit}（大手/公共/大型施設）のため対象外（投入ゲート）`)
     const bigStrong = detectBigOrPublicStrong(name)
     if (bigStrong.exclude) return exclude(`${bigStrong.hit}（大手）のため対象外（投入ゲート）`)
+    // 自社データから学習したチェーンブランド（同ブランドの「◯◯店」が3市区町村以上に存在）。
+    // 支店表記のない本体名（例「資さんうどん」「買取大吉」）は looksLikeBranchStore で拾えないためここで弾く。
+    try {
+      const brands = await loadChainBrands(admin)
+      const hitBrand = matchChainBrand(name, brands)
+      if (hitBrand) return exclude(`チェーン（自社データで「${hitBrand.brand}」の支店を${hitBrand.city_count}市区町村で確認）のため対象外（投入ゲート）`)
+    } catch { /* 学習テーブル未作成時は何もしない */ }
   }
   // 4.5) 同業者（Web制作/広告/集客支援/コンサル等）は見込み客ではない。
   //      店名確定→強語のみexclude / 店名未確定→text内の同業語2種以上でhold（text単発発火は禁止）
@@ -110,7 +127,7 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   } catch { /* noop */ }
 
   // 6) 同名×同市の既存案件 = 電話違いの同一店（別回線/番号変更）→ 二重投入せずリンク
-  if (name && name !== '店名未確定' && address) {
+  if (nameConfirmed && address) {
     try {
       const city = cityOf(address)
       const { data: sameName } = await admin.from('cases').select('id,name,address').ilike('name', name).limit(3)
@@ -120,7 +137,7 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   }
 
   // 7) 既存店ガード（Google口コミ30件以上/最古クチコミ30日超）。呼び出し元が確認済みならスキップ。
-  if (!g.skipEstablishment && g.mapsKey && name && name !== '店名未確定' && Date.now() < budgetEnd - 8000) {
+  if (!g.skipEstablishment && g.mapsKey && nameConfirmed && Date.now() < budgetEnd - 8000) {
     try {
       const est = await Promise.race([
         placesEstablishmentSignal(g.mapsKey, name, address),
@@ -134,7 +151,8 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
   // 8) 店名未確定の候補は上の店名系チェック(4)も既存店ガード(7)も全て素通りしてしまう。
   //    電話番号でGoogle Placesを逆引きして実店名・口コミ数を取得し、同じ関門にかける。
   //    （実害: 駿河屋◯◯店/トモズ元住吉店＝大手チェーン支店、口コミ193件の既存ジム 等が投入されていた）
-  if ((!name || name === '店名未確定') && g.mapsKey && phone && Date.now() < budgetEnd - 8000) {
+  let resolvedName: string | null = null
+  if (!nameConfirmed && g.mapsKey && phone && Date.now() < budgetEnd - 8000) {
     try {
       const looked = await Promise.race([
         placesLookupByPhone(g.mapsKey, phone),
@@ -150,13 +168,25 @@ export async function caseImportGate(admin: any, g: GateInput): Promise<GateResu
         const bgs = detectBigOrPublicStrong(rn)
         if (bgs.exclude) return exclude(`電話逆引き「${rn}」が${bgs.hit}（大手）のため対象外（投入ゲート）`)
         if (detectMultiStore(rn).exclude) return exclude(`電話逆引き「${rn}」が多店舗/FCのため対象外（投入ゲート）`)
+        { const exCat2 = detectExcludedCategory(rn); if (exCat2.exclude) return exclude(`電話逆引き「${rn}」が投入対象外カテゴリ（${exCat2.hit}）のため対象外（投入ゲート）`) }
+        try {
+          const brands = await loadChainBrands(admin)
+          const hb = matchChainBrand(rn, brands)
+          if (hb) return exclude(`電話逆引き「${rn}」がチェーン（自社データで「${hb.brand}」の支店を${hb.city_count}市区町村で確認）のため対象外（投入ゲート）`)
+        } catch { /* 学習テーブル未作成時は何もしない */ }
+        // 実店名が取れた → 呼び出し元が案件名に使えるように返す（店名未確定の案件を減らす）
+        if (!looksNotShopName(rn).bad) resolvedName = rn
       }
       if (looked.count != null && looked.count >= BIG_GOOGLE_REVIEWS) return exclude(`電話逆引きでGoogle口コミ${looked.count}件(30件以上=確立済み)のため対象外（投入ゲート）`)
       if (looked.oldestDays != null && looked.oldestDays > 30) return hold(`電話逆引きでGoogle最古クチコミ${looked.oldestDays}日前(1ヶ月超=既存店)のため投入対象外（投入ゲート）`)
     } catch { /* noop */ }
   }
 
-  return pass
+  // 9) 店名がページタイトル/UI文字列のまま（逆引きでも実店名が取れなかった）なら投入しない。
+  //    EXCLUDEDではなくHOLD: 電話・住所は実在する可能性があり、店名を取り直せば復活できる。
+  if (notShop.bad && !resolvedName) return hold(`${notShop.reason}。実店名を再取得するまで投入しない（投入ゲート）`)
+
+  return { ...pass, resolvedName }
 }
 
 /** ゲート否認時の候補降格を1行で行うヘルパ。 */

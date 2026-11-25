@@ -6,6 +6,7 @@
 // 記事本文・HTML全文は保存しない（候補ブロックは300文字以内の抜粋のみ）。
 // ============================================================
 import { extractOpenDateFromTitle, type OpenDate } from './directoryParser.js'
+import { looksNotShopName, recoverShopNameSegment } from './targetFilter.js'
 import { extractAddressLoose, prefectureFromCity } from './enrichProfile.js'
 import { isJapanPhone } from './japanFilter.js'
 import { classifyIndustry } from './industry.js'
@@ -20,7 +21,17 @@ const NEWNESS_WEAK = /(掲載開始|新しく掲載|新店舗|新店|リニュ�
 const NEWNESS_EXCLUDE = /(新メニュー|新商品|新サービス|キャンペーン|イベント|フェア|求人|スタッフ募集|アルバイト|バイト募集|周年|クーポン|ポップアップ|pop-?up|セール|福袋|モニター募集|モニターを?募集|出張買取|買取(強化|キャンペーン|フェア)|(参加者|会員|モニター)を?募集|プレゼント企画)/i
 
 // 店名として不適切（サイト名/カテゴリ名/記事一覧見出し/説明文）
-const BAD_SHOP_NAME_RE = /(ニューオープン情報|新店情報|開店情報|閉店情報|開店・閉店|店舗に関するニュース|サイトマップ|地域情報サイト|一覧|まとめ|ブログ|ニュース|毎日発信|情報を発信|を発信|記事を開く|記事|速報|グルメブログ|求人情報|駐車場|検索結果|カテゴリ|のお店|食べログ|ホットペッパー|ぐるなび|Retty|公式サイト|トップページ|ホーム|について|とは|話題の|おすすめ|特集|ランキング|レビュー|カウンター|今日[:：]|昨日[:：]|累計|姉妹サイト|広告掲載|広告のご案内|アクセスランキング|人気記事|関連記事|コメント|サイドバー|フッター|ヘッダー|メニュー)/
+// 【注意】ここに載せる語は部分一致する。短い一般語を裸で置くと実在の屋号を恒久的に落とす。
+//   実害があったので限定した語（いずれも実データで確認・計約350件が落ちていた）:
+//   - 'ホーム' → 287件:「株式会社サンホーム」「あらいホーム」「ツツイホーム」等の工務店/リフォーム＝主要ターゲット
+//   - 'のお店' →  38件:「シャンプーとシェービングのお店 歩み」「日立のお店 タカデン㈱」
+//   - '駐車場' →  17件:「メンズカット ワンシザース 【駐車場あります】」
+//   - 'おすすめ' → 16件:「おすすめ屋」「おすすめ家」（多店舗は支店判定で別途弾ける）
+//   - 'ニュース' →  7件:「ニュースター 一ツ家店」「ニューステップ」「ニュースタイル タイ古式マッサージ」
+//   - 'とは'   →   6件:「いとはん」「もとはち歯科クリニック」「ハンバーグとはんばーぐ」
+//   - 'メニュー' →  3件:「整体×痩身エステサロンtoi（脱毛メニュー有り)」
+//   - 'まとめ' / 'について' / 'カウンター' も同型のため定型句に限定
+const BAD_SHOP_NAME_RE = /(ニューオープン情報|新店情報|開店情報|閉店情報|開店・閉店|店舗に関するニュース|サイトマップ|地域情報サイト|一覧|ブログ|毎日発信|情報を発信|を発信|記事を開く|記事|速報|グルメブログ|求人情報|検索結果|カテゴリ|食べログ|ホットペッパー|ぐるなび|Retty|公式サイト|トップページ|話題の|特集|ランキング|レビュー|今日[:：]|昨日[:：]|累計|姉妹サイト|広告掲載|広告のご案内|アクセスランキング|人気記事|関連記事|コメント|サイドバー|フッター|ヘッダー|^ホーム$|のお店(?:を|一覧|まとめ|はこちら|をご)|駐車場(?:｜|$)|おすすめ(?:の|記事|特集|スポット|ランキング)|ニュース(?:サイト|記事|一覧|速報|リリース)|^ニュース$|まとめ(?:記事|ました|$)|情報まとめ|について(?:は|の)|とは(?:何|？|\?|。)|アクセスカウンター|^メニュー$|メニュー一覧)/
 
 /** 店名を整形・検証。サイト名/カテゴリ/記事一覧見出し/説明文は無効（placesMatched時は長い正式名も許可）。 */
 export function sanitizeShopName(raw: string, opts: { placesMatched?: boolean } = {}): { name: string; valid: boolean; reason: string } {
@@ -42,6 +53,14 @@ export function sanitizeShopName(raw: string, opts: { placesMatched?: boolean } 
   const sNum = s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
   if (/\d+\s*円|\d{1,2}月\d{1,2}日/.test(sNum)) return { name: '', valid: false, reason: '価格/日付を含む見出し断片のため店名未確定' }
   if (s.length >= 30 && !opts.placesMatched) return { name: '', valid: false, reason: '説明文の可能性（30字以上・Places未照合）' }
+  // ページタイトル/UI文字列（「Google」「ご予約内容の選択」「お知らせ」等）は店名ではない。
+  // 「ご予約内容の選択｜◯◯整体院」のような複合タイトルは区切りの後ろから実店名を拾い直す。
+  const nb = looksNotShopName(s)
+  if (nb.bad) {
+    const seg = recoverShopNameSegment(original)
+    if (!seg || BAD_SHOP_NAME_RE.test(seg)) return { name: '', valid: false, reason: nb.reason }
+    return { name: seg.slice(0, 40), valid: true, reason: '' }
+  }
   return { name: s.slice(0, 40), valid: true, reason: '' }
 }
 

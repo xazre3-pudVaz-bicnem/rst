@@ -18,7 +18,8 @@
     "check:google-places-api": "tsx scripts/check-google-places-api.ts",
     "check:japan-filter": "tsx scripts/check-japan-filter.ts",
     "db:apply": "tsx scripts/apply-migration.ts",
-    "probe:permits": "tsx scripts/probe-permit-sources.ts"
+    "probe:permits": "tsx scripts/probe-permit-sources.ts",
+    "clean:leads": "tsx scripts/clean-nonshop-leads.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",

@@ -317,7 +317,12 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
         const address = d.address || enrich?.address || ''
         const official = d.official || enrich?.official || (/(instagram\.com|prtimes\.jp|ekiten|camp-fire|makuake)/i.test(url) ? '' : url)
         const matchedPlaceId = enrich?.place_id || null
-        const sn = sanitizeShopName(enrich?.place_name || d.name, { placesMatched: !!matchedPlaceId })
+        // 着地ページのタイトルが「Google」等のUI文字列になることがある（検索APIが
+        // google.com/goto のリダイレクトURLを返し、中間ページのタイトルを拾ってしまうため）。
+        // その場合は検索結果のタイトル側から実店名を拾い直す（実店名が取れないと
+        // チェーン/支店/大手の判定が全て素通りして、チェーン支店やホテルが投入される）。
+        let sn = sanitizeShopName(enrich?.place_name || d.name, { placesMatched: !!matchedPlaceId })
+        if (!sn.valid && rr.title) { const alt = sanitizeShopName(rr.title, { placesMatched: false }); if (alt.valid) sn = alt }
         const name = sn.valid ? sn.name : '店名未確定'
         const phoneOk = !!phone && isJapanPhone(phone) && isValidJpPhone(phone) && !isTollFreeJp(phone)
         if (phoneOk) counts.phoneYes++; if (address) counts.addrYes++
@@ -534,8 +539,13 @@ export async function runSerpDiscovery(admin: any, sourceType: string, mapsKey: 
               const gate = await caseImportGate(admin, { name, phone, address, text: `${rr.title || ''} ${rr.snippet || ''}`.slice(0, 300), mapsKey, skipEstablishment: true, budgetEndMs: startMs + budgetMs })
               if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); counts.gateBlocked = (counts.gateBlocked || 0) + 1; continue }
               const memo = (full as any)?.call_memo ? `\n\n${(full as any).call_memo}` : ''
-              const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: hotTier === 'A' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-${hotTier || 'B'}】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
-              if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); counts.imported++; importedThisRun++; importedCases.push({ id: created.id, name, phone, address }) }
+              // ゲートの電話逆引きで実店名が判明したらそれを案件名に使う（「店名未確定」の案件を減らす）
+              const finalName = gate.resolvedName || name
+              const { data: created } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: hotTier === 'A' ? '高' : '中', hp1: official || null, source_urls: url, memo: `【AI自動投入 / ${def.label} / HOT-${hotTier || 'B'}】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}${memo}`, created_by_id: userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+              if (created?.id) {
+                await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, ...(gate.resolvedName ? { name: finalName, extracted_shop_name: finalName } : {}) }).eq('id', candidateId)
+                counts.imported++; importedThisRun++; importedCases.push({ id: created.id, name: finalName, phone, address })
+              }
             }
           }
         }

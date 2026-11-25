@@ -219,6 +219,102 @@ export function detectExcludedCategory(name?: string | null): { exclude: boolean
   return { exclude: false, hit: '' }
 }
 
+// ============================================================
+// 「店名ではない文字列」の検出（ページタイトル/UI文字列/見出しの混入）。
+// 実害: 検索APIが返す google.com/goto リダイレクトを取得すると中間ページのタイトル「Google」が
+//   そのまま店名になり、直近30日で3,474件（うち507件は案件化）が店名「Google」で投入されていた。
+//   店名が壊れると chainFilter / looksLikeBranchStore / detectBigOrPublic / detectExcludedCategory が
+//   すべて素通りするため、「れんげ食堂Toshu 小川店」等のチェーン支店やホテル・法人が営業リストに入る。
+// 設計: 誤除外の代償が大きいので【完全一致】と【明確な定型】のみ。部分一致はしない
+//   （'ホーム'部分一致 → 「ホーム寝装杉山」、'グランド'部分一致 → 「大和グランドゴルフ場」を殺す）。
+// ============================================================
+const NOT_SHOP_EXACT = new Set([
+  // 検索エンジン/SNS/プラットフォームのページタイトル
+  'google', 'googleマップ', 'google maps', 'google map', 'googleで検索', 'yahoo!', 'yahoo! japan', 'yahoo!japan', 'yahoo', 'bing',
+  'facebook', 'instagram', 'threads', 'tiktok', 'twitter', 'x', 'line', 'youtube', 'note', 'ameba', 'アメブロ', 'pinterest',
+  'ホットペッパービューティー', '楽天ビューティ', 'エキテン', 'ぐるなび', '食べログ', 'retty', 'じゃらん',
+  // 予約/フォーム/会員系のUI文字列
+  'ご予約内容の選択', '予約内容の選択', 'ご予約', '予約フォーム', '予約受付', 'ネット予約', 'オンライン予約', '空席状況', '予約カレンダー',
+  'お問い合わせ', 'お問合せ', 'お問い合せ', 'contact', 'ログイン', '会員ログイン', '新規登録', '会員登録', 'マイページ', 'カート',
+  // お知らせ/新着/サイト構造の見出し
+  'お知らせ', 'おしらせ', 'お知らせ一覧', '新着情報', '最新情報', '更新情報', 'ニュース', 'news', 'topics', 'information',
+  'ブログ', 'blog', 'コラム', 'トップページ', 'top', 'ホーム', 'home', 'メニュー', 'menu', 'アクセス', 'access', 'サイトマップ',
+  '会社概要', '企業情報', '基本情報', '店舗情報', '店舗一覧', '施設情報', 'プライバシーポリシー', '利用規約', '採用情報', '求人情報',
+  // 新店・イベント関連の見出し断片（店名ではない）
+  '新店舗', '新店', 'リニューアル', 'リニューアルオープン', 'グランド', 'グランドオープン', 'grand open', 'grand opening',
+  'new open', 'newopen', 'open', 'オープン', 'オープニングスタッフ', 'オープン準備', 'open準備', '準備中', '入会のご案内', '入会案内',
+  '新入会員募集', 'スタッフ募集', 'アルバイト募集', 'キャンペーン',
+  // エラー/システム
+  'error', '404', 'not found', 'page not found', 'アクセスできません', '403 forbidden',
+])
+/** タイトルを区切りで分割する。「/」「>」等は日付(6/28)や住所を割ってしまうので使わない */
+function splitTitle(raw: string): string[] {
+  return String(raw || '').split(/[|｜丨│]|\s[-‐–—]\s/).map((p) => p.trim()).filter(Boolean)
+}
+/** 比較用の正規化: 全角英数→半角・空白/記号を落として小文字化 */
+function normForName(s: string): string {
+  return String(s || '')
+    .replace(/[Ａ-Ｚａ-ｚ０-９！]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(/[\s　]+/g, ' ')
+    .replace(/^[-–—|｜:：・]+|[-–—|｜:：・、。.]+$/g, '')
+    .trim()
+    .toLowerCase()
+}
+// 文章・見出しがそのまま店名になっているケース（「◯◯の予約を開始しました」「内覧会です🎉」等）。
+// ※実在の屋号を殺さないよう保守的に。
+//   - 末尾の「。」単体は除外しない（「ナオごはん。」「居酒屋 つむぐ。」は実在の屋号）
+//   - 「ください」は単体では使わない（「ドーナツ屋 おひとつください」は実在の屋号）。UI定型のみ
+//   - 文中の「。」は16文字以上のときだけ文章とみなす（「珈琲と。つくえ」のような短い屋号を守る）
+const SENTENCE_LIKE_RE = /(しました|します$|いたします|(?:ご入力|ご確認|ご予約|お電話|ご覧|お問い合わせ|お問合せ|ご記入|ご連絡)ください|お願いします|のお知らせ$|予定です|受付中$|です$|ます$)/
+const LONG_SENTENCE_RE = /。./
+/** 末尾の絵文字・記号を落とす（「内覧会です🎉」を文章として判定できるようにする） */
+function stripTrailingSymbols(s: string): string {
+  return String(s || '').replace(/[\s　。、!！?？…・ -　\u{1F000}-\u{1FAFF}☀-➿️]+$/u, '').trim()
+}
+/**
+ * 店名ではない（ページタイトル/UI文字列/見出し）か。店名に対してのみ使う。
+ * 完全一致＋明確な定型のみで判定し、部分一致はしない（個人店の屋号を殺さないため）。
+ */
+export function looksNotShopName(name?: string | null): { bad: boolean; reason: string } {
+  const raw = String(name || '').trim()
+  if (!raw) return { bad: true, reason: '店名が空' }
+  const n = normForName(raw)
+  if (!n) return { bad: true, reason: '店名が記号のみ' }
+  if (NOT_SHOP_EXACT.has(n)) return { bad: true, reason: `ページタイトル/UI文字列（${raw.slice(0, 24)}）＝店名ではない` }
+  // 「ご予約内容の選択｜◯◯整体院」「店舗情報 - 株式会社◯◯」等、UI文字列＋区切りで始まるタイトル。
+  // 区切りの後ろに実店名があるので recoverShopNameSegment で拾い直せる。
+  const head = splitTitle(raw)[0]
+  if (head && head !== raw && NOT_SHOP_EXACT.has(normForName(head))) {
+    return { bad: true, reason: `ページタイトル（${head}）＋区切りのため店名を取り直す` }
+  }
+  const trimmed = stripTrailingSymbols(raw)
+  if (SENTENCE_LIKE_RE.test(trimmed)) return { bad: true, reason: `文章/見出しがそのまま店名（${raw.slice(0, 24)}）` }
+  // 「りんごとバター。 イオンモール伊達店」「焼肉 冷麺 ユッチャン。 沖縄店」等、句点を含む実在の屋号が
+  // あるため20文字以上に限定（それ未満は屋号の可能性が高い）
+  if (trimmed.length >= 20 && LONG_SENTENCE_RE.test(trimmed)) return { bad: true, reason: `文章/見出しがそのまま店名（${raw.slice(0, 24)}）` }
+  return { bad: false, reason: '' }
+}
+/**
+ * 「ご予約内容の選択｜整体院PLUS-R」「店舗情報 - 株式会社◯◯」のような複合タイトルから
+ * 店名らしい区切りを選び直す。見つからなければ''（＝店名未確定にする）。
+ */
+export function recoverShopNameSegment(title?: string | null): string {
+  const raw = String(title || '').replace(/^【[^】]*】\s*/, '').trim()
+  if (!raw) return ''
+  const parts = splitTitle(raw)
+  if (parts.length < 2) return ''
+  for (const p of parts) {
+    if (p.length < 3 || p.length > 30) continue
+    if (looksNotShopName(p).bad) continue
+    // 住所・都道府県だけ/日付だけの断片は店名ではない
+    if (/^(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県)/.test(p)) continue
+    if (/^\d|^[0-9０-９]{1,2}月/.test(p)) continue
+    return p
+  }
+  return ''
+}
+
 // 確立済み大型の閾値（厳しめ）
 export const BIG_REVIEW_COUNT = 30       // Google口コミがこれ以上＝既に集客できている → 除外
 export const BIG_IG_FOLLOWERS = 500      // Instagramフォロワーがこれ以上 → 除外（IG分類時の判定）

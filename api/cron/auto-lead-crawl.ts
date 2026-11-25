@@ -11,10 +11,24 @@
 import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
 import { runAutoCrawl, type CrawlOnly } from '../../src/lib/autoCrawl.js'
 import { runAutoClockOut } from '../../src/lib/autoClockOut.js'
+import { refreshChainBrands } from '../../src/lib/chainLearn.js'
 
 export const config = { maxDuration: 300 }
 
 const VALID_ONLY: CrawlOnly[] = ['all', 'places', 'regional', 'instagram', 'sequential', 'failed']
+
+/** チェーンブランド学習を1日1回だけ実行（最終実行時刻は app_config に記録） */
+async function maybeRefreshChainBrands(admin: any): Promise<any | null> {
+  const KEY = 'chain_brands_refresh'
+  try {
+    const { data } = await admin.from('app_config').select('value').eq('key', KEY).maybeSingle()
+    const last = Date.parse(String(data?.value?.at || '')) || 0
+    if (Date.now() - last < 20 * 3600 * 1000) return null
+    const r = await refreshChainBrands(admin)
+    await admin.from('app_config').upsert({ key: KEY, value: { at: new Date().toISOString(), ...r } }, { onConflict: 'key' }).then(() => {}, () => {})
+    return r
+  } catch { return null }
+}
 
 export default async function handler(req: any, res: any) {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -47,8 +61,10 @@ export default async function handler(req: any, res: any) {
   try {
     // 自動退勤は巡回より先に。巡回が時間切れになっても勤怠は閉じるようにする。
     const clockOut = await runAutoClockOut(admin).catch((e: any) => ({ ok: false, closed: 0, details: [], error: String(e?.message || e) }))
+    // チェーンブランドの学習は1日1回だけ（全件走査のため）。投入ゲートがこの結果でチェーンを弾く。
+    const chain = await maybeRefreshChainBrands(admin)
     const result = await runAutoCrawl(admin, process.env, { trigger, only, userId })
-    return res.status(200).json({ ...result, autoClockOut: { closed: clockOut.closed, skipped: (clockOut as any).skipped, error: clockOut.error } })
+    return res.status(200).json({ ...result, autoClockOut: { closed: clockOut.closed, skipped: (clockOut as any).skipped, error: clockOut.error }, ...(chain ? { chainBrands: chain } : {}) })
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: String(e?.message || e) })
   }

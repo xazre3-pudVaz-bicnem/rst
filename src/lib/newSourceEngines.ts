@@ -168,8 +168,10 @@ export async function ingestFromUrl(admin: any, mapsKey: string | null, o: {
       const gate = await caseImportGate(admin, { name, phone, address, text: (o.extraText || '').slice(0, 300), mapsKey, skipEstablishment: true, budgetEndMs: Date.now() + 15000 })
       if (!gate.ok) { await applyGateDowngrade(admin, candidateId, gate); return { status: 'valid', temperature: gate.action === 'exclude' ? 'EXCLUDED' : gate.action === 'link' ? 'HOT' : 'HOLD', name, phone, address, candidateId, importedCaseId: gate.linkCaseId || null, imported: false } }
       const memo = `【AI自動投入 / ${o.label} / HOT-B】${reason}\n電話: ${phone}\n住所: ${address}\nURL: ${url}`
-      const { data: created } = await admin.from('cases').insert({ name, address: address || '', phone1: phone, industry: classifyIndustry(name) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, instagram: enrich?.instagram || null, source_urls: url, memo, created_by_id: o.userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
-      if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id }).eq('id', candidateId); importedCaseId = created.id; imported = true }
+      // ゲートの電話逆引きで実店名が判明したらそれを案件名に使う
+      const finalName = gate.resolvedName || name
+      const { data: created } = await admin.from('cases').insert({ name: finalName, address: address || '', phone1: phone, industry: classifyIndustry(finalName) || normalizeIndustry(qr.category) || null, status: DEFAULT_STATUS, priority: '中', hp1: official || null, instagram: enrich?.instagram || null, source_urls: url, memo, created_by_id: o.userId }).select('id').single().then((x: any) => x, () => ({ data: null }))
+      if (created?.id) { await admin.from('lead_candidates').update({ imported_to_cases: true, imported_at: nowIso, imported_case_id: created.id, ...(gate.resolvedName ? { name: finalName, extracted_shop_name: finalName } : {}) }).eq('id', candidateId); importedCaseId = created.id; imported = true }
     }
   }
   return { status: 'valid', temperature, name, phone, address, candidateId, importedCaseId, imported }
