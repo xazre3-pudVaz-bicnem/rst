@@ -12,20 +12,20 @@ import { getAdminClient } from '../../src/lib/googlePlacesRun.js'
 import { runAutoCrawl, type CrawlOnly } from '../../src/lib/autoCrawl.js'
 import { runAutoClockOut } from '../../src/lib/autoClockOut.js'
 import { refreshChainBrands } from '../../src/lib/chainLearn.js'
+import { refreshSourcePerformance } from '../../src/lib/sourcePerf.js'
 
 export const config = { maxDuration: 300 }
 
 const VALID_ONLY: CrawlOnly[] = ['all', 'places', 'regional', 'instagram', 'sequential', 'failed']
 
-/** チェーンブランド学習を1日1回だけ実行（最終実行時刻は app_config に記録） */
-async function maybeRefreshChainBrands(admin: any): Promise<any | null> {
-  const KEY = 'chain_brands_refresh'
+/** 重い全件集計を間隔を空けて実行する（最終実行時刻は app_config に記録） */
+async function maybeRun(admin: any, key: string, intervalHours: number, fn: () => Promise<any>): Promise<any | null> {
   try {
-    const { data } = await admin.from('app_config').select('value').eq('key', KEY).maybeSingle()
+    const { data } = await admin.from('app_config').select('value').eq('key', key).maybeSingle()
     const last = Date.parse(String(data?.value?.at || '')) || 0
-    if (Date.now() - last < 20 * 3600 * 1000) return null
-    const r = await refreshChainBrands(admin)
-    await admin.from('app_config').upsert({ key: KEY, value: { at: new Date().toISOString(), ...r } }, { onConflict: 'key' }).then(() => {}, () => {})
+    if (Date.now() - last < intervalHours * 3600 * 1000) return null
+    const r = await fn()
+    await admin.from('app_config').upsert({ key, value: { at: new Date().toISOString(), ...r } }, { onConflict: 'key' }).then(() => {}, () => {})
     return r
   } catch { return null }
 }
@@ -62,9 +62,16 @@ export default async function handler(req: any, res: any) {
     // 自動退勤は巡回より先に。巡回が時間切れになっても勤怠は閉じるようにする。
     const clockOut = await runAutoClockOut(admin).catch((e: any) => ({ ok: false, closed: 0, details: [], error: String(e?.message || e) }))
     // チェーンブランドの学習は1日1回だけ（全件走査のため）。投入ゲートがこの結果でチェーンを弾く。
-    const chain = await maybeRefreshChainBrands(admin)
+    const chain = await maybeRun(admin, 'chain_brands_refresh', 20, () => refreshChainBrands(admin))
+    // 取得元の実績（架電→アポ率）で案件の優先度＝一覧のドットの色を6時間ごとに付け直す
+    const perf = await maybeRun(admin, 'source_performance_refresh', 6, () => refreshSourcePerformance(admin))
     const result = await runAutoCrawl(admin, process.env, { trigger, only, userId })
-    return res.status(200).json({ ...result, autoClockOut: { closed: clockOut.closed, skipped: (clockOut as any).skipped, error: clockOut.error }, ...(chain ? { chainBrands: chain } : {}) })
+    return res.status(200).json({
+      ...result,
+      autoClockOut: { closed: clockOut.closed, skipped: (clockOut as any).skipped, error: clockOut.error },
+      ...(chain ? { chainBrands: chain } : {}),
+      ...(perf ? { sourcePerformance: { sources: perf.sources, updated: perf.updated, high: perf.high, low: perf.low } } : {}),
+    })
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: String(e?.message || e) })
   }

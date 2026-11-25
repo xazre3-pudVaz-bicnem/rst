@@ -19,7 +19,8 @@
     "check:japan-filter": "tsx scripts/check-japan-filter.ts",
     "db:apply": "tsx scripts/apply-migration.ts",
     "probe:permits": "tsx scripts/probe-permit-sources.ts",
-    "clean:leads": "tsx scripts/clean-nonshop-leads.ts"
+    "clean:leads": "tsx scripts/clean-nonshop-leads.ts",
+    "refresh:priority": "tsx scripts/refresh-source-priority.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
