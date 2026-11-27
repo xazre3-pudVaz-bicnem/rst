@@ -18,7 +18,7 @@ import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { COMMISSION_RATE, COMMISSION_SPLIT, isExcludedRecipient } from '@/lib/commission'
 import {
   LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo, hpPaymentSegments,
-  monthlyServiceTotal, monthlyPaymentSegments,
+  monthlyServiceTotal, monthlyPaymentSegments, monthlyCostTotal, initialCostTotal,
 } from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
@@ -203,8 +203,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   // 支払方法で分けたときの内訳（1〜24回目はカード、25回目以降は口座振替…の表示に使う）
   const hpSegments = hpPaymentSegments(priceNums)
   const methodSplitOn = !!hpLaterMethod
-  // 月額サービス（保守/SEO/MEO）の合計と、途中で支払方法が変わる契約の内訳
+  // 月額サービス（保守/SEO/MEO/SNS）の合計と、途中で支払方法が変わる契約の内訳
   const monthlyService = monthlyServiceTotal(priceNums)
+  // 原価（歩合は売上から原価を引いた粗利で計算する）
+  const monthlyCost = monthlyCostTotal(priceNums)
+  const initialCost = initialCostTotal(priceNums)
   const mSegments = monthlyPaymentSegments(priceNums)
   const monthlySwitchOn = !!mLaterMethod
   // 月額のうち「契約月からは入ってこない」ぶん（例: HP分割の口座振替は25ヶ月目から）
@@ -303,9 +306,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           // 入金のされ方（ショット/毎月）。未指定(null)は支払方法から自動判定される
           hp_first_lump: hpPayType === '分割' ? hpFirstLump : null,
           hp_later_lump: hpPayType === '分割' && hpLaterMethod ? hpLaterLump : null,
-          maintenance_price: num(prices.maintenance_price ?? ''),
-          seo_price: num(prices.seo_price ?? ''),
-          meo_price: num(prices.meo_price ?? ''),
+          // 月額サービスの金額。サービスが増えてもここを直さなくていいよう一覧から作る
+          ...Object.fromEntries(CONTRACT_PRODUCTS.filter((p) => p.key !== 'hp_price').map((p) => [p.key, num(prices[p.key] ?? '')])),
           // 月額ぶんの支払方法の切替。切替なし（または月額0円）に戻したら全部消す
           monthly_first_method: monthlySwitchOn && monthlyService > 0 ? (mFirstMethod || payment || null) : null,
           monthly_first_months: monthlySwitchOn && monthlyService > 0 ? num(mFirstMonths) : null,
@@ -318,7 +320,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
         Object.assign(payload, {
           lost_reason: lostReason,
           contract_date: null, min_contract_months: null, payment_method: null,
-          hp_price: null, maintenance_price: null, seo_price: null, meo_price: null, total_price: null,
+          ...Object.fromEntries(CONTRACT_PRODUCTS.map((p) => [p.key, null])), total_price: null,
           hp_first_method: null, hp_first_installments: null, hp_later_method: null,
           hp_first_lump: null, hp_later_lump: null,
           monthly_first_method: null, monthly_first_months: null, monthly_later_method: null, monthly_first_lump: null,
@@ -402,7 +404,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               <div className="grid grid-cols-2 gap-2">
                 {CONTRACT_PRODUCTS.map((p) => (
                   <div key={p.key} className="space-y-1">
-                    <Label className="text-2xs">{p.label}（{p.key === 'hp_price' ? '初期/分割' : (p.kind as string) === 'initial' ? '初期' : '月額'}・円）</Label>
+                    <Label className="text-2xs">
+                      {p.label}（{p.key === 'hp_price' ? '初期/分割' : (p.kind as string) === 'initial' ? '初期' : '月額'}・円）
+                      {/* 歩合は原価を引いた粗利から計算するので、原価のあるサービスはその場で分かるようにする */}
+                      {p.cost > 0 && <span className="ml-1 font-normal text-muted-foreground">原価{p.cost.toLocaleString()}</span>}
+                    </Label>
                     <Input
                       inputMode="numeric"
                       placeholder="—"
@@ -636,6 +642,14 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                     ／{mSegments[1].from}ヶ月目から毎月 <span className="font-bold text-foreground">{mSegments[1].perMonth.toLocaleString()}円</span>
                   </span>
                 )}
+                {/* 歩合は売上そのままではなく、原価を引いた粗利から計算する */}
+                {(monthlyCost > 0 || initialCost > 0) && (
+                  <span className="w-full text-right">
+                    原価: {initialCost > 0 ? `制作 ${initialCost.toLocaleString()}円 ／ ` : ''}
+                    月額 <span className="font-bold text-foreground">{monthlyCost.toLocaleString()}円/月</span>
+                    <span className="ml-1">→ 歩合の対象は粗利 <span className="font-bold text-foreground">{Math.max(0, monthlyService - monthlyCost).toLocaleString()}円/月</span></span>
+                  </span>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
@@ -675,7 +689,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
             </Select>
           </div>
 
-          {/* 歩合の分配先と入金状況（成約のみ）。売上の20%を リスト10% / アポ40% / 営業50% で分配 */}
+          {/* 歩合の分配先と入金状況（成約のみ）。粗利（売上−原価）の20%を リスト10% / アポ40% / 営業50% で分配 */}
           {result === '成約' && (
             <div className="space-y-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2 dark:border-emerald-500/30 dark:bg-emerald-500/10">
               {[listRep, appoRep, salesRep].some((n) => isExcludedRecipient(n) && n !== AGENCY) && (
@@ -691,7 +705,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
               <Label className="text-emerald-700 dark:text-emerald-400">
                 歩合の分配
                 <span className="ml-1 text-2xs font-normal text-muted-foreground">
-                  売上の{Math.round(COMMISSION_RATE * 100)}%を リスト{Math.round(COMMISSION_SPLIT.list * 100)}% / アポ{Math.round(COMMISSION_SPLIT.appo * 100)}% / 営業{Math.round(COMMISSION_SPLIT.sales * 100)}%（営業担当は上で選択）
+                  粗利（売上−原価）の{Math.round(COMMISSION_RATE * 100)}%を リスト{Math.round(COMMISSION_SPLIT.list * 100)}% / アポ{Math.round(COMMISSION_SPLIT.appo * 100)}% / 営業{Math.round(COMMISSION_SPLIT.sales * 100)}%（営業担当は上で選択）
                 </span>
               </Label>
               <div className="grid grid-cols-2 gap-2">

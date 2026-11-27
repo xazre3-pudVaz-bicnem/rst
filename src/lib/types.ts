@@ -127,6 +127,8 @@ export interface VisitReport {
   maintenance_price?: number | null
   seo_price?: number | null
   meo_price?: number | null
+  /** SNS運用（月額） */
+  sns_price?: number | null
   // ---- 月額ぶんの途中で支払方法が変わる契約（例: 12ヶ月カード → 13ヶ月目から口座振替） ----
   /** 1ヶ月目から切替までの支払方法（例: クレジットカード） */
   monthly_first_method?: string | null

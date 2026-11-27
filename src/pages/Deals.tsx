@@ -15,7 +15,7 @@ import VisitReportModal from '@/components/modals/VisitReportModal'
 import type { Case, VisitReport } from '@/lib/types'
 import { AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import {
-  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal, COMMISSION_RULE_CHANGE_MONTH,
+  summarizeCommission, contractStartMonth, monthlyCommission, payrollInfo, isAgencyDeal, COMMISSION_RULE_CHANGE_MONTH, COMMISSION_COST_START_MONTH,
   summarizePromotion, PROMOTION_RANKS, PROMOTION_POINT_YEN, PROMOTION_BASE_RANK,
   COMMISSION_RATE, COMMISSION_SPLIT, COMMISSION_PAY_DAY, type PayStatus,
 } from '@/lib/commission'
@@ -205,6 +205,9 @@ export default function Deals() {
               )}
             </span>
             <span>売上 <b className="tabular-nums text-foreground">{yen(commission.revenue)}</b></span>
+            {/* 歩合は売上そのままではなく、原価を引いた粗利の20%が原資 */}
+            {commission.cost > 0 && <span>原価 <b className="tabular-nums text-foreground">−{yen(commission.cost)}</b></span>}
+            {commission.cost > 0 && <span>粗利 <b className="tabular-nums text-foreground">{yen(commission.profit)}</b></span>}
             <span>歩合原資 <b className="tabular-nums text-foreground">{yen(commission.pool)}</b></span>
             <span>計上 {commission.activeDeals}件</span>
             {commission.unpaidDeals > 0 && <span className="text-red-600 dark:text-red-400">未払い設定 {commission.unpaidDeals}件（該当月は除外）</span>}
@@ -217,6 +220,12 @@ export default function Deals() {
             <div className="mt-1 rounded bg-muted/60 px-2 py-1 text-2xs text-muted-foreground">
               {moment(COMMISSION_RULE_CHANGE_MONTH + '-01').format('YYYY年M月')}より前の月は、カード分割を毎月に按分していた旧ルールで支払い済みです。
               遡っての精算はしないため、ここの表示額と実際の支払額は一致しないことがあります。
+            </div>
+          )}
+          {/* 原価を引く前の月も同じく支払済み。遡って減らさない */}
+          {(commAll || commMonth < COMMISSION_COST_START_MONTH) && (
+            <div className="mt-1 rounded bg-muted/60 px-2 py-1 text-2xs text-muted-foreground">
+              {moment(COMMISSION_COST_START_MONTH + '-01').format('YYYY年M月')}より前の月は、原価を引かず売上そのままで計算した額を支払い済みです（遡って減らしません）。
             </div>
           )}
           {commission.people.length === 0 ? (
@@ -382,7 +391,7 @@ export default function Deals() {
         </div>
 
         <div className={`rounded-xl border bg-card print:overflow-visible print:rounded-none print:border-0 ${pdfBusy ? 'overflow-visible' : 'overflow-x-auto'}`}>
-          <table className="w-full min-w-[1000px] text-xs print:min-w-0 print:text-[9px]">
+          <table className="w-full min-w-[1100px] text-xs print:min-w-0 print:text-[9px]">
             <thead>
               <tr className="border-b bg-muted/40 text-muted-foreground">
                 <th className="px-2 py-2 text-left">店舗名</th>

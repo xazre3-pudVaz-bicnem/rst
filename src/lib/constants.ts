@@ -152,12 +152,20 @@ export const GENDERS = ['男', '女'] as const
 // ===== 訪問結果 =====
 /** 訪問結果の失注理由 */
 export const LOST_REASONS = ['金額ネック', '期間ネック', '本人検討', '第三者相談', '第三者NG', '不在'] as const
-/** 契約サービス（成約時に金額を入力する対象）。key=DBカラム, label=表示, kind=初期費用/月額 */
+/**
+ * 契約サービス（成約時に金額を入力する対象）。key=DBカラム, label=表示, kind=初期費用/月額
+ *
+ * cost = 原価。歩合は売上そのままではなく、原価を引いた粗利を元に計算する
+ *   （歩合原資 = 粗利 × 20%）。月額サービスの原価は1ヶ月あたり、HP制作の原価は1契約あたり。
+ *   契約していない（金額が空の）サービスの原価は引かない。
+ *   金額を変えるときはここだけ直す（下記は 2026-11-27 社長指示の額）。
+ */
 export const CONTRACT_PRODUCTS = [
-  { key: 'hp_price', label: 'HP制作', kind: 'initial' },
-  { key: 'maintenance_price', label: '保守管理', kind: 'monthly' },
-  { key: 'seo_price', label: 'SEO', kind: 'monthly' },
-  { key: 'meo_price', label: 'MEO', kind: 'monthly' },
+  { key: 'hp_price', label: 'HP制作', kind: 'initial', cost: 0 },
+  { key: 'maintenance_price', label: '保守管理', kind: 'monthly', cost: 1000 },
+  { key: 'seo_price', label: 'SEO', kind: 'monthly', cost: 0 },
+  { key: 'meo_price', label: 'MEO', kind: 'monthly', cost: 1000 },
+  { key: 'sns_price', label: 'SNS運用', kind: 'monthly', cost: 10000 },
 ] as const
 
 type ContractLike = Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], number | null | undefined>>
@@ -221,10 +229,30 @@ export function hpPaymentLabel(r: ContractLike): string {
 
 // ===== 月額ぶん（保守管理・SEO・MEO）の支払い =====
 
-/** 月額サービスの合計（保守管理＋SEO＋MEO）。HP制作の分割ぶんは含まない。 */
+/** 月額サービスの合計（保守管理＋SEO＋MEO＋SNS運用）。HP制作の分割ぶんは含まない。 */
 export function monthlyServiceTotal(r: ContractLike): number {
   let sum = 0
   for (const p of CONTRACT_PRODUCTS) if ((p.kind as string) === 'monthly') sum += Number(r[p.key] ?? 0) || 0
+  return sum
+}
+
+/** 月額サービスの原価合計（1ヶ月あたり）。契約しているサービスぶんだけ数える。 */
+export function monthlyCostTotal(r: ContractLike): number {
+  let sum = 0
+  for (const p of CONTRACT_PRODUCTS) {
+    if ((p.kind as string) !== 'monthly') continue
+    if ((Number(r[p.key] ?? 0) || 0) > 0) sum += p.cost
+  }
+  return sum
+}
+
+/** 初期費用サービス（HP制作）の原価（1契約あたり）。契約していなければ0。 */
+export function initialCostTotal(r: ContractLike): number {
+  let sum = 0
+  for (const p of CONTRACT_PRODUCTS) {
+    if ((p.kind as string) === 'monthly') continue
+    if ((Number(r[p.key] ?? 0) || 0) > 0) sum += p.cost
+  }
   return sum
 }
 

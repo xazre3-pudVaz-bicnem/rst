@@ -2,7 +2,10 @@
 // 成約案件の歩合計算（画面共通の唯一の計算ロジック）
 //
 //  ルール:
-//   - 歩合原資 = その月の売上 × 20%
+//   - 歩合原資 = その月の粗利（売上 − 原価）× 20%
+//   - 原価はサービスごとに決めている（constants.ts の CONTRACT_PRODUCTS.cost）。
+//     月額サービスの原価は1ヶ月あたりで、売上を計上した月に同じだけ引く
+//     （カードでまとめて入金した月は、そのぶんの月数ぶんの原価もまとめて引く）
 //   - 分配     = リスト担当 10% / アポ担当 40% / 営業担当 50%
 //   - 売上は「入金ベース」で月ごとに発生させる
 //       ・HP制作(一括)        … 契約月に全額
@@ -29,7 +32,9 @@
 import moment from 'moment'
 import type { VisitReport } from './types'
 import { AI_CREATOR_LABEL } from './caseCreator.js'
-import { hpPaymentSegments, monthlyPaymentSegments, monthlyServiceTotal } from './constants.js'
+import {
+  hpPaymentSegments, monthlyPaymentSegments, monthlyServiceTotal, monthlyCostTotal, initialCostTotal,
+} from './constants.js'
 
 /**
  * 役割ごとの受取人。AI投入リストはリスト分をアポ担当が受け取る。
@@ -73,6 +78,13 @@ export function isAgencyDeal(r: Pick<VisitReport, 'sales_rep'>): boolean {
  */
 export const COMMISSION_RULE_CHANGE_MONTH = '2026-10'
 
+/**
+ * 原価を引いた粗利で歩合を計算し始めた月（この月ぶんから新ルール）。
+ * これより前の月は売上そのままの旧ルールで計算した額を支払い済みなので、遡って減らさない。
+ * 2026-11分は11/30締め・12/25支払でまだ未払いのため、この月から適用する。
+ */
+export const COMMISSION_COST_START_MONTH = '2026-11'
+
 /** 月キー（YYYY-MM） */
 const mk = (d: moment.Moment) => d.format('YYYY-MM')
 
@@ -84,26 +96,41 @@ export function contractStartMonth(r: Pick<VisitReport, 'contract_date' | 'visit
   return m.isValid() ? mk(m) : null
 }
 
-/** 月額サービス（保守/SEO/MEO）の合計。計算は constants.ts と共通（二重定義しない） */
+/** 月額サービス（保守/SEO/MEO/SNS）の合計・原価は constants.ts と共通（二重定義しない） */
+
+/** 案件1件の、ある月の売上・原価・粗利 */
+export interface DealAmounts {
+  /** その月に入金される額 */
+  revenue: number
+  /** その月ぶんの原価（売上を超えないように丸める） */
+  cost: number
+  /** 歩合の計算に使う額（売上 − 原価。原価割れでもマイナスにはしない） */
+  profit: number
+}
 
 /**
- * 案件1件の、指定月（YYYY-MM）に発生する売上（入金ベース）。
+ * 案件1件の、指定月（YYYY-MM）に発生する売上・原価・粗利（入金ベース）。
  * 未払い・解約・契約前の月は 0。
+ * 原価は「売上を計上した月に、その月数ぶんだけ」引く。カードでまとめて入金した月は
+ * まとめた月数ぶんの原価を同じ月に引く（売上だけ先に立って原価が後から出る、を避ける）。
  */
-export function dealRevenueForMonth(r: VisitReport, month: string): number {
-  if (r.result !== '成約') return 0
+export function dealAmountsForMonth(r: VisitReport, month: string): DealAmounts {
+  const zero: DealAmounts = { revenue: 0, cost: 0, profit: 0 }
+  if (r.result !== '成約') return zero
   const start = contractStartMonth(r)
-  if (!start || month < start) return 0
+  if (!start || month < start) return zero
 
   // 未払い（入金待ち）: 開始月以降は計上しない。開始月が無ければ契約月から全て止める
   if (r.commission_unpaid) {
     const since = r.unpaid_since ? mk(moment(r.unpaid_since)) : start
-    if (month >= since) return 0
+    if (month >= since) return zero
   }
 
   const endMonth = r.contract_end_month ? mk(moment(r.contract_end_month)) : null
   const idx = moment(month + '-01').diff(moment(start + '-01'), 'months')   // 契約月=0
-  let revenue = 0
+  // 原価を引き始めた月より前は、売上そのままの旧ルールで支払い済み（遡って減らさない）
+  const costOn = month >= COMMISSION_COST_START_MONTH
+  let revenue = 0, cost = 0
 
   // HP制作: 一括は契約月に全額。分割は「当社にいつ入金されるか」で計上する。
   //   カード区間  … 区間の初月に区間の合計額（カード会社からのショット入金）
@@ -120,6 +147,8 @@ export function dealRevenueForMonth(r: VisitReport, month: string): number {
     } else if (idx === 0) {
       revenue += hp
     }
+    // 制作の原価は1契約につき1回。最初に売上が立つ契約月に引く
+    if (costOn && idx === 0) cost += initialCostTotal(r)
   }
 
   // 月額サービス: 解約月まで毎月。
@@ -129,20 +158,29 @@ export function dealRevenueForMonth(r: VisitReport, month: string): number {
   const monthly = monthlyServiceTotal(r)
   if (monthly > 0 && (!endMonth || month <= endMonth)) {
     const mSegs = monthlyPaymentSegments(r)
+    let units = 0   // この月に計上する「月数」。ショット入金の月はまとめた月数になる
     if (!mSegs.length) {
-      revenue += monthly
+      units = 1
     } else {
       for (const seg of mSegs) {
         const fromIdx = seg.from - 1                       // 1ヶ月目 = 契約月(idx 0)
         const toIdx = seg.to == null ? Infinity : seg.to - 1
         // ショット入金は区間の初月にまとめて入る（解約してもすでに入金済みなので遡らない）
-        if (seg.lump) { if (idx === fromIdx) revenue += seg.total ?? 0 }
-        else if (idx >= fromIdx && idx <= toIdx) revenue += seg.perMonth
+        if (seg.lump) { if (idx === fromIdx) units += seg.count ?? 0 }
+        else if (idx >= fromIdx && idx <= toIdx) units += 1
       }
     }
+    revenue += monthly * units
+    if (costOn) cost += monthlyCostTotal(r) * units
   }
 
-  return revenue
+  cost = Math.min(cost, revenue)          // 原価割れの契約で歩合をマイナスにしない
+  return { revenue, cost, profit: revenue - cost }
+}
+
+/** 案件1件の、指定月に発生する売上（入金ベース）。原価を引く前の額。 */
+export function dealRevenueForMonth(r: VisitReport, month: string): number {
+  return dealAmountsForMonth(r, month).revenue
 }
 
 // ============================================================
@@ -283,7 +321,11 @@ export interface CommissionSummary {
   people: PersonCommission[]
   /** 期間の売上（入金ベース・未払い除く） */
   revenue: number
-  /** 歩合原資（売上×20%） */
+  /** 期間の原価（サービスごとの原価×計上月数） */
+  cost: number
+  /** 期間の粗利（売上 − 原価）。歩合原資の元になる額 */
+  profit: number
+  /** 歩合原資（粗利×20%） */
   pool: number
   /** 担当未設定のため配られなかった額 */
   unassigned: number
@@ -304,7 +346,7 @@ export interface CommissionSummary {
 export function summarizeCommission(reports: VisitReport[], from: string, to: string): CommissionSummary {
   const byName = new Map<string, PersonCommission>()
   const dealsByName = new Map<string, Set<string>>()
-  let revenue = 0, pool = 0, unassigned = 0, excluded = 0, unpaidDeals = 0
+  let revenue = 0, cost = 0, pool = 0, unassigned = 0, excluded = 0, unpaidDeals = 0
   const activeIds = new Set<string>()
   const agencyIds = new Set<string>()
 
@@ -315,13 +357,15 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
     if (r.result !== '成約') continue
     if (r.commission_unpaid) unpaidDeals++
     for (const month of months) {
-      const rev = dealRevenueForMonth(r, month)
-      if (rev <= 0) continue
+      const amt = dealAmountsForMonth(r, month)
+      if (amt.revenue <= 0) continue
       // 販売代理店の成約は歩合計算の対象外（売上・原資にも含めない）
       if (isAgencyDeal(r)) { agencyIds.add(r.id); continue }
       activeIds.add(r.id)
-      revenue += rev
-      const dealPool = rev * COMMISSION_RATE
+      revenue += amt.revenue
+      cost += amt.cost
+      // 歩合は売上そのままではなく、原価を引いた粗利を元に計算する
+      const dealPool = amt.profit * COMMISSION_RATE
       pool += dealPool
       for (const role of Object.keys(COMMISSION_SPLIT) as CommissionRole[]) {
         const amount = Math.round(dealPool * COMMISSION_SPLIT[role])
@@ -342,7 +386,12 @@ export function summarizeCommission(reports: VisitReport[], from: string, to: st
   const people = [...byName.values()]
     .map((p) => ({ ...p, deals: dealsByName.get(p.name)?.size ?? 0 }))
     .sort((a, b) => b.total - a.total)
-  return { people, revenue: Math.round(revenue), pool: Math.round(pool), unassigned, excluded, unpaidDeals, activeDeals: activeIds.size, agencyDeals: agencyIds.size }
+  return {
+    people,
+    revenue: Math.round(revenue), cost: Math.round(cost), profit: Math.round(revenue - cost),
+    pool: Math.round(pool), unassigned, excluded, unpaidDeals,
+    activeDeals: activeIds.size, agencyDeals: agencyIds.size,
+  }
 }
 
 // ============================================================
