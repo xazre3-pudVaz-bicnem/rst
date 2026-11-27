@@ -4,7 +4,7 @@ import { Plus, Pencil, Trash2, ArrowRight, PhoneMissed, CalendarCheck, Handshake
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CallLogApi, VisitReportApi, ProfileApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments, monthlyPaymentLabel, isCallBlocked, CALL_BLOCKED_MESSAGE } from '@/lib/constants'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
 import { jpError } from '@/lib/utils'
@@ -186,6 +186,8 @@ export default function CallLogPanel({ callLogs, selectedCase, onAdd, onAbsent, 
                       {hpPaymentSegments(v).length
                         ? ' / ' + hpPaymentSegments(v).map((s) => `${s.method}${s.from}〜${s.to}回(${s.lump ? 'ショット' : '毎月'})`).join(' + ')
                         : v.payment_method ? ` / ${v.payment_method}` : ''}
+                      {/* 月額ぶんの支払方法が途中で変わる契約（12ヶ月カード → 13ヶ月目から口座振替 など） */}
+                      {monthlyPaymentLabel(v) ? ` / 月額 ${monthlyPaymentLabel(v)}` : ''}
                     </div>
                   </div>
                 )}

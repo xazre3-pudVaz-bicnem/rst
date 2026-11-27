@@ -13,6 +13,9 @@
 //       ・途中で支払方法が変わる契約（例: 1〜24回カード／25回目以降 口座振替）は
 //         区間ごとに上の判定をする（カード分は契約月にショット、残りは25ヶ月目から毎月）
 //       ・保守/SEO/MEO(月額)  … 契約月から解約月（未設定なら現在月）まで毎月
+//       ・月額の支払方法が途中で変わる契約（例: 月額49,500円を12ヶ月カード／13ヶ月目から口座振替）
+//         … カードでまとめて決済したぶんが契約月に一括入金（ショット）ならその月にまとめて、
+//           毎月課金ならその月ごとに計上。切替後は解約月まで毎月
 //   - 未払い（入金待ち）に設定した案件は、未払い開始月以降の歩合を計上しない
 //     （支払済みの過去月は遡って消さない）
 //   - 担当が未設定の役割の分は「未割当」として誰にも配らない
@@ -26,7 +29,7 @@
 import moment from 'moment'
 import type { VisitReport } from './types'
 import { AI_CREATOR_LABEL } from './caseCreator.js'
-import { hpPaymentSegments } from './constants.js'
+import { hpPaymentSegments, monthlyPaymentSegments, monthlyServiceTotal } from './constants.js'
 
 /**
  * 役割ごとの受取人。AI投入リストはリスト分をアポ担当が受け取る。
@@ -81,10 +84,7 @@ export function contractStartMonth(r: Pick<VisitReport, 'contract_date' | 'visit
   return m.isValid() ? mk(m) : null
 }
 
-/** 月額サービス（保守/SEO/MEO）の合計 */
-function monthlyServiceTotal(r: VisitReport): number {
-  return (Number(r.maintenance_price) || 0) + (Number(r.seo_price) || 0) + (Number(r.meo_price) || 0)
-}
+/** 月額サービス（保守/SEO/MEO）の合計。計算は constants.ts と共通（二重定義しない） */
 
 /**
  * 案件1件の、指定月（YYYY-MM）に発生する売上（入金ベース）。
@@ -122,8 +122,25 @@ export function dealRevenueForMonth(r: VisitReport, month: string): number {
     }
   }
 
-  // 月額サービス: 解約月まで毎月
-  if (!endMonth || month <= endMonth) revenue += monthlyServiceTotal(r)
+  // 月額サービス: 解約月まで毎月。
+  //   ただし「1〜12ヶ月目はカード／13ヶ月目以降は口座振替」のように支払方法が途中で変わる契約は、
+  //   カードでまとめて決済したぶんが契約月に一括で入金される（ショット入金）ことがあるので、
+  //   区間ごとに入金月を見る。HP制作の分割とまったく同じ考え方。
+  const monthly = monthlyServiceTotal(r)
+  if (monthly > 0 && (!endMonth || month <= endMonth)) {
+    const mSegs = monthlyPaymentSegments(r)
+    if (!mSegs.length) {
+      revenue += monthly
+    } else {
+      for (const seg of mSegs) {
+        const fromIdx = seg.from - 1                       // 1ヶ月目 = 契約月(idx 0)
+        const toIdx = seg.to == null ? Infinity : seg.to - 1
+        // ショット入金は区間の初月にまとめて入る（解約してもすでに入金済みなので遡らない）
+        if (seg.lump) { if (idx === fromIdx) revenue += seg.total ?? 0 }
+        else if (idx >= fromIdx && idx <= toIdx) revenue += seg.perMonth
+      }
+    }
+  }
 
   return revenue
 }
@@ -166,9 +183,8 @@ export const PROMOTION_BASE_RANK = '一般社員'
  */
 export function contractTotalYen(r: VisitReport): number {
   const hp = Number(r.hp_price) || 0
-  const monthly = (Number(r.maintenance_price) || 0) + (Number(r.seo_price) || 0) + (Number(r.meo_price) || 0)
   const months = Number(r.min_contract_months) || 0
-  return hp + monthly * months
+  return hp + monthlyServiceTotal(r) * months
 }
 
 /** 10月始まりの四半期。月(YYYY-MM)が属する四半期の範囲とラベルを返す */

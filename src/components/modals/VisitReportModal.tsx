@@ -16,7 +16,10 @@ import { VisitReportApi, CaseApi, TravelExpenseApi, EmployeeApi, AppointmentApi 
 import { TRANSPORT_TYPES } from '@/lib/labor'
 import { creatorNameOf, AI_CREATOR_LABEL } from '@/lib/caseCreator'
 import { COMMISSION_RATE, COMMISSION_SPLIT, isExcludedRecipient } from '@/lib/commission'
-import { LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo, hpPaymentSegments } from '@/lib/constants'
+import {
+  LOST_REASONS, CONTRACT_PRODUCTS, PAYMENT_METHODS, contractTotals, hpSplitInfo, hpPaymentSegments,
+  monthlyServiceTotal, monthlyPaymentSegments,
+} from '@/lib/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useAssignableUsers } from '@/hooks/useAssignableUsers'
 import { useToast } from '@/components/ui/toast'
@@ -77,6 +80,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   // 入金のされ方。null=支払方法から自動判定（カード＝ショット入金 / それ以外＝毎月入金）
   const [hpFirstLump, setHpFirstLump] = useState<boolean | null>(null)
   const [hpLaterLump, setHpLaterLump] = useState<boolean | null>(null)
+  // 月額ぶんの途中で支払方法が変わる契約（例: 月額49,500円を12ヶ月カード／13ヶ月目から口座振替）
+  const [mFirstMethod, setMFirstMethod] = useState('')
+  const [mFirstMonths, setMFirstMonths] = useState('')
+  const [mLaterMethod, setMLaterMethod] = useState('')
+  const [mFirstLump, setMFirstLump] = useState<boolean | null>(null)
   // 交通費（この訪問でかかった分。金額を入れたときだけ登録され、労務管理で担当者ごとに集計される）
   const [expense, setExpense] = useState<TravelExpense | null>(null)
   const [expAmount, setExpAmount] = useState('')
@@ -103,6 +111,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpLaterMethod(editing.hp_later_method ?? '')
       setHpFirstLump(editing.hp_first_lump ?? null)
       setHpLaterLump(editing.hp_later_lump ?? null)
+      setMFirstMethod(editing.monthly_first_method ?? '')
+      setMFirstMonths(editing.monthly_first_months != null ? String(editing.monthly_first_months) : '')
+      setMLaterMethod(editing.monthly_later_method ?? '')
+      setMFirstLump(editing.monthly_first_lump ?? null)
       setSalesRep(editing.sales_rep ?? '')
       setListRep(editing.list_rep ?? '')
       setAppoRep(editing.appo_rep ?? '')
@@ -125,6 +137,10 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
       setHpLaterMethod('')
       setHpFirstLump(null)
       setHpLaterLump(null)
+      setMFirstMethod('')
+      setMFirstMonths('')
+      setMLaterMethod('')
+      setMFirstLump(null)
       setVisitedAt(moment().format('YYYY-MM-DDTHH:mm'))
       setResult('成約')
       setLostReason('')
@@ -178,6 +194,8 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
     payment_method: payment,
     hp_first_method: hpFirstMethod, hp_first_installments: num(hpFirstInstallments), hp_later_method: hpLaterMethod,
     hp_first_lump: hpFirstLump, hp_later_lump: hpLaterLump,
+    monthly_first_method: mFirstMethod, monthly_first_months: num(mFirstMonths),
+    monthly_later_method: mLaterMethod, monthly_first_lump: mFirstLump,
   }
   const { initial: initialTotal, monthly: monthlyTotal } = contractTotals(priceNums)
   const total = initialTotal + monthlyTotal
@@ -185,10 +203,15 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
   // 支払方法で分けたときの内訳（1〜24回目はカード、25回目以降は口座振替…の表示に使う）
   const hpSegments = hpPaymentSegments(priceNums)
   const methodSplitOn = !!hpLaterMethod
+  // 月額サービス（保守/SEO/MEO）の合計と、途中で支払方法が変わる契約の内訳
+  const monthlyService = monthlyServiceTotal(priceNums)
+  const mSegments = monthlyPaymentSegments(priceNums)
+  const monthlySwitchOn = !!mLaterMethod
   // 月額のうち「契約月からは入ってこない」ぶん（例: HP分割の口座振替は25ヶ月目から）
   const laterMonthly = hpSegments.find((seg) => !seg.lump && seg.from > 1) ?? null
-  // 契約月から毎月入ってくるぶん（保守管理などの月額サービス）
-  const monthlyFromStart = monthlyTotal - (laterMonthly?.perPayment ?? 0)
+  // 契約月から毎月入ってくるぶん（保守管理などの月額サービス）。
+  // 月額をカードでまとめ払いした契約はそのぶんが初期費用側に行くので、ここには出てこない。
+  const monthlyFromStart = monthlyTotal - (laterMonthly?.perPayment ?? 0) - (mSegments[0]?.lump ? (mSegments[1]?.perMonth ?? 0) : 0)
 
   // 案件(selectedCase)がある通常フローと、案件未登録で直接成約を登録するフロー両対応。
   const effName = selectedCase?.name ?? caseName.trim()
@@ -283,6 +306,11 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           maintenance_price: num(prices.maintenance_price ?? ''),
           seo_price: num(prices.seo_price ?? ''),
           meo_price: num(prices.meo_price ?? ''),
+          // 月額ぶんの支払方法の切替。切替なし（または月額0円）に戻したら全部消す
+          monthly_first_method: monthlySwitchOn && monthlyService > 0 ? (mFirstMethod || payment || null) : null,
+          monthly_first_months: monthlySwitchOn && monthlyService > 0 ? num(mFirstMonths) : null,
+          monthly_later_method: monthlySwitchOn && monthlyService > 0 ? mLaterMethod || null : null,
+          monthly_first_lump: monthlySwitchOn && monthlyService > 0 ? mFirstLump : null,
           total_price: total || null,
         })
       } else {
@@ -293,6 +321,7 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
           hp_price: null, maintenance_price: null, seo_price: null, meo_price: null, total_price: null,
           hp_first_method: null, hp_first_installments: null, hp_later_method: null,
           hp_first_lump: null, hp_later_lump: null,
+          monthly_first_method: null, monthly_first_months: null, monthly_later_method: null, monthly_first_lump: null,
         })
       }
       const saved = editing
@@ -498,13 +527,113 @@ export default function VisitReportModal({ open, onClose, selectedCase, appointm
                   </div>
                 </div>
               )}
+              {/* 月額ぶんの支払い。カードは決済できる回数に上限があるため、
+                  「はじめの12ヶ月はカード → 13ヶ月目から口座振替」という契約がある。
+                  製作費を月額に含めたサブスク型の契約（例: 月額49,500円＝製作費＋保守）で特に多い。 */}
+              {monthlyService > 0 && (
+                <div className="space-y-1.5 rounded bg-emerald-100/60 px-2 py-1.5 dark:bg-emerald-500/15">
+                  <label className="flex items-center gap-1.5 text-2xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={monthlySwitchOn}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          // カードは12回払いが多いので、初期値は「12ヶ月目まで → 口座振替」
+                          setMLaterMethod('口座振替')
+                          if (!mFirstMethod) setMFirstMethod(payment || 'クレジットカード')
+                          if (!mFirstMonths) setMFirstMonths('12')
+                        } else {
+                          setMLaterMethod('')
+                        }
+                      }}
+                    />
+                    月額（{monthlyService.toLocaleString()}円/月）の支払方法が途中で変わる
+                  </label>
+
+                  {monthlySwitchOn && (
+                    <>
+                      <div className="flex flex-wrap items-center gap-1 text-2xs">
+                        <Select value={mFirstMethod || NONE} onValueChange={(v) => setMFirstMethod(v === NONE ? '' : v)}>
+                          <SelectTrigger className="h-7 w-36 text-2xs"><SelectValue placeholder="支払方法" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={NONE}>選択</SelectItem>
+                            {PAYMENT_METHODS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <span>で</span>
+                        <Input inputMode="numeric" placeholder="12" className="h-7 w-14 text-2xs" value={mFirstMonths} onChange={(e) => setMFirstMonths(e.target.value)} />
+                        <span>ヶ月目まで、以降は</span>
+                        <Select value={mLaterMethod} onValueChange={(v) => setMLaterMethod(v)}>
+                          <SelectTrigger className="h-7 w-36 text-2xs"><SelectValue placeholder="支払方法" /></SelectTrigger>
+                          <SelectContent>
+                            {PAYMENT_METHODS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {mSegments.length < 2 && (
+                        <div className="text-2xs text-amber-700 dark:text-amber-400">切り替える月数を1以上で入れてください。</div>
+                      )}
+
+                      {/* 前半の入金のされ方。カードで12ヶ月分をまとめて決済した契約は契約月に一括入金される */}
+                      {mSegments.length === 2 && (
+                        <div className="space-y-1.5 border-t border-emerald-200 pt-1.5 text-2xs dark:border-emerald-500/30">
+                          <div className="font-medium">当社への入金のされ方（歩合の計上月が変わります）</div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{mSegments[0].method}</span>
+                            <span>1〜{mSegments[0].to}ヶ月目</span>
+                            <span className="text-muted-foreground">¥{mSegments[0].perMonth.toLocaleString()} × {mSegments[0].count}ヶ月 = </span>
+                            <span className="font-bold">¥{(mSegments[0].total ?? 0).toLocaleString()}</span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            {([true, false] as const).map((v) => (
+                              <button
+                                key={String(v)}
+                                type="button"
+                                onClick={() => setMFirstLump(v)}
+                                className={`rounded-full border px-2 py-0.5 font-bold ${mSegments[0].lump === v
+                                  ? (v ? 'border-amber-500 bg-amber-500 text-white' : 'border-sky-600 bg-sky-600 text-white')
+                                  : 'text-muted-foreground hover:bg-accent'}`}
+                              >
+                                {v ? 'ショット入金' : '毎月入金'}
+                              </button>
+                            ))}
+                            <span className="text-muted-foreground">
+                              {mSegments[0].lump
+                                ? `→ 契約月に ¥${(mSegments[0].total ?? 0).toLocaleString()} がまとめて入金（歩合もこの月）`
+                                : `→ 契約月から毎月 ¥${mSegments[0].perMonth.toLocaleString()}（歩合も毎月）`}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-bold text-white">{mSegments[1].method}</span>
+                            <span>{mSegments[1].from}ヶ月目〜</span>
+                            <span className="text-muted-foreground">→ 解約まで毎月 ¥{mSegments[1].perMonth.toLocaleString()}（歩合も毎月）</span>
+                          </div>
+                          <div className="leading-relaxed text-muted-foreground">
+                            カードで<b className="text-foreground">まとめて決済</b>した契約はカード会社から契約月に全額が振り込まれます（ショット入金）。
+                            <b className="text-foreground">毎月カードに課金</b>する契約なら「毎月入金」を選んでください。
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="leading-relaxed text-2xs text-muted-foreground">
+                    製作費込みの月額契約は、内訳が分かればHP制作を「分割」で、分からなければ月額にまとめて入れてください。
+                  </div>
+                </div>
+              )}
               <div className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 text-2xs text-muted-foreground">
-                <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span>{initialTotal > 0 && hpSegments.some((s) => s.lump) && <span className="ml-1">（ショット入金ぶんを含む）</span>}</span>
+                <span>初期費用合計: <span className="font-bold text-foreground">{initialTotal.toLocaleString()}円</span>{initialTotal > 0 && (hpSegments.some((s) => s.lump) || mSegments[0]?.lump) && <span className="ml-1">（ショット入金ぶんを含む）</span>}</span>
                 <span>月額合計: <span className="font-bold text-foreground">{monthlyTotal.toLocaleString()}円/月</span></span>
                 {laterMonthly && (
                   <span className="w-full text-right">
                     内訳: 契約月から毎月 <span className="font-bold text-foreground">{monthlyFromStart.toLocaleString()}円</span>
                     ／{laterMonthly.from}ヶ月目から毎月 <span className="font-bold text-foreground">{laterMonthly.perPayment.toLocaleString()}円</span> が加わる
+                  </span>
+                )}
+                {mSegments[0]?.lump && (
+                  <span className="w-full text-right">
+                    内訳: 月額は契約月に <span className="font-bold text-foreground">{(mSegments[0].total ?? 0).toLocaleString()}円</span>（{mSegments[0].count}ヶ月分）をまとめて入金
+                    ／{mSegments[1].from}ヶ月目から毎月 <span className="font-bold text-foreground">{mSegments[1].perMonth.toLocaleString()}円</span>
                   </span>
                 )}
               </div>

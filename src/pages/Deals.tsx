@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import TopBar from '@/components/layout/TopBar'
 import { SkeletonRows } from '@/components/ui/skeleton'
 import { VisitReportApi, CaseApi } from '@/lib/api'
-import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments } from '@/lib/constants'
+import { CONTRACT_PRODUCTS, contractTotals, hpSplitInfo, hpPaymentSegments, monthlyPaymentSegments } from '@/lib/constants'
 import { isSupabaseConfigured } from '@/lib/supabaseClient'
 import { useToast } from '@/components/ui/toast'
 import { useConfirm } from '@/components/ui/confirm'
@@ -458,16 +458,28 @@ export default function Deals() {
                     {(() => {
                       // 分割はどの回を何で払うか＋当社への入金のされ方（ショット/毎月）まで出す
                       const segs = hpPaymentSegments(r)
-                      if (!segs.length) return r.payment_method || '—'
+                      const mSegs = monthlyPaymentSegments(r)
+                      if (!segs.length && !mSegs.length) return r.payment_method || '—'
+                      const chip = (lump: boolean) => `ml-1 rounded px-1 py-px font-bold ${lump
+                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+                        : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'}`
                       return (
                         <div className="space-y-0.5">
                           {segs.map((seg) => (
-                            <div key={seg.from} className="whitespace-nowrap text-[10px]">
+                            <div key={`hp-${seg.from}`} className="whitespace-nowrap text-[10px]">
                               <span className="font-bold">{seg.method}</span>
-                              <span className="ml-1 text-muted-foreground">{seg.from}〜{seg.to}回 ¥{seg.total.toLocaleString()}</span>
-                              <span className={`ml-1 rounded px-1 py-px font-bold ${seg.lump ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'}`}>
-                                {seg.lump ? 'ショット' : '毎月'}
+                              <span className="ml-1 text-muted-foreground">HP {seg.from}〜{seg.to}回 ¥{seg.total.toLocaleString()}</span>
+                              <span className={chip(seg.lump)}>{seg.lump ? 'ショット' : '毎月'}</span>
+                            </div>
+                          ))}
+                          {/* 月額ぶんの支払方法が途中で変わる契約（12ヶ月カード → 13ヶ月目から口座振替 など） */}
+                          {mSegs.map((seg) => (
+                            <div key={`m-${seg.from}`} className="whitespace-nowrap text-[10px]">
+                              <span className="font-bold">{seg.method}</span>
+                              <span className="ml-1 text-muted-foreground">
+                                月額 {seg.to == null ? `${seg.from}ヶ月目〜` : `${seg.from}〜${seg.to}ヶ月 ¥${(seg.total ?? 0).toLocaleString()}`}
                               </span>
+                              <span className={chip(seg.lump)}>{seg.lump ? 'ショット' : '毎月'}</span>
                             </div>
                           ))}
                         </div>

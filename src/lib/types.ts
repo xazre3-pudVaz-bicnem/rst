@@ -127,6 +127,15 @@ export interface VisitReport {
   maintenance_price?: number | null
   seo_price?: number | null
   meo_price?: number | null
+  // ---- 月額ぶんの途中で支払方法が変わる契約（例: 12ヶ月カード → 13ヶ月目から口座振替） ----
+  /** 1ヶ月目から切替までの支払方法（例: クレジットカード） */
+  monthly_first_method?: string | null
+  /** その方法で払う月数（例: 12 → 1〜12ヶ月目）。未設定なら切替なし */
+  monthly_first_months?: number | null
+  /** 切替後の支払方法（例: 口座振替 → 13ヶ月目以降、解約まで） */
+  monthly_later_method?: string | null
+  /** 前半がショット入金か（true=契約月に月額×月数がまとめて入金 / null=支払方法から自動判定） */
+  monthly_first_lump?: boolean | null
   total_price?: number | null
   // ---- 歩合（売上の20%を リスト10% / アポ40% / 営業50% で分配。営業担当は sales_rep） ----
   /** リスト担当（案件をリストに入れた人） */

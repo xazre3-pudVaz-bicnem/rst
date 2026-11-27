@@ -166,6 +166,8 @@ type ContractLike = Partial<Record<(typeof CONTRACT_PRODUCTS)[number]['key'], nu
     payment_method?: string | null; hp_first_method?: string | null
     hp_first_installments?: number | null; hp_later_method?: string | null
     hp_first_lump?: boolean | null; hp_later_lump?: boolean | null
+    monthly_first_method?: string | null; monthly_first_months?: number | null
+    monthly_later_method?: string | null; monthly_first_lump?: boolean | null
   }
 
 /** HP制作を分割払いにした場合の内訳（月額と回数）。一括/未設定なら null。 */
@@ -217,11 +219,59 @@ export function hpPaymentLabel(r: ContractLike): string {
   return hpPaymentSegments(r).map((s) => `${s.method} ${s.from}〜${s.to}回`).join(' / ')
 }
 
+// ===== 月額ぶん（保守管理・SEO・MEO）の支払い =====
+
+/** 月額サービスの合計（保守管理＋SEO＋MEO）。HP制作の分割ぶんは含まない。 */
+export function monthlyServiceTotal(r: ContractLike): number {
+  let sum = 0
+  for (const p of CONTRACT_PRODUCTS) if ((p.kind as string) === 'monthly') sum += Number(r[p.key] ?? 0) || 0
+  return sum
+}
+
+/**
+ * 月額ぶんの1区間（何ヶ月目から何ヶ月目までを、どの方法で、いくら払うか）。
+ * 後半は解約するまで続くので to = null（終わりなし）。
+ */
+export interface MonthlyPaymentSegment { method: string; from: number; to: number | null; count: number | null; perMonth: number; total: number | null; lump: boolean }
+
+/**
+ * 月額ぶんを「支払方法ごとの区間」に分ける。
+ * カードで決済できる回数に上限があるため「1〜12ヶ月目はカード／13ヶ月目以降は口座振替」という
+ * 契約がある（製作費を月額に含めたサブスク型の契約で特に多い）。
+ * 切替の設定が無い契約は空配列＝従来どおり「契約月から毎月いままでどおり」。
+ */
+export function monthlyPaymentSegments(r: ContractLike): MonthlyPaymentSegment[] {
+  const per = monthlyServiceTotal(r)
+  if (per <= 0) return []
+  const first = Number(r.monthly_first_months ?? 0) || 0
+  const m2 = (r.monthly_later_method || '').trim()
+  if (first <= 0 || !m2) return []
+  const m1 = (r.monthly_first_method || r.payment_method || '').trim() || '支払方法未設定'
+  return [
+    {
+      method: m1, from: 1, to: first, count: first, perMonth: per, total: per * first,
+      // カードでまとめて決済すると契約月に一括で入金される（ショット）。毎月課金の契約もあるので選べる。
+      lump: r.monthly_first_lump ?? isLumpPayoutMethod(m1),
+    },
+    { method: m2, from: first + 1, to: null, count: null, perMonth: per, total: null, lump: false },
+  ]
+}
+
+/** 「クレジットカード 1〜12ヶ月 / 口座振替 13ヶ月目〜」のような1行表示。切替が無ければ空文字。 */
+export function monthlyPaymentLabel(r: ContractLike): string {
+  return monthlyPaymentSegments(r)
+    .map((s) => (s.to == null ? `${s.method} ${s.from}ヶ月目〜` : `${s.method} ${s.from}〜${s.to}ヶ月`))
+    .join(' / ')
+}
+
 /** 契約金額を初期費用合計・月額合計に分けて集計する。
- *  HP制作は「一括」なら初期費用、「分割」なら1回あたり(HP額÷回数)を月額に計上する。 */
+ *  HP制作は「一括」なら初期費用、「分割」なら1回あたり(HP額÷回数)を月額に計上する。
+ *  月額サービスは毎月だが、カードで前半をまとめて決済する契約（ショット入金）は
+ *  その合計が契約月に一度で入るので初期費用へ回す（HP制作の分割と同じ考え方）。 */
 export function contractTotals(r: ContractLike): { initial: number; monthly: number } {
   let initial = 0, monthly = 0
   const segs = hpPaymentSegments(r)
+  const mSegs = monthlyPaymentSegments(r)
   for (const p of CONTRACT_PRODUCTS) {
     const v = Number(r[p.key] ?? 0) || 0
     if (!v) continue
@@ -234,7 +284,12 @@ export function contractTotals(r: ContractLike): { initial: number; monthly: num
         else monthly += seg.perPayment
       }
     } else if ((p.kind as string) === 'initial') initial += v
-    else monthly += v
+    else if (!mSegs.length || !mSegs[0].lump) monthly += v
+    // 月額ぶんをカードでまとめ払い（ショット入金）する契約は、下で区間ごとに計上する
+  }
+  if (mSegs.length && mSegs[0].lump) {
+    initial += mSegs[0].total ?? 0                   // 契約月にまとめて入金されるぶん
+    monthly += mSegs[1]?.perMonth ?? 0               // 切替後に毎月入ってくるぶん
   }
   return { initial, monthly }
 }
